@@ -84,8 +84,9 @@ Google Meet 會議
 前端使用 `session.vexaToken`（Vexa 原本即有），後端透過查詢 `public.api_tokens` 驗證身份（含 `expires_at` 過期檢查），無需另行管理 JWT Secret。
 
 ### Vexa WebSocket 整合
-後端使用 Vexa 的**單一多工 `/ws` 端點**（非按會議建立獨立連線）：
-- 一條連線以 `VEXA_INTERNAL_API_KEY` 認證，訂閱所有進行中會議的三條 Redis channel
+後端為每個進行中的會議建立**獨立的 `/ws` 連線**（以邀請者的 `vexaToken` 認證）：
+- 每個 MeetingSession 使用**邀請者自己的 token** 建立專屬 WebSocket，訂閱該會議的三條 Redis channel
+- Vexa WS 授權以 `Meeting.user_id == current_user.id` 驗證，必須用邀請者 token（單一服務級 token 無法訂閱其他使用者的會議事件）
 - 每個 `POST /bots` 需帶 `voice_agent_enabled: true` 才能啟用 `/speak`（TTS）與 `/chat` 功能
 - TTS 回覆透過 `POST /bots/{platform}/{nativeMeetingId}/speak` 傳送文字，由 Vexa 內部呼叫 OpenAI TTS 並播放
 
