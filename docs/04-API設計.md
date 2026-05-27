@@ -978,6 +978,19 @@ interface PaginatedResponse<T> {
 > 無論 ACTIVE 或 ENDED，均呼叫：
 > `GET /transcripts/{platform}/{vexaNativeMeetingId}`（Header: `X-API-Key: <inviterVexaToken>`）
 >
+> ⚠️ **`inviterVexaToken` 取得方式（依會議狀態不同）**：
+>
+> Vexa 的 `GET /transcripts` 以 `Meeting.user_id == current_user.id` 做授權（見 `collector/endpoints.py:319-323`）。
+> 因此必須使用**邀請者的 token**，而非發出此次 HTTP 請求的使用者 token（參與者可能不同人）。
+>
+> | 會議狀態 | 取法 |
+> |----------|------|
+> | **ACTIVE** | `activeSessions.get(meetingInstanceId)?.creatorVexaToken`（記憶體直取） |
+> | **ENDED / FAILED** | Session 已清除，需查 DB：`SELECT token FROM public.api_tokens WHERE id = meeting.creatorApiTokenId AND (expires_at IS NULL OR expires_at > NOW()) LIMIT 1` |
+>
+> 若查詢結果為空（token 已過期或不存在），回傳 `503 SERVICE_UNAVAILABLE`（非 404，避免誤導為「無逐字稿」）。
+> 具體實作見 `06-後端架構.md § 五之一`。
+>
 > Vexa 內部已處理 Redis（熱段落）與 Postgres（已落盤段落）的合併，
 > meetbot backend 無需直接存取 Redis 或 `public.transcriptions`。
 >
