@@ -249,7 +249,8 @@ enum MeetingStatus {
   ENDED   // 會議已結束（正常）：Bot 主動離開或使用者呼叫 POST /bot/leave
   FAILED  // 終止態（異常）：
           //   - 服務重啟時發現的 zombie PENDING（5 分鐘超時清理）
-          //   - Bot 加入失敗（Vexa 回傳 bot callback failed）
+          //   - Bot 異常終止：Vexa 回報 meeting.status = "failed"（Bot 在 active 前被踢出或逾時）
+          //     → 由 handleSessionClose(id, 'failed') 設定，不觸發摘要工作流
           //   ⚠️ FAILED 與 ENDED 皆不可刪除（保護歷史查詢紀錄）
           //   前端對 FAILED 狀態顯示錯誤訊息，不顯示重試按鈕
 

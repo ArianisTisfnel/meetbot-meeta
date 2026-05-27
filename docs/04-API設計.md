@@ -1075,7 +1075,8 @@ interface PaginatedResponse<T> {
 ### 10.1 Dify 索引狀態輪詢
 
 - **觸發頻率**：每 30 秒
-- **邏輯**：查詢 `indexingStatus = PROCESSING` 的 materials，呼叫 Dify API 更新狀態
+- **邏輯**：查詢 `indexingStatus = PENDING 或 PROCESSING` 的 materials，呼叫 Dify API 更新狀態
+  （PENDING 表示剛上傳、Dify 尚未開始處理，也需持續輪詢直到 Dify 回傳第一次狀態）
 - **相關 Dify endpoint**：`GET /datasets/{dataset_id}/documents/{batch}/indexing-status`
   （URL 中使用 `batch` 而非 `document_id`；`batch` 儲存於 `materials.dify_batch` 欄位）
 
@@ -1083,7 +1084,7 @@ interface PaginatedResponse<T> {
 // 每 30 秒執行
 setInterval(async () => {
   const processing = await prisma.material.findMany({
-    where: { indexingStatus: 'PROCESSING', deletedAt: null },
+    where: { indexingStatus: { in: ['PENDING', 'PROCESSING'] }, deletedAt: null },
     include: { project: { select: { difyDatasetId: true } } }
   })
   for (const material of processing) {
