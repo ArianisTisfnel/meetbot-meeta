@@ -27,6 +27,9 @@
 Backend 呼叫 Vexa Bot API（例如邀請 Bot、傳送訊息）
   └→ 直接使用前端送來的 vexaToken
   └→ Header: X-API-Key: <vexaToken>
+  └→ ⚠️ 此 token 必須具備 bot、browser、tx 三個 scope（Vexa api-gateway ROUTE_SCOPES 強制驗證）
+     /bots 需要 {"bot","browser"}；/transcripts 需要 {"tx"}
+     auth middleware 在 token 驗證時同步讀取並注入 scopes，供 handler 在呼叫 Vexa 前快速失敗
 ```
 
 ### 1.2 統一請求 Header
@@ -47,6 +50,7 @@ if (!token) return c.json({ error_code: 'UNAUTHORIZED' }, 401)
 
 const apiToken = await db.api_tokens.findFirst({
   where: { token, OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }] }
+  // scopes 為 text[]（PostgreSQL array），注入供 handler 前置 scope 檢查
 })
 if (!apiToken) return c.json({ error_code: 'UNAUTHORIZED' }, 401)
 
@@ -54,7 +58,8 @@ const user = await db.users.findUnique({ where: { id: apiToken.user_id } })
 c.set('vexaUserId', user.id)
 c.set('userEmail', user.email)
 c.set('maxConcurrentBots', user.max_concurrent_bots)
-c.set('vexaToken', token)   // 供後續 handler 呼叫 Vexa API 時使用
+c.set('vexaToken', token)            // 供後續 handler 呼叫 Vexa API 時使用
+c.set('vexaTokenScopes', apiToken.scopes as string[])  // 供 scope 前置檢查
 ```
 
 ---
@@ -77,7 +82,8 @@ interface ErrorResponse {
 |------------|-----------|------|
 | 400 | `INVALID_REQUEST` | 請求格式錯誤 |
 | 401 | `UNAUTHORIZED` | 未提供或無效的 token |
-| 403 | `PERMISSION_DENIED` | 已認證但無此操作權限 |
+| 403 | `PERMISSION_DENIED` | 已認證但無此操作權限（非 owner/member） |
+| 403 | `INSUFFICIENT_SCOPE` | vexaToken 缺少 bot/browser/tx scope |
 | 404 | `NOT_FOUND` | 資源不存在 |
 | 409 | `DUPLICATE_FILE` | 相同檔案已存在於此專案 |
 | 409 | `ALREADY_MEMBER` | 使用者已是此專案的參與者 |
@@ -137,8 +143,10 @@ interface PaginatedResponse<T> {
 }
 ```
 
-> `activeBotCount`：查詢此使用者目前有多少個 ACTIVE 狀態的 MeetingInstance，
+> `activeBotCount`：查詢此使用者目前有多少個 `ACTIVE` 狀態的 MeetingInstance，
 > 讓前端判斷是否能再邀請 Bot。
+> ⚠️ 此數字不含 `PENDING` 狀態，故在建立流程的數秒窗口內可能低估一個。
+> 真正的並發門限由 Vexa POST /bots 的 403 捕捉（見建立流程步驟④），保證最終一致。
 
 ---
 
@@ -633,11 +641,21 @@ interface PaginatedResponse<T> {
 ```
 ① 驗證 Google Meet URL 格式，解析出 nativeMeetingId
    （正規表達式：/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/）
+   ↳ 確認 c.var.vexaTokenScopes 包含 'bot'、'browser'、'tx'
+     → 否則 403 INSUFFICIENT_SCOPE（在 DB 寫入前快速失敗，不建立 MeetingInstance）
 ② 檢查邀請者的 activeBotCount < max_concurrent_bots → 否則 409
+   activeBotCount = 此使用者 status = 'ACTIVE' 的 MeetingInstance 數量
+   （注意：PENDING 競態由步驟④的 Vexa 403 處理，見下方說明）
 ③ Prisma create MeetingInstance（status: PENDING）
 ④ 呼叫 Vexa POST /bots（使用邀請者的 vexaToken，需帶 voice_agent_enabled: true、bot_name: "蜜塔"）
    ↳ 成功 → 取得 vexaMeetingId（整數），暫存但**不更新** DB 狀態
-   ↳ 失敗 → 保留 PENDING 狀態，UI 顯示重試按鈕；終止後續步驟
+   ↳ Vexa 403「User has reached the maximum concurrent bot limit」（並發競態）
+     → 刪除步驟③剛建立的 PENDING MeetingInstance（rollback，不留 zombie）
+     → 回傳 409 BOT_CONCURRENT_LIMIT
+     ⚠️ 此路徑發生於：步驟③到步驟⑤ DB 更新的數秒窗口內，另一個請求的 Bot
+        已被 Vexa 計入 REQUESTED/JOINING/AWAITING_ADMISSION（尚未反映在 app ACTIVE 計數），
+        導致步驟②放行但步驟④被 Vexa 擋下
+   ↳ 其他錯誤（網路、逾時等） → 保留 PENDING 狀態，UI 顯示重試按鈕；終止後續步驟
 ⑤ 啟動後端 MeetingSession（訂閱 Vexa /ws 的三條 channel + 喚醒詞監聽）
    ↳ 成功 → 更新 DB：vexaMeetingId、vexaNativeMeetingId（= nativeMeetingId）、
              creatorApiTokenId（= 當前 vexaToken 在 public.api_tokens 中的 id）、
@@ -657,7 +675,14 @@ interface PaginatedResponse<T> {
 
 **Error cases**
 ```json
-// 409：Bot 並發上限
+// 403：Token scope 不足（缺少 bot、browser 或 tx scope）
+{
+  "error_code": "INSUFFICIENT_SCOPE",
+  "message": "此 token 缺少邀請 Bot 所需的 scope（需要 bot、browser、tx）",
+  "details": { "required": ["bot", "browser", "tx"], "actual": ["tx"] }
+}
+
+// 409：Bot 並發上限（步驟②的 app 計數，或步驟④的 Vexa 413 競態）
 {
   "error_code": "BOT_CONCURRENT_LIMIT",
   "message": "您目前已有 1 個進行中的 Bot，無法再建立",
