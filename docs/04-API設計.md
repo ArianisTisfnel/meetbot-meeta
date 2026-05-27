@@ -743,6 +743,65 @@ interface PaginatedResponse<T> {
 
 ---
 
+### `PATCH /meetings/:meetingId`
+
+更新無關聯專案的會議名稱。**需要：建立者本人**。
+
+**Request**
+```json
+{
+  "name": "更新後的會議名稱"
+}
+```
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "name": "更新後的會議名稱",
+  "updatedAt": "..."
+}
+```
+
+---
+
+### `POST /meetings/:meetingId/bot/leave`
+
+讓 Bot 離開無關聯專案的會議。**需要：建立者本人**。
+僅在 `status = ACTIVE` 時有效。
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "status": "ENDED",
+  "endedAt": "2026-05-26T11:00:00Z"
+}
+```
+
+**離開流程（後端）：** 與 `POST /projects/:projectId/meetings/:meetingId/bot/leave` 相同（見§九），授權改為驗證 `vexaUserId === meeting.createdByVexaUserId`。
+
+---
+
+### `GET /meetings/:meetingId/transcriptions`
+
+取得無關聯專案會議的逐字稿。**需要：建立者本人**。
+
+> 實作方式與 `GET /projects/:projectId/meetings/:meetingId/transcriptions` 完全相同（見§九），
+> 授權改為驗證 `vexaUserId === meeting.createdByVexaUserId`（無專案成員可查詢）。
+
+**Query Params**
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `page` | 1 | 僅用於 ENDED 會議 |
+| `per_page` | 50 | 僅用於 ENDED 會議 |
+| `since_start_time` | — | 取得 start_time > N（秒）的新 segments（ACTIVE/ENDED 皆適用） |
+
+**Response 200**（格式同§九的逐字稿端點）
+
+---
+
 ## 九、專案內會議 API
 
 ### `POST /projects/:projectId/meetings`
@@ -1058,6 +1117,9 @@ interface PaginatedResponse<T> {
 | `POST /meetings`（全局建立） | ✅ | ✅ | ✅ | ✅（projectId 留空時）|
 | `GET /meetings`（全局列表） | ✅ | ✅ | ✅ | ✅ |
 | `GET /meetings/:mid`（全局存取） | ✅ | ✅ | ✅ | ✅（建立者）|
+| `PATCH /meetings/:mid`（全局改名） | —¹ | —¹ | —¹ | ✅（建立者）|
+| `POST /meetings/:mid/bot/leave`（全局停止） | —¹ | —¹ | —¹ | ✅（建立者）|
+| `GET /meetings/:mid/transcriptions`（全局逐字稿） | —¹ | —¹ | —¹ | ✅（建立者）|
 | `GET /projects` | ✅ | ✅ | ✅ | ✅ |
 | `POST /projects` | ✅ | ✅ | ✅ | ✅ |
 | `GET /projects/:id` | ✅ | ✅ | ✅ | ❌ |
@@ -1079,6 +1141,9 @@ interface PaginatedResponse<T> {
 | `GET /projects/.../meetings/:mid/transcriptions` | ✅ | ✅ | ✅ | ❌ |
 | `POST /projects/.../meetings/:mid/bot/leave` | ✅ | ❌ | ❌ | ❌ |
 
+> ¹ **全局無關聯專案端點**（`PATCH /meetings/:mid`、`POST /meetings/:mid/bot/leave`、`GET /meetings/:mid/transcriptions`）：
+> 授權邏輯為 `vexaUserId === meeting.createdByVexaUserId`（**建立者本人**），不涉及專案成員權限。
+>
 > **全局 `POST /meetings` 的 projectId 驗證**：
 > - `projectId` 留空 → 任意登入使用者皆可建立（獨立會議）
 > - `projectId` 有值 → 需具備該專案的**會議權**（Owner），否則 403 PERMISSION_DENIED
