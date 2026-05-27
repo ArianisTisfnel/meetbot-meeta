@@ -656,7 +656,7 @@ interface PaginatedResponse<T> {
    ↳ 確認 vexaTokenScopes 包含 'bot'、'browser'、'tx'，否則 403 INSUFFICIENT_SCOPE
 ② 若有 projectId：驗證當前使用者對該專案具備會議權（owner）→ 否則 403 PERMISSION_DENIED
    取得 project.difyDatasetId（供 MeetingSession 使用）
-   若無 projectId：difyDatasetId = null（Bot 不進行 Q&A）
+   若無 projectId：difyDatasetId = null（Bot 改以最近逐字稿為 context 透過 Claude 直接回答，不使用 Dify Chatflow）
 ③ 後續流程與 POST /projects/:projectId/meetings 相同（步驟②~⑥）
 ```
 
