@@ -2,8 +2,8 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.1|
-|撰寫日期|2026-05-26|
+|文件版本|v1.2|
+|撰寫日期|2026-05-27|
 |依據文件|`01-專案目標.md`、`02-使用者需求.md`|
 |ORM|Prisma（multiSchema）|
 |資料庫|Supabase PostgreSQL|
@@ -213,6 +213,7 @@ model MeetingInstance {
   @@index([projectId, createdAt(sort: Desc)])
   @@index([vexaMeetingId])
   @@index([status])
+  @@index([createdByVexaUserId, status])   // activeBotCount 查詢（GET /me 及建立會議前並發檢查）
   @@map("meeting_instances")
   @@schema("app")
 }
@@ -472,6 +473,7 @@ const activeSessions = new Map<string, MeetingSession>()
 | `meeting_instances` | `(project_id, created_at DESC)` | 專案會議清單分頁 |
 | `meeting_instances` | `vexa_meeting_id` | 接收 Vexa WS 狀態事件時查找對應實例 |
 | `meeting_instances` | `status` | 查詢所有進行中的會議（ACTIVE），用於服務重啟後恢復 session |
+| `meeting_instances` | `(created_by_vexa_user_id, status)` | activeBotCount 查詢（`GET /me` 及建立會議前的並發檢查） |
 
 ---
 
