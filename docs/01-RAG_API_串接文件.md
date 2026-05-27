@@ -8,13 +8,15 @@
 
 ```bash
 # 建知識庫、上傳檔案、查索引狀態用
-DIFY_DATASET_API_KEY=dataset-ZParWOxdgmsz93b1JGwNaaCD
+DIFY_DATASET_API_KEY=dataset-<your-dataset-api-key>
 
-# 問問題用
-DIFY_WORKFLOW_API_KEY=app-oL101wsh0vNCzME4TWimu9bo
+# 問問題用（01-edu2.yml Chatflow 對應的 app key）
+DIFY_WORKFLOW_API_KEY=app-<your-workflow-api-key>
 
 DIFY_BASE_URL=https://api.dify.ai/v1
 ```
+
+> ⚠️ **安全提醒**：請勿將實際 Key 值提交至版本控制；請從 Dify 平台取得後填入 `.env`（不入 git）。
 
 > ⚠️ 兩把 key 完全不同，用錯會 401。
 
