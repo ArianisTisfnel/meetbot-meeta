@@ -525,7 +525,10 @@ SUPABASE_STORAGE_BUCKET="meeting-materials"
 # Dify（兩把獨立 API Key，分別對應不同用途）
 DIFY_API_BASE="https://api.dify.ai/v1"
 DIFY_DATASET_API_KEY="dataset-..."   # Knowledge Base 操作：上傳/刪除文件、查詢索引狀態
-DIFY_WORKFLOW_API_KEY="app-..."      # Q&A Chatflow 呼叫（僅用於 Q&A；摘要改由 ANTHROPIC_API_KEY 直呼 Claude API）
+DIFY_WORKFLOW_API_KEY="app-..."      # Q&A Chatflow 呼叫（01-edu2.yml 對應的 app key）
+
+# Claude（Anthropic）
+ANTHROPIC_API_KEY="sk-ant-..."       # 摘要生成專用（claude-sonnet-4-6）；Q&A 已由 Dify Chatflow 處理
 ```
 
 ---
@@ -543,9 +546,14 @@ docker compose up -d vexa-lite
 # GRANT USAGE ON SCHEMA app TO authenticated;
 
 # 3. 同步 Vexa 的 public schema 定義（只讀參考）
+#    ⚠️ 危險操作：prisma db pull 會重寫 schema.prisma 中「所有 public schema model」，
+#    包括可能覆蓋你手動保留的 User/Meeting/Transcription 定義，也可能誤改 app schema block。
+#    建議只在「初次建立專案時」執行一次，之後如需更新 Vexa public schema，
+#    手動對照差異後再修改，不要直接 re-run prisma db pull。
 npx prisma db pull
 # → 自動補充 public schema 的 model 定義到 schema.prisma
-# → 保留需要的（User、Meeting、Transcription），刪除用不到的
+# → 執行後務必 diff 確認：只保留 User、Meeting、Transcription；
+#    刪除 Vexa 其他用不到的 model；確認 app schema models 未被覆蓋
 
 # 4. 執行 app schema 的初始 migration
 npx prisma migrate dev --name init_app_schema

@@ -687,7 +687,7 @@ interface PaginatedResponse<T> {
 | `search` | — | 依會議名稱或關聯專案名稱搜尋（模糊匹配） |
 | `since` | — | 篩選最近 N 天內的會議（可選值：`1` / `3` / `7`） |
 | `order` | `desc` | 排序方向（`asc` / `desc`，依 `created_at`） |
-| `status` | — | 篩選狀態（`PENDING` / `ACTIVE` / `ENDED`） |
+| `status` | — | 篩選狀態（`PENDING` / `ACTIVE` / `ENDED` / `FAILED`） |
 
 > **回傳範圍**：該使用者**建立**的所有會議，加上所屬專案中具備**檢視權**的所有會議。
 
@@ -827,7 +827,7 @@ interface PaginatedResponse<T> {
   "details": { "required": ["bot", "browser", "tx"], "actual": ["tx"] }
 }
 
-// 409：Bot 並發上限（步驟②的 app 計數，或步驟④的 Vexa 413 競態）
+// 409：Bot 並發上限（步驟②的 app 計數，或步驟④的 Vexa 403 競態）
 {
   "error_code": "BOT_CONCURRENT_LIMIT",
   "message": "您目前已有 1 個進行中的 Bot，無法再建立",
@@ -850,7 +850,7 @@ interface PaginatedResponse<T> {
 | `search` | — | 依會議名稱搜尋 |
 | `since` | — | 篩選最近 N 天內（`1` / `3` / `7`） |
 | `order` | `desc` | 排序方向（`asc` / `desc`，依 `created_at`） |
-| `status` | — | 篩選（PENDING / ACTIVE / ENDED） |
+| `status` | — | 篩選（`PENDING` / `ACTIVE` / `ENDED` / `FAILED`） |
 
 **Response 200**
 ```json
@@ -986,6 +986,16 @@ interface PaginatedResponse<T> {
 > - **ACTIVE 會議**：前端以 3 秒輪詢 `?since_start_time=<last_end_time>` 取得新 segments
 >
 > ⚠️ `since_id` 參數已移除（Vexa REST API 不暴露整數 `id`，見 `schemas.py TranscriptionSegment`）
+>
+> ⚠️ **O(n) 陷阱（ACTIVE 輪詢）**：Vexa REST API 不支援 server-side `since_start_time` 過濾——
+> backend 每次輪詢都取回**全量**逐字稿，再在記憶體以 `since_start_time` 裁切。
+> 對於長會議（例如 2 小時，約 2000+ segments），每 3 秒的輪詢會傳輸大量重複資料。
+>
+> **緩解措施（MVP 可接受，建議未來改善）**：
+> 1. Vexa /ws `tc:meeting:{id}:mutable` channel 已在 `MeetingSession` 中即時接收 segments；
+>    若未來需要低延遲即時顯示，可改為讓前端訂閱後端 SSE，後端從 WS 推送，不需輪詢全量。
+> 2. 若僅需解決重複傳輸問題，可在 meetbot backend 快取最後一次回傳的 `endTime`，
+>    僅對 Vexa 的回應做 in-memory slice 後回傳差異；不需修改 Vexa。
 
 **Query Params**
 
