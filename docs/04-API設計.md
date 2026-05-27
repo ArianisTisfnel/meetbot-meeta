@@ -1,0 +1,938 @@
+# API 設計文件
+
+|項目|內容|
+|----|-----|
+|文件版本|v1.1|
+|撰寫日期|2026-05-26|
+|依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
+|後端框架|Hono（Node.js）|
+|Base URL（開發）|`http://localhost:4000`|
+
+---
+
+## 一、認證策略
+
+### 1.1 Token 流程
+
+```
+使用者登入（NextAuth）
+  └→ 前端從 NextAuth session 取得 vexaToken（由 Vexa 原本的 session callback 注入）
+
+前端呼叫 App Backend
+  └→ Header: Authorization: Bearer <vexaToken>
+  └→ Backend 驗證：查詢 public.api_tokens WHERE token = vexaToken
+  └→ JOIN public.users 取得 user_id、email、max_concurrent_bots 等使用者資訊
+  └→ 無需另行簽發或驗簽 JWT，vexaToken 本身即為身份憑證
+
+Backend 呼叫 Vexa Bot API（例如邀請 Bot、傳送訊息）
+  └→ 直接使用前端送來的 vexaToken
+  └→ Header: X-API-Key: <vexaToken>
+```
+
+### 1.2 統一請求 Header
+
+```
+Authorization: Bearer <vexaToken>
+Content-Type: application/json   （非檔案上傳時）
+```
+
+### 1.3 後端從 Token 取得使用者資訊
+
+後端 Hono middleware 每次請求時執行：
+
+```typescript
+// 偽代碼（實際使用 Prisma 查詢 public schema）
+const token = c.req.header('Authorization')?.replace('Bearer ', '')
+if (!token) return c.json({ error_code: 'UNAUTHORIZED' }, 401)
+
+const apiToken = await db.api_tokens.findFirst({
+  where: { token, OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }] }
+})
+if (!apiToken) return c.json({ error_code: 'UNAUTHORIZED' }, 401)
+
+const user = await db.users.findUnique({ where: { id: apiToken.user_id } })
+c.set('vexaUserId', user.id)
+c.set('userEmail', user.email)
+c.set('maxConcurrentBots', user.max_concurrent_bots)
+c.set('vexaToken', token)   // 供後續 handler 呼叫 Vexa API 時使用
+```
+
+---
+
+## 二、統一錯誤格式
+
+所有 4xx / 5xx 回應使用統一格式：
+
+```typescript
+interface ErrorResponse {
+  error_code: string     // 機器可讀的錯誤碼（全大寫 + 底線）
+  message: string        // 人類可讀的說明
+  details?: object       // 選填，提供額外上下文
+}
+```
+
+### 常見錯誤碼
+
+| HTTP 狀態碼 | error_code | 說明 |
+|------------|-----------|------|
+| 400 | `INVALID_REQUEST` | 請求格式錯誤 |
+| 401 | `UNAUTHORIZED` | 未提供或無效的 token |
+| 403 | `PERMISSION_DENIED` | 已認證但無此操作權限 |
+| 404 | `NOT_FOUND` | 資源不存在 |
+| 409 | `DUPLICATE_FILE` | 相同檔案已存在於此專案 |
+| 409 | `ALREADY_MEMBER` | 使用者已是此專案的參與者 |
+| 409 | `BOT_CONCURRENT_LIMIT` | 使用者已達 Bot 並發上限 |
+| 413 | `FILE_TOO_LARGE` | 超過 15 MB 限制 |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | 不支援的檔案格式 |
+| 422 | `USER_NOT_FOUND_IN_VEXA` | email 尚未在 Vexa 建立帳號 |
+| 500 | `INTERNAL_ERROR` | 伺服器內部錯誤 |
+| 503 | `EXTERNAL_SERVICE_ERROR` | Dify / Supabase / Vexa 呼叫失敗 |
+
+---
+
+## 三、通用型別定義
+
+```typescript
+// 權限物件（附在 project 相關回應中，代表當前使用者的權限）
+interface UserPermissions {
+  canView: boolean
+  canEdit: boolean
+  canDelete: boolean    // 只有 owner 為 true
+  canManage: boolean    // 只有 owner 為 true
+  canMeeting: boolean   // 只有 owner 為 true
+}
+
+// 使用者摘要（從 public.users 讀取）
+interface UserSummary {
+  vexaUserId: number
+  email: string
+  name: string | null
+}
+
+// 分頁包裝
+interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  page: number
+  perPage: number
+}
+```
+
+---
+
+## 四、使用者 API
+
+### `GET /me`
+
+取得當前使用者資訊（從 JWT + Vexa public.users）。
+
+**Response 200**
+```json
+{
+  "vexaUserId": 123,
+  "email": "user@example.com",
+  "name": "User Name",
+  "maxConcurrentBots": 1,
+  "activeBotCount": 0
+}
+```
+
+> `activeBotCount`：查詢此使用者目前有多少個 ACTIVE 狀態的 MeetingInstance，
+> 讓前端判斷是否能再邀請 Bot。
+
+---
+
+### `GET /users/lookup?email=:email`
+
+依 email 查找 Vexa 使用者（供邀請參與者時的輸入驗證）。
+**只有已登入使用者可呼叫，不開放匿名。**
+
+**Response 200**
+```json
+{
+  "vexaUserId": 456,
+  "email": "member@example.com",
+  "name": "Member Name"
+}
+```
+
+**Response 404**
+```json
+{
+  "error_code": "USER_NOT_FOUND_IN_VEXA",
+  "message": "此 email 尚未在系統中建立帳號，請對方先登入後再試"
+}
+```
+
+---
+
+## 五、專案 API
+
+### `GET /projects`
+
+取得當前使用者有關聯的所有專案（包含身為 owner 與 participant 的）。
+
+**Response 200**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "name": "Q3 產品規劃",
+      "role": "owner",
+      "permissions": {
+        "canView": true, "canEdit": true, "canDelete": true,
+        "canManage": true, "canMeeting": true
+      },
+      "memberCount": 3,
+      "materialCount": 7,
+      "activeMeetingCount": 1,
+      "createdAt": "2026-05-20T08:00:00Z"
+    },
+    {
+      "id": "uuid",
+      "name": "行銷企劃",
+      "role": "member",
+      "permissions": {
+        "canView": true, "canEdit": true, "canDelete": false,
+        "canManage": false, "canMeeting": false
+      },
+      "memberCount": 5,
+      "materialCount": 12,
+      "activeMeetingCount": 0,
+      "createdAt": "2026-05-10T09:00:00Z"
+    }
+  ],
+  "total": 2
+}
+```
+
+---
+
+### `POST /projects`
+
+建立新專案。建立時同步呼叫 Dify API 建立 Knowledge Base。
+
+**Request**
+```json
+{
+  "name": "新專案名稱"
+}
+```
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "name": "新專案名稱",
+  "role": "owner",
+  "permissions": {
+    "canView": true, "canEdit": true, "canDelete": true,
+    "canManage": true, "canMeeting": true
+  },
+  "createdAt": "2026-05-26T10:00:00Z"
+}
+```
+
+**建立流程（後端）：**
+```
+① 呼叫 Dify API 建立 dataset → 取得 dify_dataset_id
+② Prisma create Project（含 dify_dataset_id、owner_vexa_user_id）
+   ↳ 若 ① 失敗 → 5xx，無需清理
+   ↳ 若 ② 失敗 → 刪除 Dify dataset（rollback）
+```
+
+---
+
+### `GET /projects/:projectId`
+
+取得專案詳細資訊。需具備此專案的任一存取權（owner 或有效 participant）。
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "name": "Q3 產品規劃",
+  "role": "owner",
+  "permissions": { "canView": true, ... },
+  "owner": {
+    "vexaUserId": 123,
+    "email": "owner@example.com",
+    "name": "Owner Name"
+  },
+  "memberCount": 3,
+  "materialCount": 7,
+  "activeMeetingCount": 1,
+  "createdAt": "...",
+  "updatedAt": "..."
+}
+```
+
+---
+
+### `PATCH /projects/:projectId`
+
+更新專案名稱。**需要：Owner**。
+
+**Request**
+```json
+{
+  "name": "更新後的名稱"
+}
+```
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "name": "更新後的名稱",
+  "updatedAt": "..."
+}
+```
+
+---
+
+### `DELETE /projects/:projectId`
+
+刪除專案（Soft delete）。**需要：Owner（刪除權）**。
+
+**Response 204**（no body）
+
+**刪除流程（後端）：**
+```
+① 對所有 materials 執行 soft delete + 清理 Storage 和 Dify 文件
+② 刪除 Dify dataset
+③ 設定 projects.deleted_at = now()
+（material_edit_history、meeting_instances、project_members 保留）
+```
+
+---
+
+## 六、成員管理 API
+
+### `GET /projects/:projectId/members`
+
+取得專案成員清單。**需要：檢視權**。
+
+**Response 200**
+```json
+{
+  "owner": {
+    "vexaUserId": 123,
+    "email": "owner@example.com",
+    "name": "Owner Name"
+  },
+  "members": [
+    {
+      "id": "uuid",
+      "vexaUserId": 456,
+      "email": "member@example.com",
+      "name": "Member Name",
+      "canView": true,
+      "canEdit": false,
+      "invitedAt": "2026-05-21T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### `POST /projects/:projectId/members`
+
+邀請新參與者。**需要：Owner（管理權）**。
+
+**Request**
+```json
+{
+  "email": "newmember@example.com",
+  "canView": true,
+  "canEdit": false
+}
+```
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "vexaUserId": 789,
+  "email": "newmember@example.com",
+  "name": "New Member",
+  "canView": true,
+  "canEdit": false,
+  "invitedAt": "2026-05-26T10:00:00Z"
+}
+```
+
+**Error cases**
+```json
+// 422：對方尚未登入系統
+{ "error_code": "USER_NOT_FOUND_IN_VEXA", "message": "..." }
+
+// 409：對方已是此專案成員
+{ "error_code": "ALREADY_MEMBER", "message": "..." }
+```
+
+**邀請流程：**
+```
+① 呼叫 GET /users/lookup?email=... 確認使用者存在 → 取得 vexaUserId
+② Prisma create ProjectMember
+```
+
+---
+
+### `PATCH /projects/:projectId/members/:vexaUserId`
+
+調整參與者權限。**需要：Owner（管理權）**。
+
+**Request**
+```json
+{
+  "canView": true,
+  "canEdit": true
+}
+```
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "vexaUserId": 456,
+  "canView": true,
+  "canEdit": true,
+  "updatedAt": "..."
+}
+```
+
+---
+
+### `DELETE /projects/:projectId/members/:vexaUserId`
+
+移除參與者。**需要：Owner（管理權）**。
+不可移除自己（Owner）。
+
+**Response 204**（no body）
+
+---
+
+## 七、資料（Materials）API
+
+### `POST /projects/:projectId/materials`
+
+上傳資料檔案。**需要：編輯權**。
+
+**Request**（`multipart/form-data`）
+
+| 欄位 | 型別 | 必填 | 說明 |
+|------|------|------|------|
+| `file` | binary | ✅ | 檔案本體 |
+| `display_name` | string | ❌ | 顯示名稱，預設同檔名 |
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "filename": "company-rules.pdf",
+  "displayName": "公司規則 v2",
+  "sizeBytes": 1234567,
+  "mimeType": "application/pdf",
+  "indexingStatus": "PENDING",
+  "uploadedBy": {
+    "vexaUserId": 123,
+    "name": "User Name"
+  },
+  "uploadedAt": "2026-05-26T10:00:00Z"
+}
+```
+
+**Error cases**
+```json
+// 409：相同檔案已存在
+{
+  "error_code": "DUPLICATE_FILE",
+  "message": "相同檔案已上傳至此專案",
+  "details": { "existingMaterialId": "uuid" }
+}
+
+// 413：檔案過大
+{ "error_code": "FILE_TOO_LARGE", "message": "檔案大小超過 15 MB 限制" }
+
+// 415：不支援格式
+{ "error_code": "UNSUPPORTED_MEDIA_TYPE", "message": "僅支援 PDF、DOCX、TXT、MD" }
+```
+
+**上傳流程（後端）：**
+```
+① 驗證格式（MIME type）、大小
+② 計算 SHA-256，查詢是否有效重複 → 409
+③ 上傳至 Supabase Storage（路徑：{projectId}/{uuid}/{filename}）
+④ 呼叫 Dify API 上傳文件至專案的 dataset
+⑤ Prisma create Material（含 difyDocumentId、storagePath）
+⑥ Prisma create MaterialEditHistory（action: UPLOAD）
+   ↳ 任一步驟失敗：逆序 rollback
+```
+
+---
+
+### `GET /projects/:projectId/materials`
+
+取得專案資料清單。**需要：檢視權**。
+
+**Query Params**
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `page` | 1 | 頁碼 |
+| `per_page` | 20 | 每頁筆數（max 100） |
+| `status` | — | 篩選 indexingStatus（選填） |
+
+**Response 200**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "filename": "company-rules.pdf",
+      "displayName": "公司規則 v2",
+      "sizeBytes": 1234567,
+      "mimeType": "application/pdf",
+      "indexingStatus": "COMPLETED",
+      "uploadedBy": {
+        "vexaUserId": 123,
+        "name": "User Name"
+      },
+      "uploadedAt": "2026-05-26T10:00:00Z"
+    }
+  ],
+  "total": 7,
+  "page": 1,
+  "perPage": 20
+}
+```
+
+---
+
+### `GET /projects/:projectId/materials/:materialId`
+
+取得單一資料的詳細資訊（含最新索引狀態）。**需要：檢視權**。
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "filename": "company-rules.pdf",
+  "displayName": "公司規則 v2",
+  "sizeBytes": 1234567,
+  "mimeType": "application/pdf",
+  "indexingStatus": "FAILED",
+  "indexingError": "Dify chunking failed: unsupported encoding",
+  "uploadedBy": {
+    "vexaUserId": 123,
+    "name": "User Name"
+  },
+  "uploadedAt": "...",
+  "updatedAt": "..."
+}
+```
+
+---
+
+### `DELETE /projects/:projectId/materials/:materialId`
+
+刪除資料檔案（三方同步）。**需要：編輯權**。
+
+**Response 204**（no body）
+
+**刪除流程（後端）：**
+```
+① 呼叫 Dify API 刪除文件
+② 從 Supabase Storage 刪除檔案
+③ Prisma update Material（set deletedAt = now()）
+④ Prisma create MaterialEditHistory（action: DELETE）
+   ↳ 任一步驟失敗：記錄錯誤日誌，標記 material 狀態異常（不對使用者拋錯，後台補清理）
+```
+
+---
+
+### `GET /projects/:projectId/history`
+
+取得專案資料操作的歷史紀錄。**需要：檢視權**。
+
+**Query Params**
+
+| 參數 | 預設 |
+|------|------|
+| `page` | 1 |
+| `per_page` | 20 |
+
+**Response 200**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "action": "DELETE",
+      "filenameSnapshot": "company-rules.pdf",
+      "performedBy": {
+        "vexaUserId": 123,
+        "name": "User Name"
+      },
+      "performedAt": "2026-05-26T14:30:00Z"
+    },
+    {
+      "id": "uuid",
+      "action": "UPLOAD",
+      "filenameSnapshot": "company-rules.pdf",
+      "performedBy": {
+        "vexaUserId": 123,
+        "name": "User Name"
+      },
+      "performedAt": "2026-05-26T10:00:00Z"
+    }
+  ],
+  "total": 25,
+  "page": 1,
+  "perPage": 20
+}
+```
+
+---
+
+## 八、會議實例 API
+
+### `POST /projects/:projectId/meetings`
+
+建立會議實例並邀請 Bot。**需要：會議權（目前僅 Owner）**。
+
+**Request**
+```json
+{
+  "googleMeetUrl": "https://meet.google.com/abc-defg-hij",
+  "name": "每週同步會議"
+}
+```
+> `name` 選填，預設為 `"會議 {YYYY-MM-DD HH:mm}"`
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "name": "每週同步會議",
+  "googleMeetUrl": "https://meet.google.com/abc-defg-hij",
+  "status": "PENDING",
+  "vexaMeetingId": null,
+  "createdBy": {
+    "vexaUserId": 123,
+    "name": "User Name"
+  },
+  "createdAt": "2026-05-26T10:00:00Z"
+}
+```
+
+**建立流程（後端）：**
+```
+① 驗證 Google Meet URL 格式，解析出 nativeMeetingId
+   （正規表達式：/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/）
+② 檢查邀請者的 activeBotCount < max_concurrent_bots → 否則 409
+③ Prisma create MeetingInstance（status: PENDING）
+④ 呼叫 Vexa POST /bots（使用邀請者的 vexaToken，需帶 voice_agent_enabled: true）
+   ↳ 成功 → 回傳 vexaMeetingId（整數）
+           更新：vexaMeetingId、vexaNativeMeetingId（= nativeMeetingId）、
+                 creatorApiTokenId（= 當前 vexaToken 在 public.api_tokens 中的 id）、
+                 status: ACTIVE、startedAt
+   ↳ 失敗 → 保留 PENDING 狀態，UI 顯示重試按鈕
+⑤ 啟動後端 MeetingSession（訂閱 Vexa /ws 的三條 channel + 喚醒詞監聽）
+⑥ 傳送歡迎訊息至 Google Meet 聊天室（非同步，不影響本次回應）
+   ↳ 使用 Vexa POST /bots/{platform}/{nativeMeetingId}/chat 傳送預設歡迎文字，
+     介紹蜜塔（Meeta）的使用方式與喚醒詞
+```
+
+> **`voice_agent_enabled: true` 說明**：此旗標讓 Vexa 為該 Bot 啟用語音功能（`/speak`、`/chat` endpoint）。
+> 若建立 Bot 時未帶此旗標，TTS 語音回覆與聊天室傳訊將無法使用。
+
+**Error cases**
+```json
+// 409：Bot 並發上限
+{
+  "error_code": "BOT_CONCURRENT_LIMIT",
+  "message": "您目前已有 1 個進行中的 Bot，無法再建立",
+  "details": { "maxConcurrentBots": 1, "activeBotCount": 1 }
+}
+```
+
+---
+
+### `GET /projects/:projectId/meetings`
+
+取得專案的會議清單。**需要：檢視權**。
+
+**Query Params**
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `page` | 1 | |
+| `per_page` | 20 | |
+| `status` | — | 篩選（PENDING / ACTIVE / ENDED） |
+
+**Response 200**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "name": "每週同步會議",
+      "googleMeetUrl": "https://meet.google.com/abc-defg-hij",
+      "status": "ACTIVE",
+      "startedAt": "2026-05-26T10:05:00Z",
+      "endedAt": null,
+      "createdAt": "2026-05-26T10:00:00Z"
+    },
+    {
+      "id": "uuid",
+      "name": "產品需求討論",
+      "status": "ENDED",
+      "startedAt": "2026-05-25T14:00:00Z",
+      "endedAt": "2026-05-25T15:30:00Z",
+      "createdAt": "2026-05-25T13:55:00Z"
+    }
+  ],
+  "total": 10,
+  "page": 1,
+  "perPage": 20
+}
+```
+
+---
+
+### `GET /projects/:projectId/meetings/:meetingId`
+
+取得會議詳細資訊。**需要：檢視權**。
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "name": "每週同步會議",
+  "googleMeetUrl": "https://meet.google.com/abc-defg-hij",
+  "status": "ENDED",
+  "vexaMeetingId": 456,
+  "createdBy": {
+    "vexaUserId": 123,
+    "name": "User Name"
+  },
+  "startedAt": "2026-05-26T10:05:00Z",
+  "endedAt": "2026-05-26T11:00:00Z",
+  "summary": "本次會議討論了 Q3 產品路線圖，確認了三個主要功能的優先順序...",
+  "actionItems": [
+    "User A 在本週五前完成 API 設計文件",
+    "User B 安排與設計師的 wireframe review",
+    "下次會議前確認技術方案可行性"
+  ],
+  "createdAt": "2026-05-26T10:00:00Z",
+  "updatedAt": "2026-05-26T11:05:00Z"
+}
+```
+
+---
+
+### `PATCH /projects/:projectId/meetings/:meetingId`
+
+更新會議名稱。**需要：會議權（目前僅 Owner）**。
+
+**Request**
+```json
+{
+  "name": "更新後的會議名稱"
+}
+```
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "name": "更新後的會議名稱",
+  "updatedAt": "..."
+}
+```
+
+---
+
+### `POST /projects/:projectId/meetings/:meetingId/bot/leave`
+
+讓 Bot 離開會議。**需要：會議權（目前僅 Owner）**。
+僅在 `status = ACTIVE` 時有效。
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "status": "ENDED",
+  "endedAt": "2026-05-26T11:00:00Z"
+}
+```
+
+**離開流程（後端）：**
+```
+① 查詢 meeting.creatorApiTokenId → raw query 取得 vexaToken 字串
+   呼叫 Vexa DELETE /bots/{platform}/{vexaNativeMeetingId}（Header: X-API-Key: vexaToken）
+   （platform 固定為 "google_meet"；vexaNativeMeetingId 來自 meeting_instances 欄位）
+② 更新 MeetingInstance：status: ENDED、endedAt = now()
+③ 關閉此會議的 MeetingSession（取消訂閱 Vexa /ws channel）
+④ 觸發 Dify 總結工作流（非同步，回應 200 後在背景執行）
+   ↳ 讀取 Vexa public.transcriptions WHERE meeting_id = vexaMeetingId
+   ↳ 將逐字稿格式化為 "[speaker]: text" 全文
+   ↳ 呼叫 Dify chat-messages（inputs.mode = "summary", inputs.transcript = 全文）
+   ↳ 更新 MeetingInstance.summary + actionItems
+```
+
+> **注意**：Vexa 的 Bot 控制 API 以 `{platform}/{nativeMeetingId}` 作路由參數，
+> 而非使用 Vexa 回傳的整數 `meeting_id`（後者僅用於查詢 transcriptions）。
+> 因此 `meeting_instances` 需同時儲存兩個 ID。
+
+---
+
+### `GET /projects/:projectId/meetings/:meetingId/transcriptions`
+
+取得會議逐字稿（代理 Vexa public.transcriptions）。**需要：檢視權**。
+
+**Query Params**
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `page` | 1 | |
+| `per_page` | 50 | |
+| `since_id` | — | 取得 id > since_id 的新 segments（用於輪詢） |
+
+**Response 200**
+```json
+{
+  "items": [
+    {
+      "id": 789,
+      "text": "蜜塔，請問這份規則文件是最新版嗎？",
+      "speaker": "Speaker 1",
+      "startTime": 123.45,
+      "endTime": 128.90,
+      "language": "zh",
+      "segmentId": "seg-001",
+      "createdAt": "2026-05-26T10:15:00Z"
+    }
+  ],
+  "total": 150,
+  "page": 1,
+  "perPage": 50
+}
+```
+
+> 進行中的會議（ACTIVE）：前端以每 3 秒輪詢 `?since_id=<last_id>` 取得新 segments。
+> 結束的會議（ENDED）：一次性取得完整逐字稿。
+
+---
+
+## 九、權限矩陣總覽
+
+| Endpoint | Owner | 參與者（has canView） | 參與者（has canEdit） |
+|----------|-------|---------------------|---------------------|
+| `GET /me` | ✅ | ✅ | ✅ |
+| `GET /users/lookup` | ✅ | ✅ | ✅ |
+| `GET /projects` | ✅ | ✅ | ✅ |
+| `POST /projects` | ✅ | ✅ | ✅ |
+| `GET /projects/:id` | ✅ | ✅ | ✅ |
+| `PATCH /projects/:id` | ✅ | ❌ | ❌ |
+| `DELETE /projects/:id` | ✅ | ❌ | ❌ |
+| `GET .../members` | ✅ | ✅ | ✅ |
+| `POST .../members` | ✅ | ❌ | ❌ |
+| `PATCH .../members/:uid` | ✅ | ❌ | ❌ |
+| `DELETE .../members/:uid` | ✅ | ❌ | ❌ |
+| `POST .../materials`（上傳） | ✅ | ❌ | ✅ |
+| `GET .../materials` | ✅ | ✅ | ✅ |
+| `GET .../materials/:mid` | ✅ | ✅ | ✅ |
+| `DELETE .../materials/:mid` | ✅ | ❌ | ✅ |
+| `GET .../history` | ✅ | ✅ | ✅ |
+| `POST .../meetings`（建立+邀Bot） | ✅ | ❌ | ❌ |
+| `GET .../meetings` | ✅ | ✅ | ✅ |
+| `GET .../meetings/:mid` | ✅ | ✅ | ✅ |
+| `PATCH .../meetings/:mid` | ✅ | ❌ | ❌ |
+| `GET .../meetings/:mid/transcriptions` | ✅ | ✅ | ✅ |
+| `POST .../meetings/:mid/bot/leave` | ✅ | ❌ | ❌ |
+
+> 未來若開放參與者的「會議權」，只需將 `POST .../meetings`、`PATCH .../meetings/:mid`、`POST .../meetings/:mid/bot/leave` 改為「has canMeeting」判斷即可，不需修改 API 結構。
+
+---
+
+## 十、後端 Background Jobs
+
+以下為不對外暴露的後端定期任務，於 Hono 服務啟動時一起運行：
+
+### 10.1 Dify 索引狀態輪詢
+
+- **觸發頻率**：每 30 秒
+- **邏輯**：查詢 `indexingStatus = PROCESSING` 的 materials，呼叫 Dify API 更新狀態
+- **相關 Dify endpoint**：`GET /datasets/{dataset_id}/documents/{batch}/indexing-status`
+  （URL 中使用 `batch` 而非 `document_id`；`batch` 儲存於 `materials.dify_batch` 欄位）
+
+```typescript
+// 每 30 秒執行
+setInterval(async () => {
+  const processing = await prisma.material.findMany({
+    where: { indexingStatus: 'PROCESSING', deletedAt: null },
+    include: { project: { select: { difyDatasetId: true } } }
+  })
+  for (const material of processing) {
+    if (!material.difyBatch) continue
+    const status = await dify.getIndexingStatus(
+      material.project.difyDatasetId,
+      material.difyBatch    // ← 使用 batch，非 difyDocumentId
+    )
+    await prisma.material.update({ where: { id: material.id }, data: { indexingStatus: status } })
+  }
+}, 30_000)
+```
+
+### 10.2 MeetingSession 管理
+
+- **觸發**：`POST .../meetings` 成功建立會議實例時
+- **邏輯**：為每個 ACTIVE 會議維護一個 `MeetingSession` 物件（WebSocket + 喚醒詞偵測）
+- **詳見**：`03-資料庫Schema設計.md` 第 4.6 節
+
+### 10.3 Dify 總結工作流
+
+- **觸發**：Bot 離開會議（`POST .../bot/leave` 或 Vexa 偵測到 Bot 掉線）
+- **邏輯**：讀取完整逐字稿 → 呼叫 Dify summary workflow → 更新 MeetingInstance
+- **非同步執行**：回應 200 後在背景執行，完成後透過前端輪詢可見結果
+
+---
+
+## 十一、前端輪詢策略（Real-time）
+
+本專案採用**客戶端輪詢**取代 WebSocket/SSE，降低實作複雜度：
+
+| 場景 | 輪詢 Endpoint | 頻率 | 停止條件 |
+|------|-------------|------|---------|
+| 檔案索引狀態 | `GET .../materials/:id` | 5 秒 | `indexingStatus` 不再是 PROCESSING |
+| 會議 Bot 加入中 | `GET .../meetings/:id` | 3 秒 | `status` 變為 ACTIVE 或失敗 |
+| 進行中會議逐字稿 | `GET .../transcriptions?since_id=X` | 3 秒 | `status` 變為 ENDED |
+| 會議摘要生成中 | `GET .../meetings/:id` | 5 秒 | `summary` 不再為 null |
+
+---
+
+## 十二、環境變數（API 相關）
+
+```bash
+# Hono server
+APP_PORT=4000
+APP_CORS_ORIGINS="http://localhost:3000"
+
+# Dify（兩把獨立 API Key，分別對應不同用途）
+# 完整清單見 03-資料庫Schema設計.md，此處僅列 API 層直接使用的變數
+DIFY_API_BASE="https://api.dify.ai/v1"
+DIFY_DATASET_API_KEY="dataset-..."   # Knowledge Base 操作（上傳/刪除文件、查詢索引狀態）
+DIFY_WORKFLOW_API_KEY="app-..."      # Chatflow Q&A 與 Summary 工作流呼叫
+```
+
+> `NEXTAUTH_SECRET` 僅前端（Next.js）使用，後端不需要。
+> 後端認證改由查詢 `public.api_tokens` 驗證 vexaToken，詳見第一節。
+
+---
+
+*文件結尾*
