@@ -777,9 +777,13 @@ interface PaginatedResponse<T> {
 **建立流程（後端）：**
 ```
 ① 驗證 Google Meet URL 格式，解析出 nativeMeetingId
-   （正規表達式：/meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/）
-   ⚠️ 採用精確長度限制（3-4-3），與 Vexa api-gateway 的驗證邏輯一致，
-      避免通過 meetbot 驗證後在 Vexa 端被 422 拒絕
+   支援兩種格式（與 Vexa `schemas.py construct_meeting_url` 一致）：
+   - 標準碼（3-4-3）：^[a-z]{3}-[a-z]{4}-[a-z]{3}$
+   - Workspace 自訂暱稱：^[a-z0-9][a-z0-9-]{3,38}[a-z0-9]$
+   組合正則（從 URL 解析）：
+   /meet\.google\.com\/((?:[a-z]{3}-[a-z]{4}-[a-z]{3})|(?:[a-z0-9][a-z0-9-]{3,38}[a-z0-9]))/
+   ⚠️ 兩種格式都支援，企業 Workspace 用戶的自訂暱稱（如 my-weekly-standup）可正常使用；
+      只支援標準格式會導致 Workspace 用戶的連結被 meetbot 拒絕但 Vexa 可接受
    ↳ 確認 c.var.vexaTokenScopes 包含 'bot'、'browser'、'tx'
      → 否則 403 INSUFFICIENT_SCOPE（在 DB 寫入前快速失敗，不建立 MeetingInstance）
 ② 檢查邀請者的 activeBotCount < max_concurrent_bots → 否則 409
@@ -807,9 +811,11 @@ interface PaginatedResponse<T> {
                 （同時記錄 startedAt = now()）
    ↳ 失敗（WS 無法連線）→ 呼叫 Vexa DELETE /bots/{platform}/{nativeMeetingId} 撤銷 Bot；
                DB 保留 PENDING 狀態，UI 下次輪詢見 PENDING 可顯示重試提示
-⑥ 傳送歡迎訊息至 Google Meet 聊天室（非同步，不影響本次回應）
-   ↳ 使用 Vexa POST /bots/{platform}/{nativeMeetingId}/chat 傳送預設歡迎文字，
-     介紹蜜塔（Meeta）的使用方式與喚醒詞
+（歡迎訊息不在此流程發送。Vexa 的 /chat 要求 meeting.status == "active"；
+ Bot 此時仍處於 joining/awaiting_admission 階段，立即呼叫 /chat 會回 404。
+ 歡迎訊息由 MeetingSession 的 WS handler 在收到
+ {type: "meeting.status", payload: {status: "active"}} 時非同步發送，
+ 詳見 06-後端架構.md § handleBotStatusChange。）
 ```
 
 > **`voice_agent_enabled: true` 說明**：此旗標讓 Vexa 為該 Bot 啟用語音功能（`/speak`、`/chat` endpoint）。
