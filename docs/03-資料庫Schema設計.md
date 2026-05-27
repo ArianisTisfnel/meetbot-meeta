@@ -241,7 +241,12 @@ enum EditAction {
 enum MeetingStatus {
   PENDING // 會議實例已建立，Bot 尚未加入（Vexa API 呼叫中）
   ACTIVE  // Bot 已成功加入會議，逐字稿進行中
-  ENDED   // 會議已結束，摘要生成完畢
+  ENDED   // 會議已結束（正常）：Bot 主動離開或使用者呼叫 POST /bot/leave
+  FAILED  // 終止態（異常）：
+          //   - 服務重啟時發現的 zombie PENDING（5 分鐘超時清理）
+          //   - Bot 加入失敗（Vexa 回傳 bot callback failed）
+          //   ⚠️ FAILED 與 ENDED 皆不可刪除（保護歷史查詢紀錄）
+          //   前端對 FAILED 狀態顯示錯誤訊息，不顯示重試按鈕
 
   @@map("meeting_status")
   @@schema("app")
