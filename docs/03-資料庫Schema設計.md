@@ -438,9 +438,6 @@ interface MeetingSession {
   difyDatasetId: string             // 決定查詢哪個 Knowledge Base
   creatorVexaToken: string          // 邀請者的 vexa-token（用於呼叫 Vexa Bot API）
                                     // 服務重啟時從 public.api_tokens WHERE id = creatorApiTokenId 取得
-  difyConversationId: string | null // Dify Chatflow 多輪對話 ID（初始 null，
-                                    // 首次 Q&A 後由 Dify 回傳，後續請求持續傳入以保留上下文）
-                                    // 服務重啟後重置為 null（可接受的 trade-off）
   isSpeaking: boolean               // 防語音重疊（TTS 播放中時為 true）
   lastWakeAt: number                // 防重複觸發的 timestamp（ms）
   processedSegmentIds: Set<string>  // 已處理過的 segmentId，防止喚醒詞重複觸發
