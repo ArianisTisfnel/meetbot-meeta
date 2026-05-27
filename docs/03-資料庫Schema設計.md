@@ -437,7 +437,7 @@ if (existing && existing.deletedAt) {
 
 > **無關聯專案的會議**：建立時 `projectId = null`，`MeetingSession.difyDatasetId = null`。
 > Bot Session 中 `dispatchQuestion` 收到喚醒詞後，若 `difyDatasetId` 為 null，
-> 直接回覆「此會議未關聯知識庫，蜜塔無法查詢資料。」並返回，不呼叫 Dify。
+> 以最近 30 段逐字稿作為 context，透過 Claude（`claude-sonnet-4-6`）直接回答；不呼叫 Dify Chatflow。
 
 > **為何需要兩個不同的 ID？**
 > Vexa 的逐字稿查詢（`public.transcriptions`）使用整數 `meeting_id`，
