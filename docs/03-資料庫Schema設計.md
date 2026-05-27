@@ -2,7 +2,7 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.2|
+|文件版本|v1.3|
 |撰寫日期|2026-05-27|
 |依據文件|`01-專案目標.md`、`02-使用者需求.md`|
 |ORM|Prisma（multiSchema）|
@@ -398,6 +398,25 @@ if (existing && existing.deletedAt) {
 }
 ```
 
+> **⚠️ 並發競態（TOCTOU）處理**：兩個請求可能同時通過上方的 `findFirst` 判重，
+> 之後都執行 `prisma.material.create`，其中一個會觸發 PostgreSQL unique constraint 違反。
+> Prisma 以 `PrismaClientKnownRequestError`（code `P2002`）拋出，必須明確捕捉並回傳 409，
+> 否則未處理的 DB 錯誤會變成 500：
+>
+> ```typescript
+> try {
+>   await prisma.material.create({ data: { ... } })
+> } catch (err) {
+>   if (err instanceof PrismaClientKnownRequestError && err.code === 'P2002') {
+>     throw new DuplicateFileError()   // → 409 DUPLICATE_FILE
+>   }
+>   throw err
+> }
+> ```
+
+```typescript
+```
+
 ### 4.4 MeetingInstance 的 vexaMeetingId / vexaNativeMeetingId 為何可為 null
 
 建立會議實例時，需呼叫 Vexa API（`POST /bots`）讓 Bot 加入 Google Meet。
@@ -496,7 +515,7 @@ SUPABASE_STORAGE_BUCKET="meeting-materials"
 # Dify（兩把獨立 API Key，分別對應不同用途）
 DIFY_API_BASE="https://api.dify.ai/v1"
 DIFY_DATASET_API_KEY="dataset-..."   # Knowledge Base 操作：上傳/刪除文件、查詢索引狀態
-DIFY_WORKFLOW_API_KEY="app-..."      # Chatflow Q&A 與 Summary 工作流呼叫
+DIFY_WORKFLOW_API_KEY="app-..."      # Q&A Chatflow 呼叫（僅用於 Q&A；摘要改由 ANTHROPIC_API_KEY 直呼 Claude API）
 ```
 
 ---

@@ -2,7 +2,7 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.2|
+|文件版本|v1.3|
 |撰寫日期|2026-05-27|
 |依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
 |後端框架|Hono（Node.js）|
@@ -475,7 +475,7 @@ interface PaginatedResponse<T> {
 ② 計算 SHA-256，查詢是否有效重複 → 409
 ③ 上傳至 Supabase Storage（路徑：{projectId}/{uuid}/{filename}）
 ④ 呼叫 Dify API 上傳文件至專案的 dataset
-⑤ Prisma create Material（含 difyDocumentId、storagePath）
+⑤ Prisma create Material（含 difyDocumentId、difyBatch、storagePath）
 ⑥ Prisma create MaterialEditHistory（action: UPLOAD）
    ↳ 任一步驟失敗：逆序 rollback
 ```
@@ -640,7 +640,9 @@ interface PaginatedResponse<T> {
 **建立流程（後端）：**
 ```
 ① 驗證 Google Meet URL 格式，解析出 nativeMeetingId
-   （正規表達式：/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/）
+   （正規表達式：/meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/）
+   ⚠️ 採用精確長度限制（3-4-3），與 Vexa api-gateway 的驗證邏輯一致，
+      避免通過 meetbot 驗證後在 Vexa 端被 422 拒絕
    ↳ 確認 c.var.vexaTokenScopes 包含 'bot'、'browser'、'tx'
      → 否則 403 INSUFFICIENT_SCOPE（在 DB 寫入前快速失敗，不建立 MeetingInstance）
 ② 檢查邀請者的 activeBotCount < max_concurrent_bots → 否則 409
@@ -658,8 +660,14 @@ interface PaginatedResponse<T> {
    ↳ 其他錯誤（網路、逾時等） → 保留 PENDING 狀態，UI 顯示重試按鈕；終止後續步驟
 ⑤ 啟動後端 MeetingSession（訂閱 Vexa /ws 的三條 channel + 喚醒詞監聽）
    ↳ 成功 → 更新 DB：vexaMeetingId、vexaNativeMeetingId（= nativeMeetingId）、
-             creatorApiTokenId（= 當前 vexaToken 在 public.api_tokens 中的 id）、
-             status: ACTIVE、startedAt
+             creatorApiTokenId（= 當前 vexaToken 在 public.api_tokens 中的 id）；
+             **DB 維持 PENDING 狀態，不在此時設 ACTIVE**
+             ⚠️ Vexa Bot 需歷經 joining → awaiting_admission → active 各階段
+                若提前設 ACTIVE，在 Vexa meeting.status ≠ "active" 期間呼叫 /speak 或 /chat
+                會因 Vexa _find_active_meeting 回傳 404 而失敗
+                DB 轉 ACTIVE 由 MeetingSession 的 WS 訊息處理器負責，
+                待收到 {type: "meeting.status", payload: {status: "active"}} 後自動更新
+                （同時記錄 startedAt = now()）
    ↳ 失敗（WS 無法連線）→ 呼叫 Vexa DELETE /bots/{platform}/{nativeMeetingId} 撤銷 Bot；
                DB 保留 PENDING 狀態，UI 下次輪詢見 PENDING 可顯示重試提示
 ⑥ 傳送歡迎訊息至 Google Meet 聊天室（非同步，不影響本次回應）
