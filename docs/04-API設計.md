@@ -793,15 +793,28 @@ interface PaginatedResponse<T> {
 
 ### `GET /projects/:projectId/meetings/:meetingId/transcriptions`
 
-取得會議逐字稿（代理 Vexa public.transcriptions）。**需要：檢視權**。
+取得會議逐字稿。**需要：檢視權**。
+
+> **實作注意（資料來源依會議狀態不同）**：
+>
+> - **ENDED**：查詢 `public.transcriptions`（Prisma raw query）。Vexa collector 會在會議結束後將
+>   所有 Redis 熱段落 flush 至 DB，此時 DB 資料完整。使用 `id`（整數自增）做 cursor。
+>
+> - **ACTIVE**：查詢 Redis Hash `meeting:{vexaMeetingId}:segments`（直接存取同一 Redis 實例）。
+>   `public.transcriptions` 在會議進行中可能尚未同步，直接查 DB **會漏失最新 N 秒的熱段落**。
+>   Redis Hash 以 `segment_id`（字串）為 key，`start_time`（float）為排序依據。
+>   使用 `since_start_time`（float，秒）做 cursor。
+>
+> 前端呼叫方式不變；`since_id` 參數對 ACTIVE 會議無效，改用 `since_start_time`。
 
 **Query Params**
 
 | 參數 | 預設 | 說明 |
 |------|------|------|
-| `page` | 1 | |
-| `per_page` | 50 | |
-| `since_id` | — | 取得 id > since_id 的新 segments（用於輪詢） |
+| `page` | 1 | 僅用於 ENDED 會議 |
+| `per_page` | 50 | 僅用於 ENDED 會議 |
+| `since_id` | — | ENDED 會議：取得 id > since_id 的新 segments |
+| `since_start_time` | — | ACTIVE 會議：取得 start_time > N（秒）的新 segments |
 
 **Response 200**
 ```json
@@ -824,8 +837,8 @@ interface PaginatedResponse<T> {
 }
 ```
 
-> 進行中的會議（ACTIVE）：前端以每 3 秒輪詢 `?since_id=<last_id>` 取得新 segments。
-> 結束的會議（ENDED）：一次性取得完整逐字稿。
+> 進行中的會議（ACTIVE）：前端以每 3 秒輪詢 `?since_start_time=<last_end_time>` 取得新 segments。
+> 結束的會議（ENDED）：前端可一次性取得完整逐字稿，或使用 `?since_id=<last_id>` 增量取得。
 
 ---
 

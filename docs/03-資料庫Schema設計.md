@@ -376,8 +376,19 @@ if (existing && !existing.deletedAt) {
 
 if (existing && existing.deletedAt) {
   // 同一檔案曾被刪除，允許重新上傳
-  // 策略：復原舊紀錄（清除 deletedAt）或建立新紀錄（需先刪除舊的 unique 紀錄）
-  // 建議：建立新紀錄，保留刪除歷史 → 先對舊紀錄做 update 清除 sha256，再 create 新紀錄
+  // 策略：建立新紀錄，保留刪除歷史（完整審計軌跡）
+  //   步驟 1：對舊紀錄設 sha256 = `DELETED_${existing.id}`（騰出 unique slot）
+  //   步驟 2：建立新紀錄（sha256 = 實際雜湊值）
+  //
+  // ⚠️ sha256 為 String NOT NULL，有以下限制：
+  //   - 不可設 null（欄位定義不允許）
+  //   - 不可設 ""（多個 soft-deleted 同檔會再次衝突）
+  //   - 使用 `DELETED_<uuid>` sentinel：全域唯一、可辨識、不影響判重邏輯
+  await prisma.material.update({
+    where: { id: existing.id },
+    data: { sha256: `DELETED_${existing.id}` },  // 騰出 unique slot
+  })
+  // 繼續執行 prisma.material.create(...) 建立新紀錄
 }
 ```
 
