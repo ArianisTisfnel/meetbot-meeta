@@ -2,8 +2,8 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.3|
-|撰寫日期|2026-05-27|
+|文件版本|v1.4|
+|撰寫日期|2026-05-28|
 |依據文件|`01-專案目標.md`、`02-使用者需求.md`|
 |ORM|Prisma（multiSchema）|
 |資料庫|Supabase PostgreSQL|
@@ -42,6 +42,7 @@ Supabase PostgreSQL
 - `projects`、`materials` 採 soft delete（`deleted_at` 欄位）
 - `meeting_instances` **不可刪除**（無 `deleted_at`），保護歷史逐字稿
 - `project_members`、`material_edit_history` 採硬刪除或不刪除（歷史紀錄）
+- `meeting_instances.project_id` 為 **nullable**：使用者可建立不關聯任何專案的獨立會議實例（無 Dify Knowledge Base，Q&A 功能停用，但逐字稿與摘要功能正常）
 
 ---
 
@@ -177,7 +178,9 @@ model MaterialEditHistory {
 /// 會議實例（不可刪除，保護歷史逐字稿）
 model MeetingInstance {
   id                   String        @id @default(uuid())
-  projectId            String        @map("project_id")
+  /// 關聯的專案（可為 null：使用者選擇不關聯任何專案時建立獨立會議實例）
+  /// null 時 Bot 仍可提供逐字稿與摘要，但 Dify Q&A 功能停用（無 Knowledge Base）
+  projectId            String?       @map("project_id")
   /// 對應 Vexa 的 meeting ID（整數，邀請 Bot 後由 POST /bots 回傳）
   /// 在 Bot 成功加入前為 null（PENDING 狀態）
   vexaMeetingId        Int?          @map("vexa_meeting_id")
@@ -208,9 +211,11 @@ model MeetingInstance {
   createdAt            DateTime      @default(now()) @map("created_at")
   updatedAt            DateTime      @updatedAt @map("updated_at")
 
-  project Project @relation(fields: [projectId], references: [id])
+  /// projectId 為 nullable，關聯設為可選
+  project Project? @relation(fields: [projectId], references: [id])
 
-  @@index([projectId, createdAt(sort: Desc)])
+  @@index([projectId, createdAt(sort: Desc)])   // 專案會議清單分頁（projectId IS NOT NULL 查詢）
+  @@index([createdByVexaUserId, createdAt(sort: Desc)])  // 全局 Meetings 頁面分頁（跨專案 + 無專案）
   @@index([vexaMeetingId])
   @@index([status])
   @@index([createdByVexaUserId, status])   // activeBotCount 查詢（GET /me 及建立會議前並發檢查）
@@ -322,7 +327,7 @@ app.projects
     ├─── app.project_members.project_id  ──►  [1:N]
     ├─── app.materials.project_id        ──►  [1:N]
     ├─── app.material_edit_history.project_id ──► [1:N]
-    └─── app.meeting_instances.project_id ──► [1:N]
+    └─── app.meeting_instances.project_id ──► [1:N, nullable]  // null = 獨立會議（無關聯專案）
 
 app.materials
     └─── app.material_edit_history.material_id ──► [1:N]
@@ -429,6 +434,10 @@ if (existing && existing.deletedAt) {
     用於呼叫 Vexa 的 `/speak`、`/chat`、`DELETE /bots` 等 Bot 控制 API
 - **加入失敗**：保留 `PENDING` 狀態並記錄錯誤，UI 顯示重試選項
 
+> **無關聯專案的會議**：建立時 `projectId = null`，`MeetingSession.difyDatasetId = null`。
+> Bot Session 中 `dispatchQuestion` 收到喚醒詞後，若 `difyDatasetId` 為 null，
+> 直接回覆「此會議未關聯知識庫，蜜塔無法查詢資料。」並返回，不呼叫 Dify。
+
 > **為何需要兩個不同的 ID？**
 > Vexa 的逐字稿查詢（`public.transcriptions`）使用整數 `meeting_id`，
 > 而 Bot 控制 API（`/speak`、`/chat` 等）使用 `{platform}/{native_meeting_id}` 路徑，
@@ -460,7 +469,7 @@ interface MeetingSession {
   platform: string                  // 固定為 "google_meet"
   nativeMeetingId: string           // Google Meet code，例如 "abc-defg-hij"
                                     // 用於呼叫 Vexa Bot API（/speak、/chat、DELETE /bots）
-  difyDatasetId: string             // 決定查詢哪個 Knowledge Base
+  difyDatasetId: string | null      // 決定查詢哪個 Knowledge Base（null = 無關聯專案，Q&A 功能停用）
   creatorVexaToken: string          // 邀請者的 vexa-token（用於呼叫 Vexa Bot API）
                                     // 服務重啟時從 public.api_tokens WHERE id = creatorApiTokenId 取得
   isSpeaking: boolean               // 防語音重疊（TTS 播放中時為 true）
@@ -494,7 +503,8 @@ const activeSessions = new Map<string, MeetingSession>()
 | `materials` | `indexing_status` | Background job 輪詢 PROCESSING 狀態 |
 | `material_edit_history` | `(project_id, performed_at DESC)` | 專案歷史紀錄分頁 |
 | `material_edit_history` | `material_id` | 單一檔案的操作歷史 |
-| `meeting_instances` | `(project_id, created_at DESC)` | 專案會議清單分頁 |
+| `meeting_instances` | `(project_id, created_at DESC)` | 專案會議清單分頁（project_id IS NOT NULL 查詢） |
+| `meeting_instances` | `(created_by_vexa_user_id, created_at DESC)` | 全局 Meetings 頁面分頁（跨專案 + 無專案） |
 | `meeting_instances` | `vexa_meeting_id` | 接收 Vexa WS 狀態事件時查找對應實例 |
 | `meeting_instances` | `status` | 查詢所有進行中的會議（ACTIVE），用於服務重啟後恢復 session |
 | `meeting_instances` | `(created_by_vexa_user_id, status)` | activeBotCount 查詢（`GET /me` 及建立會議前的並發檢查） |

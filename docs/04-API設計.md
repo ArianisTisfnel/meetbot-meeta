@@ -2,8 +2,8 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.3|
-|撰寫日期|2026-05-27|
+|文件版本|v1.4|
+|撰寫日期|2026-05-28|
 |依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
 |後端框架|Hono（Node.js）|
 |Base URL（開發）|`http://localhost:4000`|
@@ -179,6 +179,16 @@ interface PaginatedResponse<T> {
 ### `GET /projects`
 
 取得當前使用者有關聯的所有專案（包含身為 owner 與 participant 的）。
+
+**Query Params**
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `search` | — | 依專案名稱搜尋（模糊匹配） |
+| `type` | `all` | 篩選類型（`all` / `owned`：使用者為 Owner / `shared`：使用者為 Participant） |
+| `order` | `desc` | 排序方向（`asc` / `desc`，依建立時間） |
+| `page` | 1 | 頁碼 |
+| `per_page` | 20 | 每頁筆數 |
 
 **Response 200**
 ```json
@@ -606,7 +616,134 @@ interface PaginatedResponse<T> {
 
 ---
 
-## 八、會議實例 API
+## 八、全局會議 API
+
+這組 API 不以專案為前綴，用於：全局建立會議（可不關聯專案）、跨專案的 Meetings 頁面列表。
+
+### `POST /meetings`
+
+全局建立會議實例，`projectId` 選填。**需要：登入使用者**（若提供 `projectId`，需具備該專案的**會議權**）。
+
+**Request**
+```json
+{
+  "googleMeetUrl": "https://meet.google.com/abc-defg-hij",
+  "name": "每週同步會議",
+  "projectId": "uuid"    // 選填，省略則建立無關聯專案的獨立會議
+}
+```
+
+**Response 201**
+```json
+{
+  "id": "uuid",
+  "name": "每週同步會議",
+  "googleMeetUrl": "https://meet.google.com/abc-defg-hij",
+  "status": "PENDING",
+  "projectId": "uuid",           // 若有關聯，否則為 null
+  "projectName": "Q3 產品規劃",  // 若有關聯，否則為 null
+  "createdBy": {
+    "vexaUserId": 123,
+    "name": "User Name"
+  },
+  "createdAt": "2026-05-26T10:00:00Z"
+}
+```
+
+**建立流程（後端）：**
+```
+① 驗證 Google Meet URL 格式，解析 nativeMeetingId
+   ↳ 確認 vexaTokenScopes 包含 'bot'、'browser'、'tx'，否則 403 INSUFFICIENT_SCOPE
+② 若有 projectId：驗證當前使用者對該專案具備會議權（owner）→ 否則 403 PERMISSION_DENIED
+   取得 project.difyDatasetId（供 MeetingSession 使用）
+   若無 projectId：difyDatasetId = null（Bot 不進行 Q&A）
+③ 後續流程與 POST /projects/:projectId/meetings 相同（步驟②~⑥）
+```
+
+**Error cases**
+```json
+// 403：Token scope 不足
+{ "error_code": "INSUFFICIENT_SCOPE", ... }
+
+// 403：提供了 projectId 但無會議權
+{ "error_code": "PERMISSION_DENIED", "message": "您對此專案沒有建立會議的權限" }
+
+// 409：Bot 並發上限
+{ "error_code": "BOT_CONCURRENT_LIMIT", ... }
+```
+
+---
+
+### `GET /meetings`
+
+取得當前使用者所有相關會議實例（跨專案整合 + 無關聯專案的獨立會議）。
+
+**Query Params**
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `page` | 1 | |
+| `per_page` | 20 | |
+| `search` | — | 依會議名稱或關聯專案名稱搜尋（模糊匹配） |
+| `since` | — | 篩選最近 N 天內的會議（可選值：`1` / `3` / `7`） |
+| `order` | `desc` | 排序方向（`asc` / `desc`，依 `created_at`） |
+| `status` | — | 篩選狀態（`PENDING` / `ACTIVE` / `ENDED`） |
+
+> **回傳範圍**：該使用者**建立**的所有會議，加上所屬專案中具備**檢視權**的所有會議。
+
+**Response 200**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "name": "每週同步會議",
+      "status": "ACTIVE",
+      "projectId": "uuid",
+      "projectName": "Q3 產品規劃",
+      "startedAt": "2026-05-26T10:05:00Z",
+      "endedAt": null,
+      "createdAt": "2026-05-26T10:00:00Z"
+    },
+    {
+      "id": "uuid",
+      "name": "臨時會議",
+      "status": "ENDED",
+      "projectId": null,
+      "projectName": null,
+      "startedAt": "2026-05-26T09:00:00Z",
+      "endedAt": "2026-05-26T09:45:00Z",
+      "createdAt": "2026-05-26T08:55:00Z"
+    }
+  ],
+  "total": 15,
+  "page": 1,
+  "perPage": 20
+}
+```
+
+---
+
+### `GET /meetings/:meetingId`
+
+全局存取單一會議詳細資訊（適用於無關聯專案的會議，或從 Meetings 頁面直接進入）。
+
+**需要**：當前使用者為該會議的建立者，或具備關聯專案的**檢視權**。若無關聯專案則僅建立者可存取。
+
+**Response 200**
+
+回應格式同 `GET /projects/:projectId/meetings/:meetingId`，額外包含：
+```json
+{
+  "projectId": null,      // 若無關聯專案為 null
+  "projectName": null,
+  ...（其餘欄位同專案內的會議詳情）
+}
+```
+
+---
+
+## 九、專案內會議 API
 
 ### `POST /projects/:projectId/meetings`
 
@@ -710,6 +847,9 @@ interface PaginatedResponse<T> {
 |------|------|------|
 | `page` | 1 | |
 | `per_page` | 20 | |
+| `search` | — | 依會議名稱搜尋 |
+| `since` | — | 篩選最近 N 天內（`1` / `3` / `7`） |
+| `order` | `desc` | 排序方向（`asc` / `desc`，依 `created_at`） |
 | `status` | — | 篩選（PENDING / ACTIVE / ENDED） |
 
 **Response 200**
@@ -880,38 +1020,45 @@ interface PaginatedResponse<T> {
 
 ---
 
-## 九、權限矩陣總覽
+## 十、權限矩陣總覽
 
-| Endpoint | Owner | 參與者（has canView） | 參與者（has canEdit） |
-|----------|-------|---------------------|---------------------|
-| `GET /me` | ✅ | ✅ | ✅ |
-| `GET /users/lookup` | ✅ | ✅ | ✅ |
-| `GET /projects` | ✅ | ✅ | ✅ |
-| `POST /projects` | ✅ | ✅ | ✅ |
-| `GET /projects/:id` | ✅ | ✅ | ✅ |
-| `PATCH /projects/:id` | ✅ | ❌ | ❌ |
-| `DELETE /projects/:id` | ✅ | ❌ | ❌ |
-| `GET .../members` | ✅ | ✅ | ✅ |
-| `POST .../members` | ✅ | ❌ | ❌ |
-| `PATCH .../members/:uid` | ✅ | ❌ | ❌ |
-| `DELETE .../members/:uid` | ✅ | ❌ | ❌ |
-| `POST .../materials`（上傳） | ✅ | ❌ | ✅ |
-| `GET .../materials` | ✅ | ✅ | ✅ |
-| `GET .../materials/:mid` | ✅ | ✅ | ✅ |
-| `DELETE .../materials/:mid` | ✅ | ❌ | ✅ |
-| `GET .../history` | ✅ | ✅ | ✅ |
-| `POST .../meetings`（建立+邀Bot） | ✅ | ❌ | ❌ |
-| `GET .../meetings` | ✅ | ✅ | ✅ |
-| `GET .../meetings/:mid` | ✅ | ✅ | ✅ |
-| `PATCH .../meetings/:mid` | ✅ | ❌ | ❌ |
-| `GET .../meetings/:mid/transcriptions` | ✅ | ✅ | ✅ |
-| `POST .../meetings/:mid/bot/leave` | ✅ | ❌ | ❌ |
+| Endpoint | Owner | 參與者（has canView） | 參與者（has canEdit） | 任意登入使用者 |
+|----------|-------|---------------------|---------------------|--------------|
+| `GET /me` | ✅ | ✅ | ✅ | ✅ |
+| `GET /users/lookup` | ✅ | ✅ | ✅ | ✅ |
+| `POST /meetings`（全局建立） | ✅ | ✅ | ✅ | ✅（projectId 留空時）|
+| `GET /meetings`（全局列表） | ✅ | ✅ | ✅ | ✅ |
+| `GET /meetings/:mid`（全局存取） | ✅ | ✅ | ✅ | ✅（建立者）|
+| `GET /projects` | ✅ | ✅ | ✅ | ✅ |
+| `POST /projects` | ✅ | ✅ | ✅ | ✅ |
+| `GET /projects/:id` | ✅ | ✅ | ✅ | ❌ |
+| `PATCH /projects/:id` | ✅ | ❌ | ❌ | ❌ |
+| `DELETE /projects/:id` | ✅ | ❌ | ❌ | ❌ |
+| `GET .../members` | ✅ | ✅ | ✅ | ❌ |
+| `POST .../members` | ✅ | ❌ | ❌ | ❌ |
+| `PATCH .../members/:uid` | ✅ | ❌ | ❌ | ❌ |
+| `DELETE .../members/:uid` | ✅ | ❌ | ❌ | ❌ |
+| `POST .../materials`（上傳） | ✅ | ❌ | ✅ | ❌ |
+| `GET .../materials` | ✅ | ✅ | ✅ | ❌ |
+| `GET .../materials/:mid` | ✅ | ✅ | ✅ | ❌ |
+| `DELETE .../materials/:mid` | ✅ | ❌ | ✅ | ❌ |
+| `GET .../history` | ✅ | ✅ | ✅ | ❌ |
+| `POST /projects/.../meetings`（專案內建立） | ✅ | ❌ | ❌ | ❌ |
+| `GET /projects/.../meetings` | ✅ | ✅ | ✅ | ❌ |
+| `GET /projects/.../meetings/:mid` | ✅ | ✅ | ✅ | ❌ |
+| `PATCH /projects/.../meetings/:mid` | ✅ | ❌ | ❌ | ❌ |
+| `GET /projects/.../meetings/:mid/transcriptions` | ✅ | ✅ | ✅ | ❌ |
+| `POST /projects/.../meetings/:mid/bot/leave` | ✅ | ❌ | ❌ | ❌ |
 
+> **全局 `POST /meetings` 的 projectId 驗證**：
+> - `projectId` 留空 → 任意登入使用者皆可建立（獨立會議）
+> - `projectId` 有值 → 需具備該專案的**會議權**（Owner），否則 403 PERMISSION_DENIED
+>
 > 未來若開放參與者的「會議權」，只需將 `POST .../meetings`、`PATCH .../meetings/:mid`、`POST .../meetings/:mid/bot/leave` 改為「has canMeeting」判斷即可，不需修改 API 結構。
 
 ---
 
-## 十、後端 Background Jobs
+## 十一、後端 Background Jobs
 
 以下為不對外暴露的後端定期任務，於 Hono 服務啟動時一起運行：
 
@@ -954,7 +1101,7 @@ setInterval(async () => {
 
 ---
 
-## 十一、前端輪詢策略（Real-time）
+## 十二、前端輪詢策略（Real-time）
 
 本專案採用**客戶端輪詢**取代 WebSocket/SSE，降低實作複雜度：
 
@@ -967,7 +1114,7 @@ setInterval(async () => {
 
 ---
 
-## 十二、環境變數（API 相關）
+## 十三、環境變數（API 相關）
 
 ```bash
 # Hono server
