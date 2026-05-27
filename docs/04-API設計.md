@@ -2,8 +2,8 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.1|
-|撰寫日期|2026-05-26|
+|文件版本|v1.2|
+|撰寫日期|2026-05-27|
 |依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
 |後端框架|Hono（Node.js）|
 |Base URL（開發）|`http://localhost:4000`|
@@ -635,13 +635,15 @@ interface PaginatedResponse<T> {
    （正規表達式：/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/）
 ② 檢查邀請者的 activeBotCount < max_concurrent_bots → 否則 409
 ③ Prisma create MeetingInstance（status: PENDING）
-④ 呼叫 Vexa POST /bots（使用邀請者的 vexaToken，需帶 voice_agent_enabled: true）
-   ↳ 成功 → 回傳 vexaMeetingId（整數）
-           更新：vexaMeetingId、vexaNativeMeetingId（= nativeMeetingId）、
-                 creatorApiTokenId（= 當前 vexaToken 在 public.api_tokens 中的 id）、
-                 status: ACTIVE、startedAt
-   ↳ 失敗 → 保留 PENDING 狀態，UI 顯示重試按鈕
+④ 呼叫 Vexa POST /bots（使用邀請者的 vexaToken，需帶 voice_agent_enabled: true、bot_name: "蜜塔"）
+   ↳ 成功 → 取得 vexaMeetingId（整數），暫存但**不更新** DB 狀態
+   ↳ 失敗 → 保留 PENDING 狀態，UI 顯示重試按鈕；終止後續步驟
 ⑤ 啟動後端 MeetingSession（訂閱 Vexa /ws 的三條 channel + 喚醒詞監聽）
+   ↳ 成功 → 更新 DB：vexaMeetingId、vexaNativeMeetingId（= nativeMeetingId）、
+             creatorApiTokenId（= 當前 vexaToken 在 public.api_tokens 中的 id）、
+             status: ACTIVE、startedAt
+   ↳ 失敗（WS 無法連線）→ 呼叫 Vexa DELETE /bots/{platform}/{nativeMeetingId} 撤銷 Bot；
+               DB 保留 PENDING 狀態，UI 下次輪詢見 PENDING 可顯示重試提示
 ⑥ 傳送歡迎訊息至 Google Meet 聊天室（非同步，不影響本次回應）
    ↳ 使用 Vexa POST /bots/{platform}/{nativeMeetingId}/chat 傳送預設歡迎文字，
      介紹蜜塔（Meeta）的使用方式與喚醒詞
@@ -649,6 +651,9 @@ interface PaginatedResponse<T> {
 
 > **`voice_agent_enabled: true` 說明**：此旗標讓 Vexa 為該 Bot 啟用語音功能（`/speak`、`/chat` endpoint）。
 > 若建立 Bot 時未帶此旗標，TTS 語音回覆與聊天室傳訊將無法使用。
+>
+> **`bot_name: "蜜塔"` 說明**：Bot 在 Google Meet 中顯示的暱稱。若省略，Vexa 預設使用 `VexaBot-{6位隨機碼}`，
+> 與會者將看不到「蜜塔」這個名字。
 
 **Error cases**
 ```json
@@ -778,10 +783,10 @@ interface PaginatedResponse<T> {
    （platform 固定為 "google_meet"；vexaNativeMeetingId 來自 meeting_instances 欄位）
 ② 更新 MeetingInstance：status: ENDED、endedAt = now()
 ③ 關閉此會議的 MeetingSession（取消訂閱 Vexa /ws channel）
-④ 觸發 Dify 總結工作流（非同步，回應 200 後在背景執行）
-   ↳ 讀取 Vexa public.transcriptions WHERE meeting_id = vexaMeetingId
+④ 觸發摘要工作流（非同步，回應 200 後在背景執行）
+   ↳ 呼叫 Vexa REST API GET /transcripts/{platform}/{vexaNativeMeetingId}，取得全量逐字稿
    ↳ 將逐字稿格式化為 "[speaker]: text" 全文
-   ↳ 呼叫 Dify chat-messages（inputs.mode = "summary", inputs.transcript = 全文）
+   ↳ 呼叫 Claude API（claude-sonnet-4-6）直接生成摘要與交辦事項（詳見 06-後端架構.md § 6）
    ↳ 更新 MeetingInstance.summary + actionItems
 ```
 
@@ -795,17 +800,19 @@ interface PaginatedResponse<T> {
 
 取得會議逐字稿。**需要：檢視權**。
 
-> **實作注意（資料來源依會議狀態不同）**：
+> **實作注意（統一透過 Vexa REST API 取得）**：
 >
-> - **ENDED**：查詢 `public.transcriptions`（Prisma raw query）。Vexa collector 會在會議結束後將
->   所有 Redis 熱段落 flush 至 DB，此時 DB 資料完整。使用 `id`（整數自增）做 cursor。
+> 無論 ACTIVE 或 ENDED，均呼叫：
+> `GET /transcripts/{platform}/{vexaNativeMeetingId}`（Header: `X-API-Key: <inviterVexaToken>`）
 >
-> - **ACTIVE**：查詢 Redis Hash `meeting:{vexaMeetingId}:segments`（直接存取同一 Redis 實例）。
->   `public.transcriptions` 在會議進行中可能尚未同步，直接查 DB **會漏失最新 N 秒的熱段落**。
->   Redis Hash 以 `segment_id`（字串）為 key，`start_time`（float）為排序依據。
->   使用 `since_start_time`（float，秒）做 cursor。
+> Vexa 內部已處理 Redis（熱段落）與 Postgres（已落盤段落）的合併，
+> meetbot backend 無需直接存取 Redis 或 `public.transcriptions`。
 >
-> 前端呼叫方式不變；`since_id` 參數對 ACTIVE 會議無效，改用 `since_start_time`。
+> - **增量 cursor**：backend 從 Vexa 取全量後，以 `since_start_time`（float，秒）在記憶體過濾後回傳
+> - **ENDED 會議**：逐字稿靜態，前端一次性取完即可；可搭配 `page`/`per_page` 分頁
+> - **ACTIVE 會議**：前端以 3 秒輪詢 `?since_start_time=<last_end_time>` 取得新 segments
+>
+> ⚠️ `since_id` 參數已移除（Vexa REST API 不暴露整數 `id`，見 `schemas.py TranscriptionSegment`）
 
 **Query Params**
 
@@ -813,15 +820,13 @@ interface PaginatedResponse<T> {
 |------|------|------|
 | `page` | 1 | 僅用於 ENDED 會議 |
 | `per_page` | 50 | 僅用於 ENDED 會議 |
-| `since_id` | — | ENDED 會議：取得 id > since_id 的新 segments |
-| `since_start_time` | — | ACTIVE 會議：取得 start_time > N（秒）的新 segments |
+| `since_start_time` | — | 取得 start_time > N（秒）的新 segments（ACTIVE/ENDED 皆適用） |
 
 **Response 200**
 ```json
 {
   "items": [
     {
-      "id": 789,
       "text": "蜜塔，請問這份規則文件是最新版嗎？",
       "speaker": "Speaker 1",
       "startTime": 123.45,
@@ -838,7 +843,7 @@ interface PaginatedResponse<T> {
 ```
 
 > 進行中的會議（ACTIVE）：前端以每 3 秒輪詢 `?since_start_time=<last_end_time>` 取得新 segments。
-> 結束的會議（ENDED）：前端可一次性取得完整逐字稿，或使用 `?since_id=<last_id>` 增量取得。
+> 結束的會議（ENDED）：逐字稿為靜態資料，前端一次性取完即可；可搭配 `page`/`per_page` 分頁讀取。
 
 ---
 
@@ -908,10 +913,10 @@ setInterval(async () => {
 - **邏輯**：為每個 ACTIVE 會議維護一個 `MeetingSession` 物件（WebSocket + 喚醒詞偵測）
 - **詳見**：`03-資料庫Schema設計.md` 第 4.6 節
 
-### 10.3 Dify 總結工作流
+### 10.3 摘要工作流
 
 - **觸發**：Bot 離開會議（`POST .../bot/leave` 或 Vexa 偵測到 Bot 掉線）
-- **邏輯**：讀取完整逐字稿 → 呼叫 Dify summary workflow → 更新 MeetingInstance
+- **邏輯**：呼叫 Vexa REST API 取全量逐字稿 → 呼叫 Claude API（`claude-sonnet-4-6`）生成摘要與交辦事項 → 更新 MeetingInstance
 - **非同步執行**：回應 200 後在背景執行，完成後透過前端輪詢可見結果
 
 ---
@@ -924,7 +929,7 @@ setInterval(async () => {
 |------|-------------|------|---------|
 | 檔案索引狀態 | `GET .../materials/:id` | 5 秒 | `indexingStatus` 不再是 PROCESSING |
 | 會議 Bot 加入中 | `GET .../meetings/:id` | 3 秒 | `status` 變為 ACTIVE 或失敗 |
-| 進行中會議逐字稿 | `GET .../transcriptions?since_id=X` | 3 秒 | `status` 變為 ENDED |
+| 進行中會議逐字稿 | `GET .../transcriptions?since_start_time=X` | 3 秒 | `status` 變為 ENDED |
 | 會議摘要生成中 | `GET .../meetings/:id` | 5 秒 | `summary` 不再為 null |
 
 ---
@@ -940,7 +945,10 @@ APP_CORS_ORIGINS="http://localhost:3000"
 # 完整清單見 03-資料庫Schema設計.md，此處僅列 API 層直接使用的變數
 DIFY_API_BASE="https://api.dify.ai/v1"
 DIFY_DATASET_API_KEY="dataset-..."   # Knowledge Base 操作（上傳/刪除文件、查詢索引狀態）
-DIFY_WORKFLOW_API_KEY="app-..."      # Chatflow Q&A 與 Summary 工作流呼叫
+DIFY_WORKFLOW_API_KEY="app-..."      # Chatflow Q&A（Q&A 由 Dify Chatflow 處理）
+
+# Claude（Anthropic）
+ANTHROPIC_API_KEY="sk-ant-..."       # 摘要生成專用（claude-sonnet-4-6）
 ```
 
 > `NEXTAUTH_SECRET` 僅前端（Next.js）使用，後端不需要。
