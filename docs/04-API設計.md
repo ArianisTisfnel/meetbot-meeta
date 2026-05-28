@@ -2,8 +2,8 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.5|
-|撰寫日期|2026-05-28|
+|文件版本|v1.6|
+|撰寫日期|2026-05-29|
 |依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
 |後端框架|Hono（Node.js）|
 |Base URL（開發）|`http://localhost:4000`|
@@ -27,9 +27,11 @@
 Backend 呼叫 Vexa Bot API（例如邀請 Bot、傳送訊息）
   └→ 直接使用前端送來的 vexaToken
   └→ Header: X-API-Key: <vexaToken>
-  └→ ⚠️ 此 token 必須具備 bot、browser、tx 三個 scope（Vexa api-gateway ROUTE_SCOPES 強制驗證）
-     /bots 需要 {"bot","browser"}；/transcripts 需要 {"tx"}
-     auth middleware 在 token 驗證時同步讀取並注入 scopes，供 handler 在呼叫 Vexa 前快速失敗
+  └→ ⚠️ 此 token 必須具備 bot、browser、tx 三個 scope（Vexa api-gateway 分路徑各自驗證：
+     /bots 需要 {"bot","browser"}；/transcripts 需要 {"tx"}）
+     meetbot auth middleware 在 token 驗證時統一預檢三個 scope：
+     缺少任一項時雖 /bots 本身不會被 Vexa 擋下，但後續逐字稿查詢（含 generateSummaryAsync）
+     會以 Vexa 403 失敗；前置統一檢查確保錯誤在 meetbot 層給出明確的 INSUFFICIENT_SCOPE 訊息
 ```
 
 ### 1.2 統一請求 Header
@@ -803,7 +805,7 @@ interface PaginatedResponse<T> {
 |------|------|------|
 | `page` | 1 | 僅用於 ENDED 會議 |
 | `per_page` | 50 | 僅用於 ENDED 會議 |
-| `since_start_time` | — | 取得 start_time > N（秒）的新 segments（ACTIVE/ENDED 皆適用） |
+| `since_start_time` | — | 取得 start_time >= N（秒）的 segments（ACTIVE/ENDED 皆適用；含邊界值，前端以 segment_id 去重） |
 
 **Response 200**（格式同§九的逐字稿端點）
 
@@ -1026,6 +1028,10 @@ interface PaginatedResponse<T> {
 ① 查詢 meeting.creatorApiTokenId → raw query 取得 vexaToken 字串
    呼叫 Vexa DELETE /bots/{platform}/{vexaNativeMeetingId}（Header: X-API-Key: vexaToken）
    （platform 固定為 "google_meet"；vexaNativeMeetingId 來自 meeting_instances 欄位）
+② 呼叫 handleSessionClose(meetingInstanceId)——步驟②③④ 由此函式原子執行：
+   ⚠️ 不可將②③④拆開逐步執行：handleSessionClose 在首行即刪除 Map entry（原子鎖），
+   確保 Vexa WS 同時發出的 meeting.status:completed 事件不會觸發第二次摘要生成。
+   （詳見 06-後端架構.md § handleSessionClose）
 ② 更新 MeetingInstance：status: ENDED、endedAt = now()
 ③ 關閉此會議的 MeetingSession（取消訂閱 Vexa /ws channel）
 ④ 觸發摘要工作流（非同步，回應 200 後在背景執行）
@@ -1091,7 +1097,7 @@ interface PaginatedResponse<T> {
 |------|------|------|
 | `page` | 1 | 僅用於 ENDED 會議 |
 | `per_page` | 50 | 僅用於 ENDED 會議 |
-| `since_start_time` | — | 取得 start_time > N（秒）的新 segments（ACTIVE/ENDED 皆適用） |
+| `since_start_time` | — | 取得 start_time >= N（秒）的 segments（ACTIVE/ENDED 皆適用；含邊界值，前端以 segment_id 去重） |
 
 **Response 200**
 ```json
