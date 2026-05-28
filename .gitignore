@@ -49,3 +49,6 @@ logs/
 
 # Dify workflow exports（含硬編碼 API Key，不入版本控制）
 docs/01-edu2.yml
+
+# docs 附件（二進位素材，不納入版控；如需分享請透過其他管道）
+docs/*.zip
