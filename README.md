@@ -62,7 +62,7 @@ Google Meet 會議
 | 檔案 | 說明 |
 |------|------|
 | [01-vexa-lite-schema.md](docs/01-vexa-lite-schema.md) | Vexa-lite 的 `public` schema 定義（`users`、`meetings`、`transcriptions`、`api_tokens` 等關鍵表）。後端唯讀存取此 schema，不建跨 schema FK |
-| [01-RAG_API_串接文件.md](docs/01-RAG_API_串接文件.md) | Dify API 完整規格。包含：Knowledge Base 上傳（回傳 `batch` 用於輪詢）、索引狀態查詢、Chatflow Q&A（多輪對話 `conversation_id`）、兩把獨立 API Key 的用途說明 |
+| [01-RAG_API_串接文件_v1.1.md](docs/01-RAG_API_串接文件_v1.1.md) | Dify API 完整規格（v1.1）。包含：Knowledge Base 上傳（回傳 `batch` 用於輪詢）、索引狀態查詢、RAG Q&A Chatflow（多輪對話 `conversation_id`）、會議摘要 Workflow（file 傳入模式）、四把獨立 API Key 的用途說明 |
 
 ---
 
@@ -74,7 +74,7 @@ Google Meet 會議
 | [03-資料庫Schema設計.md](docs/03-資料庫Schema設計.md) | v1.6 | Prisma multiSchema 完整定義（`app` schema）、雙 schema 隔離策略、Table 關聯圖、SHA-256 判重、三方 Rollback 流程、Bot Session 記憶體結構；ProjectMember 含 canMeeting 欄位 |
 | [04-API設計.md](docs/04-API設計.md) | v1.5 | REST API 完整規格（Request / Response / 錯誤碼）、vexaToken 認證策略、背景工作說明（含 MD 存檔 + Dify Files 上傳）、前端輪詢策略、5 欄位權限矩陣 |
 | [05-前端架構.md](docs/05-前端架構.md) | v1.4 | Next.js App Router 資料夾結構、路由與頁面責任、ASCII wireframe（含 canMeeting 欄位）、TanStack Query 自訂 Hook、API Client 實作、PermissionGuard 元件 |
-| [06-後端架構.md](docs/06-後端架構.md) | v1.9 | Hono 資料夾結構、認證 middleware、Bot Session 管理（WebSocket + 喚醒詞偵測）、Dify 服務封裝（含 uploadTranscriptFile + generateSummary file 模式）、背景工作、服務重啟恢復策略 |
+| [06-後端架構.md](docs/06-後端架構.md) | v2.1 | Hono 資料夾結構、認證 middleware、Bot Session 管理（WebSocket + 喚醒詞偵測）、Dify 服務封裝（含 uploadTranscriptFile + generateSummary file 模式）、背景工作、服務重啟恢復策略 |
 
 ---
 
@@ -115,7 +115,9 @@ Bot 官方名稱為「**蜜塔（Meeta）**」，口語稱呼「**小幫手**」
 | 變數 | 用途 |
 |------|------|
 | `DIFY_DATASET_API_KEY` (`dataset-...`) | Knowledge Base：上傳/刪除文件、索引狀態輪詢 |
-| `DIFY_WORKFLOW_API_KEY` (`app-...`) | Chatflow Q&A + 會議摘要工作流（同一 App，以 `inputs.mode` 分流）|
+| `DIFY_WORKFLOW_API_KEY` (`app-...`) | RAG Q&A Chatflow（`01-edu2.yml`，多輪對話） |
+| `DIFY_SUMMARY_WORKFLOW_API_KEY` (`app-...`) | 檔案摘要 Workflow（上傳後的即時內容預覽） |
+| `DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY` (`app-...`) | 會議摘要 Workflow（會議結束後自動觸發） |
 
 ---
 
