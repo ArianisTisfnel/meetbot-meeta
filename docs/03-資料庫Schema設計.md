@@ -208,7 +208,8 @@ model MeetingInstance {
   /// Dify 總結工作流生成的會議摘要（會議結束後填入）
   summary              String?
   /// Dify 提取的交辦事項（JSONB 陣列，會議結束後填入）
-  /// 格式：["事項1", "事項2", ...]
+  /// 格式：[{"task": "事項描述", "owner": "負責人（可空字串）"}]
+  /// （依據 01-RAG v1.1：action_items 每筆含 task + owner 兩欄）
   actionItems          Json?         @map("action_items")
   /// 逐字稿 Markdown 檔的 Storage 路徑（摘要流程寫入）
   /// 路徑格式：transcripts/{meetingInstanceId}/transcript.md
@@ -532,10 +533,12 @@ SUPABASE_URL="https://[PROJ].supabase.co"
 SUPABASE_SERVICE_ROLE_KEY="..."      # 絕對不可暴露給前端
 SUPABASE_STORAGE_BUCKET="meeting-materials"
 
-# Dify（兩把獨立 API Key，分別對應不同用途）
+# Dify（四把獨立 API Key，分別對應不同用途；詳見 01-RAG_API_串接文件_v1.1.md）
 DIFY_API_BASE="https://api.dify.ai/v1"
-DIFY_DATASET_API_KEY="dataset-..."   # Knowledge Base 操作：上傳/刪除文件、查詢索引狀態
-DIFY_WORKFLOW_API_KEY="app-..."      # Q&A Chatflow 呼叫（01-edu2.yml 對應的 app key）
+DIFY_DATASET_API_KEY="dataset-..."              # Knowledge Base 操作：上傳/刪除文件、查詢索引狀態
+DIFY_WORKFLOW_API_KEY="app-..."                 # RAG Q&A Chatflow（01-edu2.yml）
+DIFY_SUMMARY_WORKFLOW_API_KEY="app-..."         # 檔案摘要 Workflow（上傳檔案後的即時內容預覽）
+DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY="app-..." # 會議摘要 Workflow（會議結束後自動觸發）
 
 # Claude（Anthropic）
 ANTHROPIC_API_KEY="sk-ant-..."       # 無知識庫會議的逐字稿 Q&A 專用（answerFromTranscript 路徑）

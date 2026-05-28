@@ -974,9 +974,9 @@ interface PaginatedResponse<T> {
   "endedAt": "2026-05-26T11:00:00Z",
   "summary": "本次會議討論了 Q3 產品路線圖，確認了三個主要功能的優先順序...",
   "actionItems": [
-    "User A 在本週五前完成 API 設計文件",
-    "User B 安排與設計師的 wireframe review",
-    "下次會議前確認技術方案可行性"
+    {"task": "完成 API 設計文件", "owner": "User A"},
+    {"task": "安排與設計師的 wireframe review", "owner": "User B"},
+    {"task": "確認技術方案可行性", "owner": ""}
   ],
   "createdAt": "2026-05-26T10:00:00Z",
   "updatedAt": "2026-05-26T11:05:00Z"
@@ -1032,8 +1032,9 @@ interface PaginatedResponse<T> {
    ↳ 呼叫 Vexa REST API GET /transcripts/{platform}/{vexaNativeMeetingId}，取得全量逐字稿
    ↳ 格式化為 Markdown（含說話者標記與時間戳，格式見 06-後端架構.md § 6）
    ↳ 儲存至 Supabase Storage（路徑：transcripts/{meetingInstanceId}/transcript.md）
-   ↳ 透過 Dify Files API（POST /files/upload）上傳 MD 檔 → 取得 upload_file_id
-   ↳ 呼叫 Dify 摘要工作流（inputs.mode="summary"，transcript_file 以 file 方式傳入）
+   ↳ 透過 Dify Files API（POST /files/upload）上傳 MD 檔（使用 DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY）→ 取得 upload_file_id
+   ↳ 呼叫 Dify 會議摘要 Workflow（POST /workflows/run，MEETING_SUMMARY_WORKFLOW_API_KEY，inputs.transcript 以 file 物件傳入）
+   ↳ 解析 data.outputs.result_json → 取得 meeting_title、summary、key_topics、decisions、action_items（格式：[{task, owner}]）
    ↳ 更新 MeetingInstance.summary + actionItems + transcriptStoragePath
 ```
 
@@ -1228,11 +1229,12 @@ setInterval(async () => {
 APP_PORT=4000
 APP_CORS_ORIGINS="http://localhost:3000"
 
-# Dify（兩把獨立 API Key，分別對應不同用途）
-# 完整清單見 03-資料庫Schema設計.md，此處僅列 API 層直接使用的變數
+# Dify（四把獨立 API Key，分別對應不同用途；完整說明見 01-RAG_API_串接文件_v1.1.md）
 DIFY_API_BASE="https://api.dify.ai/v1"
-DIFY_DATASET_API_KEY="dataset-..."   # Knowledge Base 操作（上傳/刪除文件、查詢索引狀態）
-DIFY_WORKFLOW_API_KEY="app-..."      # Chatflow Q&A（Q&A 由 Dify Chatflow 處理）
+DIFY_DATASET_API_KEY="dataset-..."              # Knowledge Base 操作（上傳/刪除文件、查詢索引狀態）
+DIFY_WORKFLOW_API_KEY="app-..."                 # RAG Q&A Chatflow（/chat-messages）
+DIFY_SUMMARY_WORKFLOW_API_KEY="app-..."         # 檔案摘要 Workflow（/workflows/run，上傳後預覽）
+DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY="app-..." # 會議摘要 Workflow（/workflows/run，會議結束後觸發）
 
 # Claude（Anthropic）
 ANTHROPIC_API_KEY="sk-ant-..."       # 無知識庫會議的逐字稿 Q&A 專用（answerFromTranscript 路徑）
