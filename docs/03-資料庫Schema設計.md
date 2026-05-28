@@ -2,7 +2,7 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.4|
+|文件版本|v1.5|
 |撰寫日期|2026-05-28|
 |依據文件|`01-專案目標.md`、`02-使用者需求.md`|
 |ORM|Prisma（multiSchema）|
@@ -477,6 +477,9 @@ interface MeetingSession {
   lastWakeAt: number                // 防重複觸發的 timestamp（ms）
   processedSegmentIds: Set<string>  // 已處理過的 segmentId，防止喚醒詞重複觸發
   wsConnection: WebSocket           // 指向 Vexa API Gateway 的 /ws 多工 WebSocket
+  difyConversationId: string | null // Dify 多輪對話 ID（null = 下次重開新對話）
+                                    // 超過 5 分鐘未問問題後自動重置，避免 conversation 過期或過長
+  lastQuestionAt: number            // 上次問問題的 timestamp（ms），用於閒置重置計算
 }
 
 // session 儲存在後端記憶體（Map），不需要持久化到資料庫
