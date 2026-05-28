@@ -2,7 +2,7 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.6|
+|文件版本|v1.7|
 |撰寫日期|2026-05-28|
 |依據文件|`01-專案目標.md`、`02-使用者需求.md`|
 |ORM|Prisma（multiSchema）|
@@ -211,6 +211,12 @@ model MeetingInstance {
   /// 格式：[{"task": "事項描述", "owner": "負責人（可空字串）"}]
   /// （依據 01-RAG v1.1：action_items 每筆含 task + owner 兩欄）
   actionItems          Json?         @map("action_items")
+  /// Dify 提取的關鍵議題（JSONB 字串陣列，會議結束後填入，供未來查閱）
+  /// 格式：["議題一", "議題二", ...]（依據 01-RAG v1.1：key_topics 為字串陣列）
+  keyTopics            Json?         @map("key_topics")
+  /// Dify 提取的決議事項（JSONB 字串陣列，會議結束後填入，供未來查閱）
+  /// 格式：["決議一", "決議二", ...]（依據 01-RAG v1.1：decisions 為字串陣列）
+  decisions            Json?         @map("decisions")
   /// 逐字稿 Markdown 檔的 Storage 路徑（摘要流程寫入）
   /// 路徑格式：transcripts/{meetingInstanceId}/transcript.md
   /// Bucket：SUPABASE_STORAGE_BUCKET（與 meeting-materials 共用，以路徑前綴區隔）
