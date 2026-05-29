@@ -1,0 +1,11 @@
+{
+  "name": "meetbot",
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^20",
+    "hono": "^4",
+    "typescript": "^5",
+    "vitest": "^2",
+    "zod": "^3"
+  }
+}

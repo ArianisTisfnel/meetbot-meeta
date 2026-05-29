@@ -1,0 +1,160 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["app", "public"]
+}
+
+// ══════════════════════════════════════════════════
+// app schema：應用核心業務邏輯
+// ══════════════════════════════════════════════════
+
+model Project {
+  id              String    @id @default(uuid())
+  name            String
+  ownerVexaUserId Int       @map("owner_vexa_user_id")
+  difyDatasetId   String    @map("dify_dataset_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
+
+  members          ProjectMember[]
+  materials        Material[]
+  editHistory      MaterialEditHistory[]
+  meetingInstances MeetingInstance[]
+
+  @@index([ownerVexaUserId])
+  @@index([deletedAt])
+  @@map("projects")
+  @@schema("app")
+}
+
+model ProjectMember {
+  id                  String   @id @default(uuid())
+  projectId           String   @map("project_id")
+  vexaUserId          Int      @map("vexa_user_id")
+  canView             Boolean  @default(true) @map("can_view")
+  canEdit             Boolean  @default(false) @map("can_edit")
+  canMeeting          Boolean  @default(false) @map("can_meeting")
+  invitedByVexaUserId Int      @map("invited_by_vexa_user_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([projectId, vexaUserId])
+  @@index([vexaUserId])
+  @@map("project_members")
+  @@schema("app")
+}
+
+model Material {
+  id                   String         @id @default(uuid())
+  projectId            String         @map("project_id")
+  filename             String
+  displayName          String         @map("display_name")
+  sizeBytes            BigInt         @map("size_bytes")
+  mimeType             String         @map("mime_type")
+  sha256               String
+  storagePath          String         @map("storage_path")
+  difyDocumentId       String?        @map("dify_document_id")
+  difyBatch            String?        @map("dify_batch")
+  indexingStatus       IndexingStatus @default(PENDING) @map("indexing_status")
+  indexingError        String?        @map("indexing_error")
+  uploadedByVexaUserId Int            @map("uploaded_by_vexa_user_id")
+  uploadedAt           DateTime       @default(now()) @map("uploaded_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+  deletedAt            DateTime?      @map("deleted_at")
+
+  project     Project               @relation(fields: [projectId], references: [id])
+  editHistory MaterialEditHistory[]
+
+  @@unique([projectId, sha256])
+  @@index([projectId, uploadedAt(sort: Desc)])
+  @@index([indexingStatus])
+  @@map("materials")
+  @@schema("app")
+}
+
+model MaterialEditHistory {
+  id                    String     @id @default(uuid())
+  projectId             String     @map("project_id")
+  materialId            String     @map("material_id")
+  action                EditAction
+  filenameSnapshot      String     @map("filename_snapshot")
+  performedByVexaUserId Int        @map("performed_by_vexa_user_id")
+  performedAt           DateTime   @default(now()) @map("performed_at")
+
+  project  Project  @relation(fields: [projectId], references: [id])
+  material Material @relation(fields: [materialId], references: [id])
+
+  @@index([projectId, performedAt(sort: Desc)])
+  @@index([materialId])
+  @@map("material_edit_history")
+  @@schema("app")
+}
+
+model MeetingInstance {
+  id                    String        @id @default(uuid())
+  projectId             String?       @map("project_id")
+  vexaMeetingId         Int?          @map("vexa_meeting_id")
+  vexaNativeMeetingId   String?       @map("vexa_native_meeting_id")
+  name                  String
+  googleMeetUrl         String        @map("google_meet_url")
+  status                MeetingStatus @default(PENDING)
+  createdByVexaUserId   Int           @map("created_by_vexa_user_id")
+  creatorApiTokenId     Int           @map("creator_api_token_id")
+  startedAt             DateTime?     @map("started_at")
+  endedAt               DateTime?     @map("ended_at")
+  summary               String?
+  actionItems           Json?         @map("action_items")
+  keyTopics             Json?         @map("key_topics")
+  decisions             Json?
+  transcriptStoragePath String?       @map("transcript_storage_path")
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+
+  project Project? @relation(fields: [projectId], references: [id])
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([createdByVexaUserId, createdAt(sort: Desc)])
+  @@index([vexaMeetingId])
+  @@index([status])
+  @@index([createdByVexaUserId, status])
+  @@map("meeting_instances")
+  @@schema("app")
+}
+
+// ── Enums ──────────────────────────────────────────
+
+enum IndexingStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+
+  @@map("indexing_status")
+  @@schema("app")
+}
+
+enum EditAction {
+  UPLOAD
+  DELETE
+
+  @@map("edit_action")
+  @@schema("app")
+}
+
+enum MeetingStatus {
+  PENDING
+  ACTIVE
+  ENDED
+  FAILED
+
+  @@map("meeting_status")
+  @@schema("app")
+}

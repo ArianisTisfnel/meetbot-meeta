@@ -1,0 +1,25 @@
+{
+  "name": "meetbot-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@hono/node-server": "^1",
+    "@prisma/client": "^5",
+    "hono": "^4",
+    "pino": "^9",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "prisma": "^5",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^2"
+  }
+}

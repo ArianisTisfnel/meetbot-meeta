@@ -55,4 +55,4 @@ docs/01-edu2.yml
 docs/01-RAG_API_串接文件*.md
 
 # docs 附件（二進位素材，不納入版控；如需分享請透過其他管道）
-docs/*.zip
+docs/*.zip.vite/

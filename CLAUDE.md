@@ -65,7 +65,7 @@ meetbot/
 
 | Phase | 名稱 | 狀態 | 報告 |
 |-------|------|------|------|
-| P1 | 開發基礎設施 | ⬜ 未開始 | — |
+| P1 | 開發基礎設施 | ✅ 完成 | [Phase1-報告](docs/10-實作報告/Phase1-報告.md) |
 | P2 | 專案與成員管理 | ⬜ 未開始 | — |
 | P3 | 資料管理 | ⬜ 未開始 | — |
 | P4 | 會議基礎 | ⬜ 未開始 | — |
@@ -83,7 +83,7 @@ meetbot/
 # 後端啟動
 cd backend && npx tsx src/index.ts
 
-# 執行單元測試
+# 執行單元測試（從專案根目錄）
 npx vitest run
 
 # Prisma migration
