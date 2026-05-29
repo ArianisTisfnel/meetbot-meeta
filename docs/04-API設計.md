@@ -2,7 +2,7 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.6|
+|文件版本|v1.7|
 |撰寫日期|2026-05-29|
 |依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
 |後端框架|Hono（Node.js）|
@@ -1028,6 +1028,10 @@ interface PaginatedResponse<T> {
 ① 查詢 meeting.creatorApiTokenId → raw query 取得 vexaToken 字串
    呼叫 Vexa DELETE /bots/{platform}/{vexaNativeMeetingId}（Header: X-API-Key: vexaToken）
    （platform 固定為 "google_meet"；vexaNativeMeetingId 來自 meeting_instances 欄位）
+   ⚠️ 若 token 已過期（查無結果）：跳過 DELETE /bots 呼叫，記 warn log；
+      Bot 仍留在 Google Meet 並佔用配額，直到 Vexa-lite 超時自動終止。
+      仍繼續執行步驟②，確保 meetbot DB 正確更新為 ENDED。
+      使用者若遇到「Bot 上限」可透過 Vexa Dashboard 手動清除殘留 Bot。
 ② 呼叫 handleSessionClose(meetingInstanceId)——步驟②③④ 由此函式原子執行：
    ⚠️ 不可將②③④拆開逐步執行：handleSessionClose 在首行即刪除 Map entry（原子鎖），
    確保 Vexa WS 同時發出的 meeting.status:completed 事件不會觸發第二次摘要生成。
