@@ -1,8 +1,8 @@
-# API 設計文件
+﻿# API 設計文件
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.7|
+|文件版本|v1.8|
 |撰寫日期|2026-05-29|
 |依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
 |後端框架|Hono（Node.js）|
@@ -132,7 +132,7 @@ interface PaginatedResponse<T> {
 
 ### `GET /me`
 
-取得當前使用者資訊（從 JWT + Vexa public.users）。
+取得當前使用者資訊（從 vexaToken 查詢 public.api_tokens + public.users）。
 
 **Response 200**
 ```json
@@ -267,6 +267,9 @@ interface PaginatedResponse<T> {
 ### `GET /projects/:projectId`
 
 取得專案詳細資訊。需具備此專案的任一存取權（owner 或有效 participant）。
+
+> **「有效 participant」定義**：project_members 中存在且**至少一項權限為 true**（canView、canEdit、canMeeting 之一）的成員。
+> 若所有權限欄位均為 false，視同無效，回傳 **403 PERMISSION_DENIED**。
 
 **Response 200**
 ```json
@@ -666,7 +669,7 @@ interface PaginatedResponse<T> {
 ② 若有 projectId：驗證當前使用者對該專案具備會議權（owner 或被授予 canMeeting 的參與者）→ 否則 403 PERMISSION_DENIED
    取得 project.difyDatasetId（供 MeetingSession 使用）
    若無 projectId：difyDatasetId = null（Bot 改以最近逐字稿為 context 透過 Claude 直接回答，不使用 Dify Chatflow）
-③ 後續流程與 POST /projects/:projectId/meetings 相同（步驟②~⑥）
+③ 後續流程與 POST /projects/:projectId/meetings 相同（步驟②~⑤）
 ```
 
 **Error cases**
@@ -1245,6 +1248,7 @@ DIFY_DATASET_API_KEY="dataset-..."              # Knowledge Base 操作（上傳
 DIFY_WORKFLOW_API_KEY="app-..."                 # RAG Q&A Chatflow（/chat-messages）
 DIFY_SUMMARY_WORKFLOW_API_KEY="app-..."         # 檔案摘要 Workflow（/workflows/run，上傳後預覽）
 DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY="app-..." # 會議摘要 Workflow（/workflows/run，會議結束後觸發）
+DIFY_CHATFLOW_TIMEOUT_MS=45000                  # Q&A Chatflow 逾時（ms）；預設 45 秒
 
 # Claude（Anthropic）
 ANTHROPIC_API_KEY="sk-ant-..."       # 無知識庫會議的逐字稿 Q&A 專用（answerFromTranscript 路徑）
