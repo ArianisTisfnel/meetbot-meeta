@@ -46,6 +46,10 @@
 ### P1 Prompt
 
 ```
+⚠️ 前提（由人工確認，非 agent 任務）：
+開始前請確認 `docs/09-實作計畫/00-環境設定.md` 的驗收清單全部勾選（
+vexa-lite 啟動、app schema 建立、Storage bucket、.env 填寫、prisma db pull + migrate 完成）。
+
 請實作 meetbot 專案的 Phase 1 — 開發基礎設施。
 
 先讀取以下文件再開始實作：

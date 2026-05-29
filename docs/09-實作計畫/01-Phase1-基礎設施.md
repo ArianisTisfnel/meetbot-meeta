@@ -3,7 +3,7 @@
 |項目|內容|
 |----|-----|
 |Phase|P1|
-|前置條件|無|
+|前置條件|**`00-環境設定.md` 所有步驟已完成**（vexa-lite 啟動、app schema + Storage bucket 建立、.env 填寫、prisma db pull + migrate 執行完畢）|
 |參考文件|`06-後端架構.md` §一~三、`03-資料庫Schema設計.md` §六~七|
 
 ---

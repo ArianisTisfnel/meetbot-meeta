@@ -113,5 +113,6 @@ npx prisma db pull   # ⚠️ 執行後務必 diff，只保留 User/Meeting/Tran
 | 前端路由與 Hook 設計 | `docs/05-前端架構.md` |
 | 後端架構（Session/WS/摘要） | `docs/06-後端架構.md` |
 | 設計評估記錄 | `docs/08-評估提示詞.md` |
+| 開發環境設定（人工操作） | `docs/09-實作計畫/00-環境設定.md` |
 | 當前 Phase 計畫 | `docs/09-實作計畫/0N-*.md` |
 | 前一 Phase 報告 | `docs/10-實作報告/Phase[N-1]-報告.md` |
