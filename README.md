@@ -74,7 +74,7 @@ Google Meet 會議
 | [03-資料庫Schema設計.md](docs/03-資料庫Schema設計.md) | v1.7 | Prisma multiSchema 完整定義（`app` schema）、雙 schema 隔離策略、Table 關聯圖、SHA-256 判重、三方 Rollback 流程、Bot Session 記憶體結構；ProjectMember 含 canMeeting 欄位 |
 | [04-API設計.md](docs/04-API設計.md) | v1.7 | REST API 完整規格（Request / Response / 錯誤碼）、vexaToken 認證策略、背景工作說明（含 MD 存檔 + Dify Files 上傳）、前端輪詢策略、5 欄位權限矩陣 |
 | [05-前端架構.md](docs/05-前端架構.md) | v1.5 | Next.js App Router 資料夾結構、路由與頁面責任、ASCII wireframe（含 canMeeting 欄位）、TanStack Query 自訂 Hook、API Client 實作、PermissionGuard 元件 |
-| [06-後端架構.md](docs/06-後端架構.md) | v2.5 | Hono 資料夾結構、認證 middleware、Bot Session 管理（WebSocket + 喚醒詞偵測）、Dify 服務封裝（含 uploadTranscriptFile + generateSummary file 模式）、背景工作、服務重啟恢復策略 |
+| [06-後端架構.md](docs/06-後端架構.md) | v2.7 | Hono 資料夾結構、認證 middleware、Bot Session 管理（WebSocket + 喚醒詞偵測）、Dify 服務封裝（含 uploadTranscriptFile + generateSummary file 模式）、背景工作、服務重啟恢復策略 |
 
 ---
 
