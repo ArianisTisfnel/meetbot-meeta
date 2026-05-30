@@ -1,7 +1,9 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
-import { createDataset, deleteDataset } from '../lib/dify.js'
+import { createDataset, deleteDataset, deleteDocument } from '../lib/dify.js'
+import { deleteFile } from '../lib/supabase.js'
 import { AppError } from '../middleware/error-handler.js'
+import { logger } from '../middleware/logger.js'
 
 type ProjectPermissions = {
   canView: boolean
@@ -203,7 +205,22 @@ export async function deleteProject(projectId: string, vexaUserId: number) {
     throw new AppError('PERMISSION_DENIED', 403, '只有擁有者可刪除此專案')
   }
 
-  // Step 1: Soft delete all materials (Storage/Dify doc cleanup handled in P3)
+  // Step 1: Clean up each material's Storage file and Dify document, then soft delete
+  const materials = await prisma.material.findMany({
+    where: { projectId, deletedAt: null },
+  })
+
+  for (const m of materials) {
+    await deleteFile(m.storagePath).catch((e: unknown) =>
+      logger.error({ err: e, materialId: m.id }, 'deleteProject: failed to delete Storage file'),
+    )
+    if (m.difyDocumentId) {
+      await deleteDocument(project.difyDatasetId, m.difyDocumentId).catch((e: unknown) =>
+        logger.error({ err: e, materialId: m.id }, 'deleteProject: failed to delete Dify document'),
+      )
+    }
+  }
+
   await prisma.material.updateMany({
     where: { projectId, deletedAt: null },
     data: { deletedAt: new Date() },

@@ -17,8 +17,18 @@ export const mockPrisma = {
     delete: vi.fn(),
   },
   material: {
+    findFirst: vi.fn(),
     findMany: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
     updateMany: vi.fn(),
+    count: vi.fn(),
+  },
+  materialEditHistory: {
+    findMany: vi.fn(),
+    create: vi.fn(),
+    count: vi.fn(),
   },
   meetingInstance: {
     count: vi.fn(),

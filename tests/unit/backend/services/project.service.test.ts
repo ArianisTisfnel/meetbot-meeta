@@ -8,6 +8,11 @@ vi.mock('../../../../backend/src/lib/prisma', () => ({
 
 vi.mock('../../../../backend/src/lib/dify', () => mockDify)
 
+vi.mock('../../../../backend/src/lib/supabase', () => ({
+  uploadFile: vi.fn().mockResolvedValue(undefined),
+  deleteFile: vi.fn().mockResolvedValue(undefined),
+}))
+
 import {
   createProject,
   deleteProject,
@@ -72,6 +77,8 @@ describe('deleteProject', () => {
 
   it('soft deletes materials, deletes Dify dataset, then soft deletes project', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT)
+    // deleteProject now fetches materials first to clean up Storage/Dify
+    mockPrisma.material.findMany.mockResolvedValueOnce([])
     mockPrisma.material.updateMany.mockResolvedValueOnce({ count: 2 })
     mockDify.deleteDataset.mockResolvedValueOnce(undefined)
     mockPrisma.project.update.mockResolvedValueOnce({
