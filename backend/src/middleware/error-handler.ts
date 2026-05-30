@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { ZodError } from 'zod'
 
 export class AppError extends Error {
   constructor(
@@ -20,6 +21,17 @@ export const errorHandler = (err: Error, c: Context): Response => {
         ...(err.details ? { details: err.details } : {}),
       },
       err.statusCode as Parameters<typeof c.json>[1],
+    )
+  }
+
+  if (err instanceof ZodError) {
+    return c.json(
+      {
+        error_code: 'INVALID_REQUEST',
+        message: '請求格式錯誤',
+        details: err.flatten().fieldErrors,
+      },
+      400,
     )
   }
 
