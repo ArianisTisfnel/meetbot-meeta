@@ -71,7 +71,7 @@ meetbot/
 | P4 | 會議基礎 | ✅ 完成 | [Phase4-報告](docs/10-實作報告/Phase4-報告.md) |
 | P5 | Bot Session 與問答 | ✅ 完成 | [Phase5-報告](docs/10-實作報告/Phase5-報告.md) |
 | P6 | 會議摘要 | ✅ 完成 | [Phase6-報告](docs/10-實作報告/Phase6-報告.md) |
-| P7 | 前端 | ⬜ 未開始 | — |
+| P7 | 前端 | ✅ 完成 | [Phase7-報告](docs/10-實作報告/Phase7-報告.md) |
 
 > 每個 Phase 完成後，將 ⬜ 改為 ✅，並填入報告連結。
 
