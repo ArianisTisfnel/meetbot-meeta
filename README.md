@@ -39,7 +39,7 @@
 
 ### 第一步：啟動 Vexa-lite
 
-Vexa-lite 是 Bot 的核心基礎設施，必須最先啟動。使用以下 `docker run` 指令（請替換 `<YOUR_DB_URL>` 為你的 Supabase DATABASE_URL）：
+Vexa-lite 是 Bot 的核心基礎設施，必須最先啟動。使用以下 `docker run` 指令（請替換 `<YOUR_DB_URL>` 為你的 Supabase DATABASE_URL）或直接執行`00-vexa-lite-local.md`內的指令：
 
 ```bash
 docker run \
