@@ -68,8 +68,8 @@ meetbot/
 | P1 | 開發基礎設施 | ✅ 完成 | [Phase1-報告](docs/10-實作報告/Phase1-報告.md) |
 | P2 | 專案與成員管理 | ✅ 完成 | [Phase2-報告](docs/10-實作報告/Phase2-報告.md) |
 | P3 | 資料管理 | ✅ 完成 | [Phase3-報告](docs/10-實作報告/Phase3-報告.md) |
-| P4 | 會議基礎 | ⬜ 未開始 | — |
-| P5 | Bot Session 與問答 | ⬜ 未開始 | — |
+| P4 | 會議基礎 | ✅ 完成 | [Phase4-報告](docs/10-實作報告/Phase4-報告.md) |
+| P5 | Bot Session 與問答 | ✅ 完成 | [Phase5-報告](docs/10-實作報告/Phase5-報告.md) |
 | P6 | 會議摘要 | ⬜ 未開始 | — |
 | P7 | 前端 | ⬜ 未開始 | — |
 

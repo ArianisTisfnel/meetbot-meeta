@@ -24,6 +24,19 @@ export async function uploadFile(path: string, buffer: Buffer, mimeType: string)
   }
 }
 
+export async function upsertFile(path: string, buffer: Buffer, mimeType: string): Promise<void> {
+  const res = await fetch(`${BASE}/${env.SUPABASE_STORAGE_BUCKET}/${path}`, {
+    method: 'PUT',
+    headers: headers({ 'Content-Type': mimeType, 'x-upsert': 'true' }),
+    body: buffer,
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new AppError('EXTERNAL_SERVICE_ERROR', 503, `Supabase upsert error ${res.status}: ${text}`)
+  }
+}
+
 export async function deleteFile(path: string): Promise<void> {
   const res = await fetch(`${BASE}/${env.SUPABASE_STORAGE_BUCKET}`, {
     method: 'DELETE',

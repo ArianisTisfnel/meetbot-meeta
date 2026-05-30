@@ -12,6 +12,7 @@ const envSchema = z.object({
   DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY: z.string().min(1),
   DIFY_CHATFLOW_TIMEOUT_MS: z.coerce.number().default(45_000),
   ANTHROPIC_API_KEY: z.string().min(1),
+  VEXA_API_URL: z.string().url(),
   VEXA_WS_URL: z.string().url(),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),

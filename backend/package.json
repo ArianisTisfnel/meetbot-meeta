@@ -13,10 +13,12 @@
     "@prisma/client": "^5",
     "hono": "^4",
     "pino": "^9",
+    "ws": "^8.21.0",
     "zod": "^3"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/ws": "^8.18.1",
     "prisma": "^5",
     "tsx": "^4",
     "typescript": "^5",
