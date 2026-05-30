@@ -1,25 +1,6 @@
-# MeetBot — 會議 AI 小幫手
+# MeetBot — AI 會議助理
 
-> 將 AI 助理「蜜塔（Meeta）」帶進 Google Meet：  
-> 喚醒即回答、根據專案資料即時查詢、會議結束後自動生成摘要與交辦事項。
-
----
-
-## 專案概述
-
-MeetBot 是一套以**專案為核心**的會議 AI 管理系統。每個專案擁有獨立的知識庫，成員可上傳會議背景資料；開會時邀請 Bot「蜜塔（Meeta）」加入 Google Meet，透過語音或聊天室說出喚醒詞，即可即時獲得來自專案資料的回答。
-
-```
-專案資料（PDF / DOCX / TXT / MD）
-        ↓ 上傳至 Dify Knowledge Base
-Google Meet 會議
-        ↓ 蜜塔加入，監聽逐字稿
-喚醒詞「蜜塔」或「小幫手」
-        ↓ 查詢 Dify Chatflow
-語音或聊天室回答
-        ↓ 會議結束
-自動生成摘要 + 交辦事項
-```
+將 AI 助理「**蜜塔（Meeta）**」帶進 Google Meet：喚醒即回答、根據專案資料即時查詢、會議結束後自動生成摘要與交辦事項。
 
 ---
 
@@ -28,119 +9,311 @@ Google Meet 會議
 | 層次 | 技術 |
 |------|------|
 | 前端 | Next.js 15（App Router）+ shadcn/ui + TanStack Query v5 |
-| 後端 | Hono（Node.js）|
-| ORM | Prisma（multiSchema：`app` + `public`）|
+| 後端 | Hono（Node.js 20+）|
+| ORM | Prisma 5（`app` schema）|
 | 資料庫 / Storage | Supabase（PostgreSQL + Storage）|
-| Bot 基礎設施 | [Vexa-lite](./vexa/)（`vexa/` 子目錄）|
-| AI / RAG | Dify（Knowledge Base + Chatflow 工作流）|
-| 語音合成 | OpenAI TTS（透過 Vexa `/speak` 代為呼叫，後端不直接整合）|
-| 認證 | NextAuth（Google OAuth，由 Vexa Dashboard 管理）|
+| Bot 基礎設施 | Vexa-lite（Docker，port 8056 + 8057）|
+| AI / RAG | Dify（Knowledge Base + Chatflow + Workflow）|
+| 認證 | NextAuth v4（Google OAuth）|
 
 ---
 
-## 文件索引（`docs/`）
+## 必要條件
 
-### 🗂 歷史檔案（僅供參考，已被後續版本取代）
-
-| 檔案 | 說明 |
-|------|------|
-| [00-會議助手Bot專案計劃書-Phase0-Phase1.md](docs/00-會議助手Bot專案計劃書-Phase0-Phase1.md) | 最初的 MVP 計劃書（Phase 0–1），當前架構已大幅調整，僅保留作歷史紀錄 |
-| [00-工作分配-成員A-後端與資料.md](docs/00-工作分配-成員A-後端與資料.md) | 早期的人工分工草稿，現已由 Claude 統一負責設計與開發 |
-
----
-
-### 📌 基準文件（權威來源）
-
-| 檔案 | 說明 |
-|------|------|
-| [01-專案目標.md](docs/01-專案目標.md) | **專案唯一權威文件**。所有其他文件若與此文件衝突，以此為準。記錄核心目標、技術選型決策、使用者流程原稿 |
-
----
-
-### 📚 背景參考（外部系統規格）
-
-| 檔案 | 說明 |
-|------|------|
-| [01-vexa-lite-schema.md](docs/01-vexa-lite-schema.md) | Vexa-lite 的 `public` schema 定義（`users`、`meetings`、`transcriptions`、`api_tokens` 等關鍵表）。後端唯讀存取此 schema，不建跨 schema FK |
-| [01-RAG_API_串接文件_v1.1.md](docs/01-RAG_API_串接文件_v1.1.md) | Dify API 完整規格（v1.1）。包含：Knowledge Base 上傳（回傳 `batch` 用於輪詢）、索引狀態查詢、RAG Q&A Chatflow（多輪對話 `conversation_id`）、會議摘要 Workflow（file 傳入模式）、四把獨立 API Key 的用途說明 |
-
----
-
-### 🛠 開發文件（實作依據，按順序閱讀）
-
-| 檔案 | 版本 | 說明 |
+| 工具 | 版本 | 用途 |
 |------|------|------|
-| [02-使用者需求.md](docs/02-使用者需求.md) | v1.4 | 完整使用者需求規格。涵蓋認證、專案與成員管理（含參與者可獲授 canMeeting 權）、檔案上傳流程、會議實例、Bot 互動（含歡迎訊息、雙喚醒詞）、會議結束後 MD 存檔 + Dify 摘要流程 |
-| [03-資料庫Schema設計.md](docs/03-資料庫Schema設計.md) | v1.7 | Prisma multiSchema 完整定義（`app` schema）、雙 schema 隔離策略、Table 關聯圖、SHA-256 判重、三方 Rollback 流程、Bot Session 記憶體結構；ProjectMember 含 canMeeting 欄位 |
-| [04-API設計.md](docs/04-API設計.md) | v1.7 | REST API 完整規格（Request / Response / 錯誤碼）、vexaToken 認證策略、背景工作說明（含 MD 存檔 + Dify Files 上傳）、前端輪詢策略、5 欄位權限矩陣 |
-| [05-前端架構.md](docs/05-前端架構.md) | v1.5 | Next.js App Router 資料夾結構、路由與頁面責任、ASCII wireframe（含 canMeeting 欄位）、TanStack Query 自訂 Hook、API Client 實作、PermissionGuard 元件 |
-| [06-後端架構.md](docs/06-後端架構.md) | v2.7 | Hono 資料夾結構、認證 middleware、Bot Session 管理（WebSocket + 喚醒詞偵測）、Dify 服務封裝（含 uploadTranscriptFile + generateSummary file 模式）、背景工作、服務重啟恢復策略 |
+| Node.js | 20+ | 後端 + 前端 |
+| Docker Desktop | 最新穩定版 | 運行 Vexa-lite |
+
+外部服務（需申請帳號並取得 API Key）：
+
+| 服務 | 用途 |
+|------|------|
+| [Supabase](https://supabase.com) | PostgreSQL + Storage |
+| [Dify](https://dify.ai) | RAG Q&A + 會議摘要 Workflow |
+| Google Cloud Console | Google OAuth 登入 |
 
 ---
 
-## 關鍵設計決策
+## 快速啟動
 
-### 認證
-前端使用 `session.vexaToken`（Vexa 原本即有），後端透過查詢 `public.api_tokens` 驗證身份（含 `expires_at` 過期檢查），無需另行管理 JWT Secret。
+### 第一步：啟動 Vexa-lite
 
-### Vexa WebSocket 整合
-後端為每個進行中的會議建立**獨立的 `/ws` 連線**（以邀請者的 `vexaToken` 認證）：
-- 每個 MeetingSession 使用**邀請者自己的 token** 建立專屬 WebSocket，訂閱該會議的三條 Redis channel
-- Vexa WS 授權以 `Meeting.user_id == current_user.id` 驗證，必須用邀請者 token（單一服務級 token 無法訂閱其他使用者的會議事件）
-- 每個 `POST /bots` 需帶 `voice_agent_enabled: true` 才能啟用 `/speak`（TTS）與 `/chat` 功能
-- TTS 回覆透過 `POST /bots/{platform}/{nativeMeetingId}/speak` 傳送文字，由 Vexa 內部呼叫 OpenAI TTS 並播放
+Vexa-lite 是 Bot 的核心基礎設施，必須最先啟動。使用以下 `docker run` 指令（請替換 `<YOUR_DB_URL>` 為你的 Supabase DATABASE_URL）：
 
-### Bot 名稱與喚醒詞
-Bot 官方名稱為「**蜜塔（Meeta）**」，口語稱呼「**小幫手**」。兩個喚醒詞均有效：
-```
-正規表達式：/[蜜密祕秘迷][塔搭]|小幫手/
+```bash
+docker run \
+  --env=ADMIN_API_TOKEN=my-local-admin-token-2026 \
+  --env=DATABASE_URL=<YOUR_DB_URL> \
+  --env=TRANSCRIPTION_SERVICE_URL=https://transcription.vexa.ai/v1/audio/transcriptions \
+  --env=TRANSCRIPTION_SERVICE_TOKEN=<YOUR_VEXA_TX_TOKEN> \
+  --env=OPENAI_API_KEY=<YOUR_OPENAI_KEY> \
+  --env=VEXA_API_URL=http://localhost:8056 \
+  --env=ADMIN_API_URL=http://localhost:8057 \
+  --env=ORCHESTRATOR_BACKEND=process \
+  --env=STORAGE_BACKEND=local \
+  --env=LOCAL_STORAGE_DIR=/var/lib/vexa/recordings \
+  -p 8056:8056 \
+  -p 8057:8057 \
+  -d vexaai/vexa-lite:latest
 ```
 
-### Schema 隔離
-- `public` schema：Vexa-lite 自動管理，我方**唯讀**
-- `app` schema：我方以 Prisma migrate 管理，不建跨 schema FK
+> ⚠️ 必須同時映射 **8056**（Bot API）與 **8057**（Admin API）兩個 port，NextAuth 登入流程需要存取 Admin API。
 
-### 雙 Meeting ID 設計
-`meeting_instances` 同時儲存兩個 Vexa 相關 ID：
+初次啟動後，執行一次 DB 初始化（之後不需要再執行）：
 
-| 欄位 | 型別 | 用途 |
-|------|------|------|
-| `vexa_meeting_id` | `Int` | 查詢 `public.transcriptions`（整數 FK） |
-| `vexa_native_meeting_id` | `String` | 呼叫 Bot API（`DELETE /bots/{platform}/{id}`）|
+```bash
+docker exec <CONTAINER_ID> python3 -c "import asyncio; from admin_models.database import init_db; asyncio.run(init_db())"
+docker exec <CONTAINER_ID> python3 -c "import asyncio; from meeting_api.database import init_db; asyncio.run(init_db())"
+```
 
-### Token 恢復策略
-`meeting_instances` 儲存 `creator_api_token_id`（指向 `public.api_tokens.id` 的整數參考），服務重啟後透過此 ID 查回 token 字串，恢復 MeetingSession，不在 DB 直接儲存 token 明文。
+確認容器正常運行：
 
-### Dify API Key 分工
-| 變數 | 用途 |
-|------|------|
-| `DIFY_DATASET_API_KEY` (`dataset-...`) | Knowledge Base：上傳/刪除文件、索引狀態輪詢 |
-| `DIFY_WORKFLOW_API_KEY` (`app-...`) | RAG Q&A Chatflow（`01-edu2.yml`，多輪對話） |
-| `DIFY_SUMMARY_WORKFLOW_API_KEY` (`app-...`) | 檔案摘要 Workflow（上傳後的即時內容預覽） |
-| `DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY` (`app-...`) | 會議摘要 Workflow（會議結束後自動觸發） |
+```bash
+docker ps
+# 應看到 STATUS: Up ... (healthy)，PORTS: 0.0.0.0:8056->8056, 0.0.0.0:8057->8057
+```
 
 ---
 
-## 目錄結構（預計）
+### 第二步：安裝後端相依套件
+
+```bash
+cd backend
+npm install
+```
+
+---
+
+### 第三步：設定後端環境變數
+
+```bash
+cd backend
+cp .env.example .env
+```
+
+編輯 `backend/.env`，填入以下所有欄位：
+
+```bash
+# Supabase（從 Supabase Dashboard → Settings → Database 取得）
+DATABASE_URL="postgresql://postgres.<PROJECT_REF>:<PASSWORD>@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
+SUPABASE_URL="https://<PROJECT_REF>.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="<SERVICE_ROLE_KEY>"   # Settings → API → service_role
+SUPABASE_STORAGE_BUCKET="meeting-materials"
+
+# Dify（從 Dify → Settings → API Keys 取得）
+DIFY_API_BASE="https://api.dify.ai/v1"
+DIFY_DATASET_API_KEY="dataset-..."      # Knowledge Base 操作
+DIFY_WORKFLOW_API_KEY="app-..."         # RAG Q&A Chatflow
+DIFY_SUMMARY_WORKFLOW_API_KEY="app-..."         # 檔案摘要 Workflow
+DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY="app-..." # 會議摘要 Workflow
+DIFY_CHATFLOW_TIMEOUT_MS=45000
+
+# Anthropic（可選，僅用於無專案的獨立會議 Q&A fallback）
+ANTHROPIC_API_KEY="sk-ant-..."
+
+# Vexa（與 docker run 的 ADMIN_API_TOKEN 相同）
+VEXA_API_URL="http://localhost:8056"
+VEXA_WS_URL="ws://localhost:8056"
+
+# Server
+APP_PORT=4000
+APP_CORS_ORIGINS="http://localhost:3000"
+```
+
+---
+
+### 第四步：初始化資料庫 Schema
+
+首次執行需要同步 Prisma schema 至 Supabase：
+
+```bash
+cd backend
+npx prisma db push
+```
+
+> ℹ️ 這會在 Supabase 建立 `app` schema 的所有表格（`projects`、`project_members`、`materials`、`meeting_instances` 等）。Vexa 管理的 `public` schema **不受影響**。
+
+---
+
+### 第五步：啟動後端
+
+```bash
+cd backend
+npm run dev
+```
+
+正常啟動後應看到：
+
+```
+{"msg":"Indexing poller started (interval: 30s)"}
+{"msg":"startup restore completed"}
+{"msg":"meetbot backend started on port 4000"}
+```
+
+---
+
+### 第六步：安裝前端相依套件
+
+```bash
+cd frontend
+npm install
+```
+
+---
+
+### 第七步：設定前端環境變數
+
+```bash
+cd frontend
+# 建立 .env.local（不入版控）
+```
+
+建立 `frontend/.env.local`，填入：
+
+```bash
+# 後端 API
+NEXT_PUBLIC_API_URL="http://localhost:4000"
+
+# NextAuth
+NEXTAUTH_URL="http://localhost:3000"
+NEXTAUTH_SECRET="<自訂一個隨機字串，本地開發任意值即可>"
+
+# Vexa Admin（需與 docker run 的 ADMIN_API_TOKEN 相同）
+VEXA_API_URL="http://localhost:8056"
+VEXA_ADMIN_API_URL="http://localhost:8057"
+VEXA_ADMIN_API_KEY="my-local-admin-token-2026"
+
+# Google OAuth（從 Google Cloud Console → OAuth 2.0 用戶端 ID 取得）
+GOOGLE_CLIENT_ID="<YOUR_GOOGLE_CLIENT_ID>"
+GOOGLE_CLIENT_SECRET="<YOUR_GOOGLE_CLIENT_SECRET>"
+```
+
+**Google OAuth 設定**：在 Google Cloud Console 的「已授權的重新導向 URI」加入：
+```
+http://localhost:3000/api/auth/callback/google
+```
+
+---
+
+### 第八步：啟動前端
+
+```bash
+cd frontend
+npm run dev
+```
+
+正常啟動後應看到：
+
+```
+▲ Next.js 15.3.x
+- Local: http://localhost:3000
+✓ Ready in ...s
+```
+
+---
+
+## 驗證一切正常
+
+打開瀏覽器前，先確認後端 API 可存取（應回傳 401，代表 auth middleware 正常）：
+
+```bash
+curl http://localhost:4000/health
+# {"error_code":"UNAUTHORIZED","message":"缺少 Authorization header"}
+```
+
+接著打開 [http://localhost:3000](http://localhost:3000)，應跳轉至登入頁，點選「使用 Google 帳號登入」完成認證。
+
+---
+
+## 執行測試
+
+```bash
+# 從專案根目錄執行所有單元測試
+npx vitest run
+
+# 預期結果：
+# Test Files  14 passed (14)
+#      Tests  91 passed (91)
+```
+
+---
+
+## 常用指令速查
+
+```bash
+# 後端開發啟動
+cd backend && npm run dev
+
+# 前端開發啟動
+cd frontend && npm run dev
+
+# 單元測試（根目錄）
+npx vitest run
+
+# Prisma schema 同步（schema.prisma 有變更時）
+cd backend && npx prisma db push
+
+# 查看 Vexa-lite 容器狀態
+docker ps
+
+# 查看 Vexa 用戶列表（確認 admin API 正常）
+docker exec <CONTAINER_ID> curl -s -H "X-Admin-API-Key: my-local-admin-token-2026" http://localhost:8057/admin/users
+```
+
+---
+
+## 目錄結構
 
 ```
 meetbot/
-├── README.md
-├── docs/                  # 所有規劃文件（見上表）
-├── frontend/              # Next.js 15 App（待建立）
-├── backend/               # Hono Node.js API（待建立）
-└── vexa/                  # Vexa-lite 子模組（Bot 基礎設施）
+├── backend/              # Hono 後端 API
+│   ├── src/
+│   │   ├── routes/       # API 路由
+│   │   ├── services/     # 業務邏輯（project / material / meeting）
+│   │   ├── sessions/     # Bot Session 管理（WebSocket + 喚醒詞 + 摘要）
+│   │   ├── lib/          # 外部服務封裝（dify / supabase / vexa / prisma）
+│   │   ├── middleware/   # auth / logger / error-handler
+│   │   └── types/        # env schema、hono context type
+│   └── prisma/
+│       └── schema.prisma # app schema 定義
+├── frontend/             # Next.js 15 前端
+│   └── src/
+│       ├── app/          # App Router 頁面
+│       ├── components/   # UI 元件（shadcn/ui 精簡版 + 自訂元件）
+│       ├── hooks/        # TanStack Query 自訂 Hook
+│       ├── lib/          # API client、auth 設定
+│       └── types/        # API Response 型別
+├── tests/
+│   ├── unit/             # Vitest 單元測試
+│   └── mocks/            # 外部服務 mock
+└── docs/                 # 設計文件（需求 / Schema / API / 前端 / 後端架構）
 ```
 
 ---
 
-## Vexa-lite
+## 關鍵設計說明
 
-`vexa/` 目錄為 [Vexa-lite](https://github.com/Vexa-ai/vexa) 開源專案，作為 Google Meet Bot 的基礎設施。啟動方式：
+### 雙 Schema 架構
 
-```bash
-cd vexa/deploy/compose
-docker compose up -d
+```
+public schema  ← Vexa-lite 管理，只讀。使用 prisma.$queryRaw 存取
+app schema     ← 我們管理，Prisma 控制
 ```
 
-詳見 [vexa/CLAUDE.md](vexa/CLAUDE.md)（Vexa 開發工作流說明）與 [vexa/deploy/compose/README.md](vexa/deploy/compose/README.md)。
+跨 schema 關聯以整數邏輯 FK（`vexa_user_id`、`vexa_meeting_id`）記錄，無 DB constraint。
+
+### Bot Session 生命週期
+
+1. `POST /meetings/:id/bot` → 呼叫 Vexa API 建立 Bot，DB 狀態維持 `PENDING`
+2. Vexa WS 送來 `{type:"meeting.status", payload:{status:"active"}}` → DB 轉 `ACTIVE`
+3. 喚醒詞（`蜜塔` / `小幫手`）偵測 → 查詢 Dify Chatflow → TTS 回覆
+4. WS 連線關閉 → 觸發摘要生成 → DB 轉 `ENDED`
+
+### 摘要 Sentinel 值
+
+| `summary` 欄位值 | 意義 |
+|-----------------|------|
+| `null` | 摘要尚未生成（前端繼續輪詢） |
+| `''`（空字串） | 已嘗試但無內容（前端停止輪詢） |
+| 字串內容 | 正常摘要 |

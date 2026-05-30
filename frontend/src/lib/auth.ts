@@ -7,24 +7,27 @@ const VEXA_ADMIN_API_KEY = process.env.VEXA_ADMIN_API_KEY ?? ''
 
 async function getOrCreateVexaToken(email: string): Promise<string | null> {
   try {
-    // Look up user in Vexa
-    const lookupRes = await fetch(`${VEXA_ADMIN_API_URL}/users/lookup?email=${encodeURIComponent(email)}`, {
-      headers: { 'X-API-Key': VEXA_ADMIN_API_KEY },
+    const adminHeaders = { 'X-Admin-API-Key': VEXA_ADMIN_API_KEY, 'Content-Type': 'application/json' }
+
+    // Find or create user in Vexa
+    const userRes = await fetch(`${VEXA_ADMIN_API_URL}/admin/users`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ email }),
     })
-    if (lookupRes.ok) {
-      const user = await lookupRes.json()
-      // Get or create API token for this user
-      const tokenRes = await fetch(`${VEXA_ADMIN_API_URL}/users/${user.id}/tokens`, {
-        method: 'POST',
-        headers: { 'X-API-Key': VEXA_ADMIN_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scopes: ['bot', 'browser', 'tx'] }),
-      })
-      if (tokenRes.ok) {
-        const token = await tokenRes.json()
-        return token.token
-      }
-    }
-    return null
+    if (!userRes.ok) return null
+
+    const user = await userRes.json()
+
+    // Create a new API token for this user
+    const tokenRes = await fetch(`${VEXA_ADMIN_API_URL}/admin/users/${user.id}/tokens`, {
+      method: 'POST',
+      headers: adminHeaders,
+    })
+    if (!tokenRes.ok) return null
+
+    const token = await tokenRes.json()
+    return token.token
   } catch {
     return null
   }
