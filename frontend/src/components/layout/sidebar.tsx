@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useState } from 'react'
+import { useSession, signOut } from 'next-auth/react'
 import { Button } from '@/components/ui/button'
 import { CreateMeetingDialog } from '@/components/meetings/create-meeting-dialog'
 import { cn } from '@/lib/utils'
@@ -9,6 +10,7 @@ import { cn } from '@/lib/utils'
 export function Sidebar() {
   const pathname = usePathname()
   const [meetingDialogOpen, setMeetingDialogOpen] = useState(false)
+  const { data: session } = useSession()
 
   const navItems = [
     { href: '/projects', label: '📁 Projects' },
@@ -46,8 +48,18 @@ export function Sidebar() {
           ))}
         </nav>
 
-        <div className="p-4 border-t text-xs text-muted-foreground truncate">
-          meetbot
+        <div className="p-4 border-t">
+          <div className="text-xs text-muted-foreground truncate mb-2">
+            {session?.user?.email ?? ''}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => signOut({ callbackUrl: '/login' })}
+          >
+            登出
+          </Button>
         </div>
       </aside>
 
