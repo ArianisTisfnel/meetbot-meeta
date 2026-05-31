@@ -1,33 +1,47 @@
+import { execFileSync } from 'child_process'
 import type { NextAuthOptions } from 'next-auth'
 import GoogleProvider from 'next-auth/providers/google'
 
-const VEXA_API_URL = process.env.VEXA_API_URL ?? 'http://localhost:8056'
-const VEXA_ADMIN_API_URL = process.env.VEXA_ADMIN_API_URL ?? 'http://localhost:8057'
 const VEXA_ADMIN_API_KEY = process.env.VEXA_ADMIN_API_KEY ?? ''
 
-async function getOrCreateVexaToken(email: string): Promise<string | null> {
+// Admin API (8057) only binds to 127.0.0.1 inside the container, so Docker port
+// forwarding can't reach it. We use docker exec to call it from within the container.
+function getVexaContainerId(): string | null {
   try {
-    const adminHeaders = { 'X-Admin-API-Key': VEXA_ADMIN_API_KEY, 'Content-Type': 'application/json' }
-
-    // Find or create user in Vexa
-    const userRes = await fetch(`${VEXA_ADMIN_API_URL}/admin/users`, {
-      method: 'POST',
-      headers: adminHeaders,
-      body: JSON.stringify({ email }),
+    const result = execFileSync('docker', ['ps', '--filter', 'ancestor=vexaai/vexa-lite:latest', '-q'], {
+      timeout: 3000,
     })
-    if (!userRes.ok) return null
+    return result.toString().trim().split('\n')[0] || null
+  } catch {
+    return null
+  }
+}
 
-    const user = await userRes.json()
+function dockerExecCurl(containerId: string, args: string[]): unknown {
+  const result = execFileSync('docker', ['exec', containerId, 'curl', '-s', ...args], { timeout: 8000 })
+  return JSON.parse(result.toString())
+}
 
-    // Create a new API token for this user
-    const tokenRes = await fetch(`${VEXA_ADMIN_API_URL}/admin/users/${user.id}/tokens`, {
-      method: 'POST',
-      headers: adminHeaders,
-    })
-    if (!tokenRes.ok) return null
+async function getOrCreateVexaToken(email: string): Promise<string | null> {
+  const containerId = getVexaContainerId()
+  if (!containerId) return null
 
-    const token = await tokenRes.json()
-    return token.token
+  try {
+    const user = dockerExecCurl(containerId, [
+      '-X', 'POST',
+      '-H', `X-Admin-API-Key: ${VEXA_ADMIN_API_KEY}`,
+      '-H', 'Content-Type: application/json',
+      '-d', JSON.stringify({ email }),
+      'http://localhost:8057/admin/users',
+    ]) as { id?: number }
+    if (!user.id) return null
+
+    const token = dockerExecCurl(containerId, [
+      '-X', 'POST',
+      '-H', `X-Admin-API-Key: ${VEXA_ADMIN_API_KEY}`,
+      `http://localhost:8057/admin/users/${user.id}/tokens`,
+    ]) as { token?: string }
+    return token.token ?? null
   } catch {
     return null
   }
