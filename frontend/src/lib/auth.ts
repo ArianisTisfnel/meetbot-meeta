@@ -39,7 +39,7 @@ async function getOrCreateVexaToken(email: string): Promise<string | null> {
     const token = dockerExecCurl(containerId, [
       '-X', 'POST',
       '-H', `X-Admin-API-Key: ${VEXA_ADMIN_API_KEY}`,
-      `http://localhost:8057/admin/users/${user.id}/tokens`,
+      `http://localhost:8057/admin/users/${user.id}/tokens?scopes=bot,browser,tx`,
     ]) as { token?: string }
     return token.token ?? null
   } catch {
