@@ -25,6 +25,7 @@ model Project {
   members          ProjectMember[]
   materials        Material[]
   editHistory      MaterialEditHistory[]
+  activityLogs     ActivityLog[]
   meetingInstances MeetingInstance[]
 
   @@index([ownerVexaUserId])
@@ -98,6 +99,24 @@ model MaterialEditHistory {
   @@schema("app")
 }
 
+/// 通用活動紀錄：素材增刪、成員增減、權限變更、會議建立、專案改名等。
+/// 與 MaterialEditHistory 不同，本表不綁定特定 materialId，可記錄任意專案層級事件。
+model ActivityLog {
+  id              String         @id @default(uuid())
+  projectId       String         @map("project_id")
+  actorVexaUserId Int            @map("actor_vexa_user_id")
+  action          ActivityAction
+  targetLabel     String         @map("target_label") // 事件對象的快照字串（檔名 / 成員 email / 會議名稱）
+  metadata        Json?
+  createdAt       DateTime       @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@map("activity_logs")
+  @@schema("app")
+}
+
 model MeetingInstance {
   id                    String        @id @default(uuid())
   projectId             String?       @map("project_id")
@@ -146,6 +165,19 @@ enum EditAction {
   DELETE
 
   @@map("edit_action")
+  @@schema("app")
+}
+
+enum ActivityAction {
+  MATERIAL_UPLOAD
+  MATERIAL_DELETE
+  MEMBER_ADD
+  MEMBER_REMOVE
+  MEMBER_PERMISSION_UPDATE
+  MEETING_CREATE
+  PROJECT_RENAME
+
+  @@map("activity_action")
   @@schema("app")
 }
 

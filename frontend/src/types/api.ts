@@ -99,19 +99,27 @@ export interface Material {
 
 export type PaginatedMaterials = PaginatedResponse<Material>
 
-// ── 歷史 ─────────────────────────────────────────────
+// ── 活動紀錄 ───────────────────────────────────────────
 
-export type EditAction = 'UPLOAD' | 'DELETE'
+export type ActivityAction =
+  | 'MATERIAL_UPLOAD'
+  | 'MATERIAL_DELETE'
+  | 'MEMBER_ADD'
+  | 'MEMBER_REMOVE'
+  | 'MEMBER_PERMISSION_UPDATE'
+  | 'MEETING_CREATE'
+  | 'PROJECT_RENAME'
 
-export interface EditHistoryItem {
+export interface ActivityItem {
   id: string
-  action: EditAction
-  filenameSnapshot: string
-  performedBy: UserSummary
-  performedAt: string
+  action: ActivityAction
+  targetLabel: string
+  metadata?: Record<string, unknown> | null
+  actor: UserSummary
+  createdAt: string
 }
 
-export type PaginatedHistory = PaginatedResponse<EditHistoryItem>
+export type PaginatedActivity = PaginatedResponse<ActivityItem>
 
 // ── 會議 ─────────────────────────────────────────────
 

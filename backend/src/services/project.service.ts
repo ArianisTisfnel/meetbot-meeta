@@ -4,6 +4,7 @@ import { createDataset, deleteDataset, deleteDocument } from '../lib/dify.js'
 import { deleteFile } from '../lib/supabase.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
+import { recordActivity } from './activity.service.js'
 
 type ProjectPermissions = {
   canView: boolean
@@ -193,6 +194,17 @@ export async function updateProject(projectId: string, vexaUserId: number, name:
     where: { id: projectId },
     data: { name },
   })
+
+  if (updated.name !== project.name) {
+    await recordActivity({
+      projectId,
+      actorVexaUserId: vexaUserId,
+      action: 'PROJECT_RENAME',
+      targetLabel: updated.name,
+      metadata: { from: project.name, to: updated.name },
+    })
+  }
+
   return { id: updated.id, name: updated.name, updatedAt: updated.updatedAt }
 }
 

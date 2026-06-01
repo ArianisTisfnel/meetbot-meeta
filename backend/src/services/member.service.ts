@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/error-handler.js'
+import { recordActivity } from './activity.service.js'
 
 type MemberPermissions = {
   canView?: boolean
@@ -110,6 +111,12 @@ export async function inviteMember(
         ...permissions,
       },
     })
+    await recordActivity({
+      projectId,
+      actorVexaUserId: ownerVexaUserId,
+      action: 'MEMBER_ADD',
+      targetLabel: targetUser.email,
+    })
     return {
       id: member.id,
       vexaUserId: targetUser.id,
@@ -145,6 +152,22 @@ export async function updateMemberPermissions(
     where: { id: member.id },
     data: permissions,
   })
+
+  const targetRows = await prisma.$queryRaw<Array<{ email: string | null }>>`
+    SELECT email FROM public.users WHERE id = ${targetVexaUserId} LIMIT 1
+  `
+  await recordActivity({
+    projectId,
+    actorVexaUserId: ownerVexaUserId,
+    action: 'MEMBER_PERMISSION_UPDATE',
+    targetLabel: targetRows[0]?.email ?? `使用者 #${targetVexaUserId}`,
+    metadata: {
+      canView: updated.canView,
+      canEdit: updated.canEdit,
+      canMeeting: updated.canMeeting,
+    },
+  })
+
   return {
     id: updated.id,
     vexaUserId: updated.vexaUserId,
@@ -171,5 +194,17 @@ export async function removeMember(
   })
   if (!member) throw new AppError('NOT_FOUND', 404, '成員不存在')
 
+  // 取得被移除者 email 作為歷史快照（刪除後就查不到關聯了）
+  const targetRows = await prisma.$queryRaw<Array<{ email: string | null }>>`
+    SELECT email FROM public.users WHERE id = ${targetVexaUserId} LIMIT 1
+  `
+
   await prisma.projectMember.delete({ where: { id: member.id } })
+
+  await recordActivity({
+    projectId,
+    actorVexaUserId: ownerVexaUserId,
+    action: 'MEMBER_REMOVE',
+    targetLabel: targetRows[0]?.email ?? `使用者 #${targetVexaUserId}`,
+  })
 }

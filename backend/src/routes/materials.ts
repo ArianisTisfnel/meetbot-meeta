@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import * as materialService from '../services/material.service.js'
+import * as activityService from '../services/activity.service.js'
 import type { AppEnv } from '../types/hono.js'
 
 const app = new Hono<AppEnv>()
@@ -60,11 +61,12 @@ app.delete('/projects/:projectId/materials/:materialId', async (c) => {
   return c.body(null, 204)
 })
 
+// 專案活動紀錄（通用：素材增刪、成員增減、權限變更、會議建立、改名等）
 app.get('/projects/:projectId/history', async (c) => {
   const q = c.req.query()
-  const result = await materialService.listHistory(c.req.param('projectId'), c.get('vexaUserId'), {
+  const result = await activityService.listActivity(c.req.param('projectId'), c.get('vexaUserId'), {
     page: q.page ? parseInt(q.page) : 1,
-    perPage: q.per_page ? parseInt(q.per_page) : 20,
+    perPage: q.per_page ? parseInt(q.per_page) : 30,
   })
   return c.json(result)
 })

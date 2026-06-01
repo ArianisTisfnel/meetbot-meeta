@@ -30,6 +30,11 @@ export const mockPrisma = {
     create: vi.fn(),
     count: vi.fn(),
   },
+  activityLog: {
+    findMany: vi.fn(),
+    create: vi.fn(),
+    count: vi.fn(),
+  },
   meetingInstance: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
