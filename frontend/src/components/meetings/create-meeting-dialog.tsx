@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useCreateMeeting } from '@/hooks/use-meetings'
 import { useCreateGlobalMeeting } from '@/hooks/use-all-meetings'
+import { useProjects } from '@/hooks/use-projects'
 import { toast } from 'sonner'
 
 interface ProjectScopedProps {
@@ -39,6 +40,11 @@ export function CreateMeetingDialog(props: Props) {
     props.mode === 'project' ? props.projectId : ''
   )
   const createGlobalMeeting = useCreateGlobalMeeting()
+
+  // 全局建立時，列出「我有會議權限」的專案供選擇
+  const { data: projectList } = useProjects()
+  const meetingProjects =
+    projectList?.items.filter((p) => p.permissions.canMeeting) ?? []
 
   const handleSubmit = async () => {
     if (!meetUrl.trim()) {
@@ -90,12 +96,21 @@ export function CreateMeetingDialog(props: Props) {
           {props.mode === 'global' && (
             <div>
               <label className="text-sm font-medium">關聯專案（選填）</label>
-              <Input
-                placeholder="輸入專案 ID（留空建立獨立會議）"
+              <select
                 value={projectId}
                 onChange={(e) => setProjectId(e.target.value)}
-                className="mt-1"
-              />
+                className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="">不關聯專案（建立獨立會議）</option>
+                {meetingProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                關聯後，蜜塔會以該專案的資料回答問題。僅顯示你有會議權限的專案。
+              </p>
             </div>
           )}
           <div>

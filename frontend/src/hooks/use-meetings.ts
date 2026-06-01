@@ -7,7 +7,7 @@ export function useMeetings(
   projectId: string,
   params?: {
     search?: string
-    since?: 1 | 3 | 7
+    since?: number
     order?: 'asc' | 'desc'
   }
 ) {

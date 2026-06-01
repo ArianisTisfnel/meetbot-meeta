@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 
 export default function AllMeetingsPage() {
   const [search, setSearch] = useState('')
-  const [since, setSince] = useState<1 | 3 | 7 | undefined>()
+  const [since, setSince] = useState<number | undefined>()
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [createOpen, setCreateOpen] = useState(false)
 
@@ -33,7 +33,7 @@ export default function AllMeetingsPage() {
       {isLoading ? (
         <p className="text-muted-foreground">載入中…</p>
       ) : (
-        <MeetingList meetings={data?.items ?? []} />
+        <MeetingList meetings={data?.items ?? []} canEnd />
       )}
 
       <CreateMeetingDialog

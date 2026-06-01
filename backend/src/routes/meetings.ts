@@ -77,6 +77,19 @@ app.post('/meetings/:meetingId/bot/leave', async (c) => {
   return c.json(result)
 })
 
+// POST /meetings/:meetingId/bot/reinvite — 全局重新邀請蜜塔
+app.post('/meetings/:meetingId/bot/reinvite', async (c) => {
+  const result = await meetingService.reinviteBot({
+    meetingInstanceId: c.req.param('meetingId'),
+    vexaUserId: c.get('vexaUserId'),
+    vexaApiTokenId: c.get('vexaApiTokenId'),
+    maxConcurrentBots: c.get('maxConcurrentBots'),
+    vexaToken: c.get('vexaToken'),
+    vexaTokenScopes: c.get('vexaTokenScopes'),
+  })
+  return c.json(result)
+})
+
 // GET /meetings/:meetingId/transcriptions — 全局逐字稿
 app.get('/meetings/:meetingId/transcriptions', async (c) => {
   const meetingId = c.req.param('meetingId')
@@ -87,12 +100,20 @@ app.get('/meetings/:meetingId/transcriptions', async (c) => {
   if (!meeting.vexaMeetingId) {
     return c.json({ items: [], total: 0, page: 1, perPage: 50 })
   }
+
+  // ENDED 會議的逐字稿需 creatorApiTokenId + vexaNativeMeetingId（getMeeting 未回傳，從 DB 補查）
+  const { prisma } = await import('../lib/prisma.js')
+  const raw = await prisma.meetingInstance.findUnique({
+    where: { id: meetingId },
+    select: { creatorApiTokenId: true, vexaNativeMeetingId: true },
+  })
+
   const q = c.req.query()
   const result = await transcriptionService.getTranscriptions({
     meetingInstanceId: meetingId,
-    creatorApiTokenId: 0, // will use activeSessions for ACTIVE, need creatorApiTokenId for ENDED
+    creatorApiTokenId: raw?.creatorApiTokenId ?? 0,
     platform: 'google_meet',
-    vexaNativeMeetingId: (meeting as any).vexaNativeMeetingId ?? '',
+    vexaNativeMeetingId: raw?.vexaNativeMeetingId ?? '',
     sinceStartTime: q.since_start_time ? parseFloat(q.since_start_time) : undefined,
     page: q.page ? parseInt(q.page) : 1,
     perPage: q.per_page ? parseInt(q.per_page) : 50,
@@ -173,6 +194,25 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/leave', async (c) => {
     c.get('vexaUserId'),
   )
   const result = await meetingService.leaveMeeting(c.req.param('meetingId'))
+  return c.json(result)
+})
+
+// POST /projects/:projectId/meetings/:meetingId/bot/reinvite
+app.post('/projects/:projectId/meetings/:meetingId/bot/reinvite', async (c) => {
+  // 先確認會議歸屬此專案且使用者有存取權；canMeeting 由 reinviteBot 內部再驗證
+  await meetingService.getProjectMeeting(
+    c.req.param('projectId'),
+    c.req.param('meetingId'),
+    c.get('vexaUserId'),
+  )
+  const result = await meetingService.reinviteBot({
+    meetingInstanceId: c.req.param('meetingId'),
+    vexaUserId: c.get('vexaUserId'),
+    vexaApiTokenId: c.get('vexaApiTokenId'),
+    maxConcurrentBots: c.get('maxConcurrentBots'),
+    vexaToken: c.get('vexaToken'),
+    vexaTokenScopes: c.get('vexaTokenScopes'),
+  })
   return c.json(result)
 })
 

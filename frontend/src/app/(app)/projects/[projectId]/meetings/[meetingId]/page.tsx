@@ -2,10 +2,12 @@
 import { use } from 'react'
 import Link from 'next/link'
 import { useMeeting, useBotLeave } from '@/hooks/use-meeting'
+import { usePermissions } from '@/hooks/use-permissions'
 import { useTranscriptions } from '@/hooks/use-transcriptions'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
+import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
 import { Button } from '@/components/ui/button'
 import { formatDate } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -17,6 +19,7 @@ interface Props {
 export default function MeetingDetailPage({ params }: Props) {
   const { projectId, meetingId } = use(params)
   const { data: meeting, isLoading } = useMeeting(projectId, meetingId)
+  const permissions = usePermissions(projectId)
   const botLeave = useBotLeave(projectId, meetingId)
   const { data: transcript } = useTranscriptions(
     meeting?.status === 'ENDED' ? projectId : null,
@@ -73,26 +76,42 @@ export default function MeetingDetailPage({ params }: Props) {
             </p>
           )}
         </div>
-        {meeting.status === 'ACTIVE' && (
-          <Button
-            variant="destructive"
-            onClick={handleLeave}
-            disabled={botLeave.isPending}
-          >
-            結束會議
-          </Button>
-        )}
+        {permissions.canMeeting &&
+          (meeting.status === 'ACTIVE' ? (
+            <Button
+              variant="destructive"
+              onClick={handleLeave}
+              disabled={botLeave.isPending}
+            >
+              結束會議
+            </Button>
+          ) : (
+            <ReinviteBotButton projectId={projectId} meetingId={meetingId} />
+          ))}
       </div>
 
       {/* Content by status */}
       {meeting.status === 'FAILED' && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/5 p-6">
-          <h3 className="font-semibold text-destructive mb-2">⚠️ Bot 建立失敗</h3>
+          <h3 className="font-semibold text-destructive mb-2">⚠️ 蜜塔加入失敗</h3>
           <p className="text-sm text-muted-foreground">
-            蜜塔未能成功加入此會議（可能原因：服務重啟、網路問題）。
-            <br />請返回專案頁面，重新邀請 Bot 加入新會議。
+            蜜塔未能成功加入此會議。常見原因與處理方式：
           </p>
-          <Button className="mt-4" asChild>
+          <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground space-y-1">
+            <li>
+              <span className="font-medium">候客室未放行</span>：主持人需在 Google Meet 中開啟「快速存取（Quick Access）」，或手動允許蜜塔進入。
+            </li>
+            <li>
+              <span className="font-medium">會議設定限制訪客</span>：部分 Google 帳號會封鎖非 Google 帳號的訪客請求，請改用允許訪客的會議。
+            </li>
+            <li>
+              <span className="font-medium">服務暫時性問題</span>：服務重啟或網路問題，可直接重試。
+            </li>
+          </ul>
+          <p className="mt-3 text-sm text-muted-foreground">
+            調整後可直接按右上角「重新邀請蜜塔」，無需重新建立會議。
+          </p>
+          <Button className="mt-4" variant="outline" asChild>
             <Link href={`/projects/${projectId}/meetings`}>← 返回專案</Link>
           </Button>
         </div>

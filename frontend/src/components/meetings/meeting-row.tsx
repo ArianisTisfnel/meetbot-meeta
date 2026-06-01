@@ -1,15 +1,18 @@
 'use client'
 import Link from 'next/link'
 import { BotStatusIndicator } from './bot-status-indicator'
+import { EndMeetingButton } from './end-meeting-button'
 import { formatDate } from '@/lib/utils'
 import type { MeetingListItem } from '@/types/api'
 
 interface Props {
   meeting: MeetingListItem
   projectId?: string
+  /** 是否顯示進行中會議的「結束」快捷鍵 */
+  canEnd?: boolean
 }
 
-export function MeetingRow({ meeting, projectId }: Props) {
+export function MeetingRow({ meeting, projectId, canEnd }: Props) {
   const href = projectId
     ? `/projects/${projectId}/meetings/${meeting.id}`
     : `/meetings/${meeting.id}`
@@ -30,12 +33,18 @@ export function MeetingRow({ meeting, projectId }: Props) {
         {meeting.endedAt && ` ~ ${formatDate(meeting.endedAt)}`}
       </td>
       <td className="py-3 px-4">
-        <Link
-          href={href}
-          className="text-primary hover:underline text-sm"
-        >
-          進入 →
-        </Link>
+        <div className="flex items-center justify-end gap-3">
+          {canEnd && meeting.status === 'ACTIVE' && (
+            <EndMeetingButton
+              projectId={projectId ?? null}
+              meetingId={meeting.id}
+              compact
+            />
+          )}
+          <Link href={href} className="text-primary hover:underline text-sm">
+            進入 →
+          </Link>
+        </div>
       </td>
     </tr>
   )

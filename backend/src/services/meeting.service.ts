@@ -3,7 +3,8 @@ import * as vexaClient from '../lib/vexa.js'
 import { VexaConcurrentLimitError, parseGoogleMeetUrl } from '../lib/vexa.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
-import { createSession, handleSessionClose } from '../sessions/session-manager.js'
+import { createSession, closeSession, handleSessionClose } from '../sessions/session-manager.js'
+import { recordActivity } from './activity.service.js'
 
 const PLATFORM = 'google_meet'
 
@@ -122,6 +123,16 @@ export async function createMeeting(params: {
     },
   })
 
+  // 通用活動紀錄（僅關聯專案的會議才入專案歷史）
+  if (projectId) {
+    await recordActivity({
+      projectId,
+      actorVexaUserId: vexaUserId,
+      action: 'MEETING_CREATE',
+      targetLabel: meetingName,
+    })
+  }
+
   // ④ 邀請 Vexa Bot
   let vexaMeetingId: number
   try {
@@ -225,6 +236,129 @@ export async function leaveMeeting(meetingInstanceId: string): Promise<{
     status: 'ENDED',
     endedAt: new Date(),
   }
+}
+
+// ── Re-invite bot ──────────────────────────────────────────────────────────────
+
+/**
+ * 重新邀請蜜塔加入既有會議。
+ * 適用情境：Bot 加入失敗（FAILED）、會議已結束（ENDED）後想重新加入、
+ * 或 PENDING 卡住想重試。會議若已 ACTIVE 則拒絕（蜜塔已在會議中）。
+ */
+export async function reinviteBot(params: {
+  meetingInstanceId: string
+  vexaUserId: number
+  vexaApiTokenId: number
+  maxConcurrentBots: number
+  vexaToken: string
+  vexaTokenScopes: string[]
+}): Promise<{ id: string; status: string }> {
+  const {
+    meetingInstanceId,
+    vexaUserId,
+    vexaApiTokenId,
+    maxConcurrentBots,
+    vexaToken,
+    vexaTokenScopes,
+  } = params
+
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: { id: meetingInstanceId },
+    include: {
+      project: {
+        select: {
+          difyDatasetId: true,
+          ownerVexaUserId: true,
+          members: { where: { vexaUserId } },
+        },
+      },
+    },
+  })
+  if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+
+  // 權限：建立者本人，或對關聯專案有 canMeeting
+  const isCreator = meeting.createdByVexaUserId === vexaUserId
+  if (!isCreator) {
+    const isOwner = meeting.project?.ownerVexaUserId === vexaUserId
+    const m = meeting.project?.members[0]
+    if (!isOwner && !m?.canMeeting) {
+      throw new AppError('PERMISSION_DENIED', 403, '您沒有重新邀請蜜塔的權限')
+    }
+  }
+
+  if (meeting.status === 'ACTIVE') {
+    throw new AppError('INVALID_REQUEST', 400, '蜜塔已在會議中，無需重新邀請')
+  }
+
+  checkBotScopes(vexaTokenScopes)
+
+  const nativeMeetingId = parseGoogleMeetUrl(meeting.googleMeetUrl)
+  if (!nativeMeetingId) {
+    throw new AppError('INVALID_REQUEST', 400, '會議的 Google Meet URL 格式無效')
+  }
+
+  const activeBotCount = await prisma.meetingInstance.count({
+    where: { createdByVexaUserId: vexaUserId, status: 'ACTIVE' },
+  })
+  if (activeBotCount >= maxConcurrentBots) {
+    throw new AppError('BOT_CONCURRENT_LIMIT', 409, `您目前已有 ${activeBotCount} 個進行中的 Bot，無法再邀請`, {
+      maxConcurrentBots,
+      activeBotCount,
+    })
+  }
+
+  // 防禦：清掉任何殘留的 WS session
+  await closeSession(meetingInstanceId)
+
+  // 轉回 PENDING，記錄本次邀請者 token
+  await prisma.meetingInstance.update({
+    where: { id: meetingInstanceId },
+    data: {
+      status: 'PENDING',
+      startedAt: null,
+      endedAt: null,
+      creatorApiTokenId: vexaApiTokenId,
+    },
+  })
+
+  // 邀請 Vexa Bot
+  let vexaMeetingId: number
+  try {
+    const result = await vexaClient.inviteBot({ googleMeetUrl: meeting.googleMeetUrl, vexaToken })
+    vexaMeetingId = result.vexaMeetingId
+  } catch (err) {
+    if (err instanceof VexaConcurrentLimitError) {
+      throw new AppError('BOT_CONCURRENT_LIMIT', 409, '您目前已有進行中的 Bot，無法再邀請', {
+        maxConcurrentBots,
+        activeBotCount,
+      })
+    }
+    // 其他錯誤：保留 PENDING，UI 顯示可重試
+    logger.warn({ err, meetingInstanceId }, 'reinviteBot: inviteBot failed, keeping PENDING')
+    return { id: meetingInstanceId, status: 'PENDING' }
+  }
+
+  // 建立 WS Session
+  try {
+    await createSession(meetingInstanceId, {
+      vexaMeetingId,
+      platform: PLATFORM,
+      nativeMeetingId,
+      difyDatasetId: meeting.project?.difyDatasetId ?? null,
+      creatorVexaToken: vexaToken,
+    })
+    await prisma.meetingInstance.update({
+      where: { id: meetingInstanceId },
+      data: { vexaMeetingId, vexaNativeMeetingId: nativeMeetingId },
+    })
+  } catch (err) {
+    logger.warn({ err, meetingInstanceId }, 'reinviteBot: createSession failed, removing bot')
+    await vexaClient.removeBot(PLATFORM, nativeMeetingId, vexaToken).catch((e) =>
+      logger.warn({ e }, 'reinviteBot: removeBot after createSession failure also failed'),
+    )
+  }
+
+  return { id: meetingInstanceId, status: 'PENDING' }
 }
 
 // ── List / Get meetings ───────────────────────────────────────────────────────

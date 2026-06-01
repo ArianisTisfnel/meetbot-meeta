@@ -14,7 +14,7 @@ interface Props {
 export default function ProjectMeetingsPage({ params }: Props) {
   const { projectId } = use(params)
   const [search, setSearch] = useState('')
-  const [since, setSince] = useState<1 | 3 | 7 | undefined>()
+  const [since, setSince] = useState<number | undefined>()
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [createOpen, setCreateOpen] = useState(false)
 
@@ -42,7 +42,11 @@ export default function ProjectMeetingsPage({ params }: Props) {
       {isLoading ? (
         <p className="text-muted-foreground">載入中…</p>
       ) : (
-        <MeetingList meetings={data?.items ?? []} projectId={projectId} />
+        <MeetingList
+          meetings={data?.items ?? []}
+          projectId={projectId}
+          canEnd={permissions.canMeeting}
+        />
       )}
 
       {permissions.canMeeting && (

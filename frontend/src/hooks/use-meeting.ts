@@ -47,7 +47,29 @@ export function useBotLeave(projectId: string | null, meetingId: string) {
         : apiClient.post<{ id: string; status: string; endedAt: string }>(
             `/meetings/${meetingId}/bot/leave`
           ),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] })
+      queryClient.invalidateQueries({ queryKey: ['meetings'] })
+      queryClient.invalidateQueries({ queryKey: ['all-meetings'] })
+    },
+  })
+}
+
+export function useBotReinvite(projectId: string | null, meetingId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      projectId
+        ? apiClient.post<{ id: string; status: string }>(
+            `/projects/${projectId}/meetings/${meetingId}/bot/reinvite`
+          )
+        : apiClient.post<{ id: string; status: string }>(
+            `/meetings/${meetingId}/bot/reinvite`
+          ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] })
+      queryClient.invalidateQueries({ queryKey: ['meetings'] })
+      queryClient.invalidateQueries({ queryKey: ['all-meetings'] })
+    },
   })
 }

@@ -5,7 +5,7 @@ import type { MeetingDetail, MeetingStatus, PaginatedMeetings } from '@/types/ap
 
 export function useAllMeetings(params?: {
   search?: string
-  since?: 1 | 3 | 7
+  since?: number
   order?: 'asc' | 'desc'
   status?: MeetingStatus
 }) {
