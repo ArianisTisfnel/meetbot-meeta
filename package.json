@@ -1,16 +1,20 @@
 {
   "name": "meetbot",
   "private": true,
+  "scripts": {
+    "start": "concurrently --names \"backend,frontend\" --prefix-colors \"cyan,magenta\" \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\""
+  },
   "devDependencies": {
+    "@tanstack/react-query": "^5",
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
+    "@testing-library/user-event": "^14",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@vitejs/plugin-react": "^4",
-    "@testing-library/react": "^16",
-    "@testing-library/user-event": "^14",
-    "@testing-library/jest-dom": "^6",
-    "@tanstack/react-query": "^5",
     "clsx": "^2",
+    "concurrently": "^10.0.1",
     "hono": "^4",
     "jsdom": "^24",
     "react": "^18",

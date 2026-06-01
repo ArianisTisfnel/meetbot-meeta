@@ -213,6 +213,25 @@ npm run dev
 
 ---
 
+## 每日啟動（環境設定完成後）
+
+首次設定完成後，之後每次開機只需：
+
+**方法一（雙擊）**：直接雙擊專案根目錄的 `start.bat`
+
+**方法二（終端）**：
+```bash
+# 1. 確認 Docker Desktop 已開啟，然後啟動 Vexa 容器
+docker start <CONTAINER_ID>
+
+# 2. 在專案根目錄同時啟動前後端（Ctrl+C 一次全停）
+npm start
+```
+
+`npm start` 使用 `concurrently` 在同一個視窗以彩色 log 同時跑後端（port 4000）與前端（port 3000）。
+
+---
+
 ## 驗證一切正常
 
 打開瀏覽器前，先確認後端 API 可存取（應回傳 401，代表 auth middleware 正常）：
@@ -242,10 +261,13 @@ npx vitest run
 ## 常用指令速查
 
 ```bash
-# 後端開發啟動
+# 前後端同時啟動（推薦，Ctrl+C 一次全停）
+npm start
+
+# 後端單獨啟動
 cd backend && npm run dev
 
-# 前端開發啟動
+# 前端單獨啟動
 cd frontend && npm run dev
 
 # 單元測試（根目錄）
