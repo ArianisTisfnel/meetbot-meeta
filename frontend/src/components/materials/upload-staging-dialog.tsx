@@ -38,13 +38,18 @@ export function UploadStagingDialog({
       for (const file of files) {
         const formData = new FormData()
         formData.append('file', file)
-        await uploadMutation.mutateAsync(formData)
+        try {
+          await uploadMutation.mutateAsync(formData)
+        } catch (err: any) {
+          // 顯示後端真正的錯誤訊息（api-client 會 throw {error_code, message}）
+          const msg = err?.message ?? err?.error_code ?? '未知錯誤'
+          toast.error(`「${file.name}」上傳失敗：${msg}`)
+          return
+        }
       }
       toast.success(`成功上傳 ${files.length} 個檔案`)
       onSuccess()
       onOpenChange(false)
-    } catch {
-      toast.error('上傳失敗，請稍後再試')
     } finally {
       setUploading(false)
     }

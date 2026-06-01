@@ -1,6 +1,5 @@
 'use client'
 import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
 
 interface Props {
   search: string
@@ -11,11 +10,8 @@ interface Props {
   onOrderChange: (v: 'asc' | 'desc') => void
 }
 
-const TYPE_OPTIONS: Array<{ label: string; value: 'all' | 'owned' | 'shared' }> = [
-  { label: '全部', value: 'all' },
-  { label: '我建立的', value: 'owned' },
-  { label: '共享的', value: 'shared' },
-]
+const SELECT_CLASS =
+  'h-9 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
 export function ProjectFilterBar({
   search, onSearchChange,
@@ -23,32 +19,32 @@ export function ProjectFilterBar({
   order, onOrderChange,
 }: Props) {
   return (
-    <div className="flex flex-wrap gap-2 mb-4">
+    <div className="flex flex-wrap items-center gap-2 mb-4">
       <Input
         placeholder="搜尋專案…"
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
         className="max-w-xs"
       />
-      <div className="flex gap-1">
-        {TYPE_OPTIONS.map((opt) => (
-          <Button
-            key={opt.value}
-            variant={type === opt.value ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => onTypeChange(opt.value)}
-          >
-            {opt.label}
-          </Button>
-        ))}
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => onOrderChange(order === 'desc' ? 'asc' : 'desc')}
+      <select
+        className={SELECT_CLASS}
+        value={type}
+        onChange={(e) => onTypeChange(e.target.value as 'all' | 'owned' | 'shared')}
+        aria-label="專案範圍"
       >
-        {order === 'desc' ? '↓ 最新' : '↑ 最舊'}
-      </Button>
+        <option value="all">全部專案</option>
+        <option value="owned">我建立的</option>
+        <option value="shared">共享給我的</option>
+      </select>
+      <select
+        className={SELECT_CLASS}
+        value={order}
+        onChange={(e) => onOrderChange(e.target.value as 'asc' | 'desc')}
+        aria-label="排序"
+      >
+        <option value="desc">↓ 由新到舊</option>
+        <option value="asc">↑ 由舊到新</option>
+      </select>
     </div>
   )
 }

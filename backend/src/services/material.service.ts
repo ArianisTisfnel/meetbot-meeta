@@ -5,6 +5,7 @@ import { uploadFile, deleteFile } from '../lib/supabase.js'
 import { uploadDocument, deleteDocument } from '../lib/dify.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
+import { recordActivity } from './activity.service.js'
 
 const MAX_SIZE_BYTES = 15 * 1024 * 1024 // 15 MB
 
@@ -94,9 +95,13 @@ export async function uploadMaterial(
     })
   }
 
-  // ③ Upload to Supabase Storage: {projectId}/{uuid}/{filename}
+  // ③ Upload to Supabase Storage: {projectId}/{uuid}/{safeName}
+  // Supabase Storage 物件 key 僅接受 ASCII 安全字元，非 ASCII（如中文檔名）會被拒（InvalidKey）。
+  // 原始檔名仍存於 DB（filename / displayName），這裡只用清理過的安全名稱當儲存 key。
+  const safeName =
+    file.filename.replace(/[^A-Za-z0-9._-]/g, '_').replace(/_+/g, '_') || 'file'
   const fileUuid = crypto.randomUUID()
-  const storagePath = `${projectId}/${fileUuid}/${file.filename}`
+  const storagePath = `${projectId}/${fileUuid}/${safeName}`
   await uploadFile(storagePath, file.buffer, file.mimeType)
 
   let documentId: string | undefined
@@ -166,6 +171,13 @@ export async function uploadMaterial(
       },
     })
     .catch((e: unknown) => logger.error({ err: e }, 'Failed to write MaterialEditHistory for UPLOAD'))
+
+  await recordActivity({
+    projectId,
+    actorVexaUserId: vexaUserId,
+    action: 'MATERIAL_UPLOAD',
+    targetLabel: file.filename,
+  })
 
   const uploaderRows = await prisma.$queryRaw<Array<{ id: number; name: string | null }>>`
     SELECT id, name FROM public.users WHERE id = ${vexaUserId} LIMIT 1
@@ -317,6 +329,13 @@ export async function deleteMaterial(projectId: string, materialId: string, vexa
     .catch((e: unknown) =>
       logger.error({ err: e }, 'deleteMaterial: failed to write MaterialEditHistory'),
     )
+
+  await recordActivity({
+    projectId,
+    actorVexaUserId: vexaUserId,
+    action: 'MATERIAL_DELETE',
+    targetLabel: material.filename,
+  })
 }
 
 export async function listHistory(

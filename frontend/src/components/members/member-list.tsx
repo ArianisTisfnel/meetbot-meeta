@@ -1,6 +1,7 @@
 'use client'
 import { MemberRow } from './member-row'
 import { useRemoveMember } from '@/hooks/use-members'
+import { displayName } from '@/lib/utils'
 import { toast } from 'sonner'
 import type { MembersResponse } from '@/types/api'
 
@@ -34,7 +35,7 @@ export function MemberList({ data, projectId, canManage }: Props) {
         <tbody>
           <tr className="border-b bg-muted/30">
             <td className="py-3 px-4">
-              <div className="font-medium">👑 {data.owner.name ?? data.owner.email}</div>
+              <div className="font-medium">👑 {displayName(data.owner.name, data.owner.email)}</div>
               <div className="text-xs text-muted-foreground">{data.owner.email}</div>
             </td>
             <td className="py-3 px-4 text-muted-foreground text-sm">擁有者</td>

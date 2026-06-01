@@ -1,7 +1,9 @@
-import Link from 'next/link'
+'use client'
+import { useRouter } from 'next/navigation'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { EditableProjectName } from './editable-project-name'
 import type { ProjectListItem } from '@/types/api'
 
 interface Props {
@@ -9,15 +11,36 @@ interface Props {
 }
 
 export function ProjectCard({ project }: Props) {
+  const router = useRouter()
+  const isOwner = project.role === 'owner'
+
+  const enter = () => router.push(`/projects/${project.id}`)
+
   return (
-    <Card className="hover:shadow-md transition-shadow">
+    <Card
+      className="hover:shadow-md transition-shadow cursor-pointer"
+      role="button"
+      tabIndex={0}
+      onClick={enter}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          enter()
+        }
+      }}
+    >
       <CardContent className="p-6">
         <div className="flex items-start justify-between">
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <h3 className="font-semibold text-lg">{project.name}</h3>
-              <Badge variant={project.role === 'owner' ? 'default' : 'secondary'}>
-                {project.role === 'owner' ? 'Owner' : '成員'}
+              <EditableProjectName
+                projectId={project.id}
+                name={project.name}
+                canEdit={isOwner}
+                className="font-semibold text-lg truncate"
+              />
+              <Badge variant={isOwner ? 'default' : 'secondary'}>
+                {isOwner ? 'Owner' : '成員'}
               </Badge>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -29,8 +52,14 @@ export function ProjectCard({ project }: Props) {
               )}
             </p>
           </div>
-          <Button asChild size="sm">
-            <Link href={`/projects/${project.id}`}>進入 →</Link>
+          <Button
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation()
+              enter()
+            }}
+          >
+            進入 →
           </Button>
         </div>
       </CardContent>

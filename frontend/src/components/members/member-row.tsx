@@ -1,6 +1,7 @@
 'use client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { displayName } from '@/lib/utils'
 import type { ProjectMember } from '@/types/api'
 
 interface Props {
@@ -13,7 +14,7 @@ export function MemberRow({ member, canManage, onRemove }: Props) {
   return (
     <tr className="border-b">
       <td className="py-3 px-4">
-        <div className="font-medium">{member.name ?? member.email}</div>
+        <div className="font-medium">{displayName(member.name, member.email)}</div>
         <div className="text-xs text-muted-foreground">{member.email}</div>
       </td>
       <td className="py-3 px-4">
