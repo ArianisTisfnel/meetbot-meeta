@@ -1,3 +1,6 @@
+# Claude Code
+.claude/
+
 # Build output
 .dist/
 dist/
@@ -38,6 +41,7 @@ prisma/migrations/
 # TypeScript compiled
 *.js.map
 *.d.ts
+*.tsbuildinfo
 
 # Test
 coverage/
