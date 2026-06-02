@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { HoverHint } from '@/components/ui/hover-hint'
 import type { MeetingStatus } from '@/types/api'
 
 // 注意：此狀態代表「蜜塔（Bot）的加入狀態」，而非 Google Meet 會議本身的狀態。
@@ -43,24 +44,17 @@ interface Props {
 
 export function BotStatusIndicator({ status, href }: Props) {
   const { icon, label, color, hint } = STATUS_CONFIG[status] ?? FALLBACK
+  const cls = `inline-flex items-center gap-1 text-sm ${color} ${href ? 'hover:underline' : ''}`
 
-  const labelEl = (
-    <span className={`inline-flex items-center gap-1 text-sm ${color} ${href ? 'hover:underline' : ''}`}>
+  const labelEl = href ? (
+    <Link href={href} className={cls}>
+      {icon} {label}
+    </Link>
+  ) : (
+    <span className={cls}>
       {icon} {label}
     </span>
   )
 
-  return (
-    <span className="group relative inline-block">
-      {href ? <Link href={href}>{labelEl}</Link> : labelEl}
-      {hint && (
-        <span
-          role="tooltip"
-          className="pointer-events-none absolute bottom-full left-0 z-30 mb-1 hidden w-64 rounded-md bg-slate-900 px-3 py-2 text-xs leading-relaxed text-white shadow-lg group-hover:block group-focus-within:block"
-        >
-          {hint}
-        </span>
-      )}
-    </span>
-  )
+  return hint ? <HoverHint hint={hint}>{labelEl}</HoverHint> : labelEl
 }
