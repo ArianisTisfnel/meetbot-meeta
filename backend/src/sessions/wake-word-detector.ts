@@ -71,7 +71,7 @@ export async function handleChatMessage(
 async function resolveAnswer(
   session: MeetingSession,
   question: string,
-  mode: 'voice' | 'text',
+  mode: 'voice' | 'chat',
 ): Promise<string> {
   if (!session.difyDatasetId) {
     logger.info(
@@ -173,7 +173,7 @@ async function dispatchQuestion(
     })
 
     try {
-      const answer = await resolveAnswer(session, question, 'text')
+      const answer = await resolveAnswer(session, question, 'chat')
       await vexaClient.chatSend(session.platform, session.nativeMeetingId, session.creatorVexaToken, {
         text: answer,
       })

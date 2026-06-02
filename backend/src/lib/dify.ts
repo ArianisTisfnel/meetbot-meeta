@@ -130,7 +130,7 @@ const DIFY_NO_RESULT_SENTINEL = '抱歉 沒有檢索到相關資訊'
 export async function askQuestion(params: {
   datasetId: string
   question: string
-  mode: 'voice' | 'text'
+  mode: 'voice' | 'chat'
   userId: string
   conversationId?: string | null
 }): Promise<{ answer: string; conversationId: string }> {
