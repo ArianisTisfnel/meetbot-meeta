@@ -18,12 +18,9 @@ export function MeetingList({ meetings, projectId, canEnd }: Props) {
     )
   }
 
-  // 進行中（蜜塔在會議中）的會議浮到最上方，其餘維持原本（伺服器）排序
-  const sorted = [...meetings].sort((a, b) => {
-    const aActive = a.status === 'ACTIVE' ? 0 : 1
-    const bActive = b.status === 'ACTIVE' ? 0 : 1
-    return aActive - bActive
-  })
+  // 進行中（PENDING 加入中／ACTIVE 在會議中）的會議浮到最上方，方便使用者快速進入；其餘維持原本（伺服器）排序
+  const isOngoing = (s: MeetingListItem['status']) => s === 'ACTIVE' || s === 'PENDING'
+  const sorted = [...meetings].sort((a, b) => Number(isOngoing(b.status)) - Number(isOngoing(a.status)))
 
   return (
     <div className="overflow-x-auto">

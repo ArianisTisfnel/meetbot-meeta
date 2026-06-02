@@ -8,6 +8,8 @@ interface Props {
   meetingId: string
   variant?: 'default' | 'outline'
   label?: string
+  /** 緊湊模式：用於列表列 */
+  compact?: boolean
 }
 
 export function ReinviteBotButton({
@@ -15,10 +17,12 @@ export function ReinviteBotButton({
   meetingId,
   variant = 'default',
   label = '重新邀請蜜塔',
+  compact,
 }: Props) {
   const reinvite = useBotReinvite(projectId, meetingId)
 
-  const handleReinvite = () => {
+  const handleReinvite = (e: React.MouseEvent) => {
+    e.stopPropagation()
     reinvite.mutate(undefined, {
       onSuccess: () => toast.success('已重新邀請蜜塔，加入中…'),
       onError: (err: any) => toast.error(err?.message ?? '重新邀請失敗'),
@@ -26,8 +30,14 @@ export function ReinviteBotButton({
   }
 
   return (
-    <Button variant={variant} onClick={handleReinvite} disabled={reinvite.isPending}>
-      {reinvite.isPending ? '邀請中…' : `🔄 ${label}`}
+    <Button
+      variant={compact ? 'outline' : variant}
+      size={compact ? 'sm' : undefined}
+      onClick={handleReinvite}
+      disabled={reinvite.isPending}
+      className={compact ? 'h-7 px-2 text-xs' : undefined}
+    >
+      {reinvite.isPending ? '邀請中…' : compact ? '🔄 重邀' : `🔄 ${label}`}
     </Button>
   )
 }
