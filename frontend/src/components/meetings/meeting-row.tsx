@@ -1,5 +1,4 @@
 'use client'
-import Link from 'next/link'
 import { BotStatusIndicator } from './bot-status-indicator'
 import { EndMeetingButton } from './end-meeting-button'
 import { CancelMeetingButton } from './cancel-meeting-button'
@@ -22,7 +21,7 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
   return (
     <tr className="border-b hover:bg-muted/50">
       <td className="py-3 px-4">
-        <BotStatusIndicator status={meeting.status} />
+        <BotStatusIndicator status={meeting.status} href={href} />
       </td>
       <td className="py-3 px-4 font-medium">{meeting.name}</td>
       {!projectId && (
@@ -68,9 +67,6 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
               加入會議 ↗
             </a>
           )}
-          <Link href={href} className="text-primary hover:underline text-sm">
-            進入 →
-          </Link>
         </div>
       </td>
     </tr>
