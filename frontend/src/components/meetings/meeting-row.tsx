@@ -49,6 +49,17 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
               compact
             />
           )}
+          {meeting.status !== 'ENDED' && meeting.googleMeetUrl && (
+            <a
+              href={meeting.googleMeetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline text-sm whitespace-nowrap"
+              title="在新分頁開啟 Google Meet 通話"
+            >
+              加入會議 ↗
+            </a>
+          )}
           <Link href={href} className="text-primary hover:underline text-sm">
             進入 →
           </Link>

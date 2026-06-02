@@ -419,6 +419,7 @@ export async function listMeetings(vexaUserId: number, params: ListMeetingsParam
     items: items.map((m) => ({
       id: m.id,
       name: m.name,
+      googleMeetUrl: m.googleMeetUrl,
       status: m.status,
       projectId: m.projectId ?? null,
       projectName: m.project?.name ?? null,
