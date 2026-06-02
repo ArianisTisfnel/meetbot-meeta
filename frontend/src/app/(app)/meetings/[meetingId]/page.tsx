@@ -58,11 +58,12 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
             </p>
           )}
         </div>
-        {meeting.status === 'ACTIVE' ? (
+        {meeting.status === 'ACTIVE' && (
           <Button variant="destructive" onClick={handleLeave} disabled={botLeave.isPending}>
             結束會議
           </Button>
-        ) : (
+        )}
+        {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
           <ReinviteBotButton projectId={null} meetingId={meetingId} />
         )}
       </div>

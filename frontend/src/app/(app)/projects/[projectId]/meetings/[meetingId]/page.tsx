@@ -76,18 +76,18 @@ export default function MeetingDetailPage({ params }: Props) {
             </p>
           )}
         </div>
-        {permissions.canMeeting &&
-          (meeting.status === 'ACTIVE' ? (
-            <Button
-              variant="destructive"
-              onClick={handleLeave}
-              disabled={botLeave.isPending}
-            >
-              結束會議
-            </Button>
-          ) : (
-            <ReinviteBotButton projectId={projectId} meetingId={meetingId} />
-          ))}
+        {meeting.status === 'ACTIVE' && permissions.canMeeting && (
+          <Button
+            variant="destructive"
+            onClick={handleLeave}
+            disabled={botLeave.isPending}
+          >
+            結束會議
+          </Button>
+        )}
+        {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
+          <ReinviteBotButton projectId={projectId} meetingId={meetingId} />
+        )}
       </div>
 
       {/* Content by status */}
