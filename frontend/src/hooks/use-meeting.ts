@@ -55,6 +55,25 @@ export function useBotLeave(projectId: string | null, meetingId: string) {
   })
 }
 
+export function useCancelMeeting(projectId: string | null, meetingId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      projectId
+        ? apiClient.post<{ id: string; status: string; endedAt: string }>(
+            `/projects/${projectId}/meetings/${meetingId}/cancel`
+          )
+        : apiClient.post<{ id: string; status: string; endedAt: string }>(
+            `/meetings/${meetingId}/cancel`
+          ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] })
+      queryClient.invalidateQueries({ queryKey: ['meetings'] })
+      queryClient.invalidateQueries({ queryKey: ['all-meetings'] })
+    },
+  })
+}
+
 export function useBotReinvite(projectId: string | null, meetingId: string) {
   const queryClient = useQueryClient()
   return useMutation({

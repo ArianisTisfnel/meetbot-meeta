@@ -238,6 +238,56 @@ export async function leaveMeeting(meetingInstanceId: string): Promise<{
   }
 }
 
+// ── Cancel pending meeting ───────────────────────────────────────────────────
+
+/**
+ * 取消等待中（PENDING）的會議：撤除可能已派出的 Vexa bot、關閉 WS session，並標記為 FAILED。
+ * 與 leaveMeeting 不同，不觸發摘要（會議從未真正開始）。
+ * 適用情境：蜜塔卡在加入中、或想在逾時自動轉 FAILED 前手動清掉。
+ */
+export async function cancelMeeting(meetingInstanceId: string): Promise<{
+  id: string
+  status: string
+  endedAt: Date
+}> {
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: { id: meetingInstanceId },
+  })
+  if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+  if (meeting.status !== 'PENDING') {
+    throw new AppError('INVALID_REQUEST', 400, '只有等待中（蜜塔加入中）的會議才能取消')
+  }
+
+  // 關閉可能存在的 WS session（closeSession 先從 Map 移除再關閉，避免自動重連）
+  await closeSession(meetingInstanceId).catch((err) =>
+    logger.warn({ err, meetingInstanceId }, 'cancelMeeting: closeSession failed, continuing'),
+  )
+
+  // 若已派出 Vexa bot，嘗試撤除（best effort）
+  if (meeting.vexaNativeMeetingId) {
+    const tokenRows = await prisma.$queryRaw<Array<{ token: string }>>`
+      SELECT token FROM public.api_tokens
+      WHERE id = ${meeting.creatorApiTokenId}
+        AND (expires_at IS NULL OR expires_at > NOW())
+      LIMIT 1
+    `
+    if (tokenRows.length) {
+      try {
+        await vexaClient.removeBot(PLATFORM, meeting.vexaNativeMeetingId, tokenRows[0].token)
+      } catch (err) {
+        logger.warn({ err, meetingInstanceId }, 'cancelMeeting: removeBot failed, continuing')
+      }
+    }
+  }
+
+  const updated = await prisma.meetingInstance.update({
+    where: { id: meetingInstanceId },
+    data: { status: 'FAILED', endedAt: new Date() },
+  })
+
+  return { id: meetingInstanceId, status: updated.status, endedAt: updated.endedAt! }
+}
+
 // ── Re-invite bot ──────────────────────────────────────────────────────────────
 
 /**

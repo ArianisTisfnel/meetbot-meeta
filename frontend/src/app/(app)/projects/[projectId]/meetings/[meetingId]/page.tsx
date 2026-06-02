@@ -7,6 +7,7 @@ import { useTranscriptions } from '@/hooks/use-transcriptions'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
+import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
 import { Button } from '@/components/ui/button'
 import { formatDate } from '@/lib/utils'
@@ -84,6 +85,9 @@ export default function MeetingDetailPage({ params }: Props) {
           >
             結束會議
           </Button>
+        )}
+        {meeting.status === 'PENDING' && permissions.canMeeting && (
+          <CancelMeetingButton projectId={projectId} meetingId={meetingId} />
         )}
         {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
           <ReinviteBotButton projectId={projectId} meetingId={meetingId} />

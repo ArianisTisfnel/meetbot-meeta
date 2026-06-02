@@ -6,6 +6,7 @@ import { useTranscriptions } from '@/hooks/use-transcriptions'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
+import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
 import { Button } from '@/components/ui/button'
 import { formatDate } from '@/lib/utils'
@@ -62,6 +63,9 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
           <Button variant="destructive" onClick={handleLeave} disabled={botLeave.isPending}>
             結束會議
           </Button>
+        )}
+        {meeting.status === 'PENDING' && (
+          <CancelMeetingButton projectId={null} meetingId={meetingId} />
         )}
         {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
           <ReinviteBotButton projectId={null} meetingId={meetingId} />

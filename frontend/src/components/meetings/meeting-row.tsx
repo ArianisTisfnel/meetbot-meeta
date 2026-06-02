@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import { BotStatusIndicator } from './bot-status-indicator'
 import { EndMeetingButton } from './end-meeting-button'
+import { CancelMeetingButton } from './cancel-meeting-button'
 import { ReinviteBotButton } from './reinvite-bot-button'
 import { formatDate } from '@/lib/utils'
 import type { MeetingListItem } from '@/types/api'
@@ -37,6 +38,13 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
         <div className="flex items-center justify-end gap-3">
           {canEnd && meeting.status === 'ACTIVE' && (
             <EndMeetingButton
+              projectId={projectId ?? null}
+              meetingId={meeting.id}
+              compact
+            />
+          )}
+          {canEnd && meeting.status === 'PENDING' && (
+            <CancelMeetingButton
               projectId={projectId ?? null}
               meetingId={meeting.id}
               compact

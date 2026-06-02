@@ -77,6 +77,17 @@ app.post('/meetings/:meetingId/bot/leave', async (c) => {
   return c.json(result)
 })
 
+// POST /meetings/:meetingId/cancel — 取消等待中的會議（建立者本人）
+app.post('/meetings/:meetingId/cancel', async (c) => {
+  const meetingId = c.req.param('meetingId')
+  const meeting = await meetingService.getMeeting(meetingId, c.get('vexaUserId'))
+  if (meeting.createdBy.vexaUserId !== c.get('vexaUserId')) {
+    throw new AppError('PERMISSION_DENIED', 403, '只有建立者可取消會議')
+  }
+  const result = await meetingService.cancelMeeting(meetingId)
+  return c.json(result)
+})
+
 // POST /meetings/:meetingId/bot/reinvite — 全局重新邀請蜜塔
 app.post('/meetings/:meetingId/bot/reinvite', async (c) => {
   const result = await meetingService.reinviteBot({
@@ -194,6 +205,17 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/leave', async (c) => {
     c.get('vexaUserId'),
   )
   const result = await meetingService.leaveMeeting(c.req.param('meetingId'))
+  return c.json(result)
+})
+
+// POST /projects/:projectId/meetings/:meetingId/cancel
+app.post('/projects/:projectId/meetings/:meetingId/cancel', async (c) => {
+  await meetingService.getProjectMeeting(
+    c.req.param('projectId'),
+    c.req.param('meetingId'),
+    c.get('vexaUserId'),
+  )
+  const result = await meetingService.cancelMeeting(c.req.param('meetingId'))
   return c.json(result)
 })
 
