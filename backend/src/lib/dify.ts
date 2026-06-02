@@ -1,5 +1,6 @@
 import { env } from '../types/env.js'
 import { AppError } from '../middleware/error-handler.js'
+import { logger } from '../middleware/logger.js'
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${env.DIFY_API_BASE}${path}`, {
@@ -162,10 +163,19 @@ export async function askQuestion(params: {
 
   if (answer === DIFY_NO_RESULT_SENTINEL) {
     // 靜默失效偵測：RAG 可能因 DIFY_DATASET_API_KEY 未設定而失效
-    const { logger } = await import('../middleware/logger.js')
     logger.warn(
       { datasetId: params.datasetId },
       'Dify Chatflow returned no-result sentinel — check DIFY_DATASET_API_KEY in Dify platform env vars',
+    )
+  } else {
+    logger.info(
+      {
+        datasetId: params.datasetId,
+        userId: params.userId,
+        conversationId: data.conversation_id ?? '',
+        answerLength: answer.length,
+      },
+      'Dify Chatflow answered (RAG hit)',
     )
   }
 

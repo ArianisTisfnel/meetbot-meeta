@@ -74,9 +74,18 @@ async function resolveAnswer(
   mode: 'voice' | 'text',
 ): Promise<string> {
   if (!session.difyDatasetId) {
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, route: 'transcript' },
+      'resolveAnswer: no difyDatasetId, answering from transcript',
+    )
     const { answer } = await answerFromTranscript(session, question)
     return answer
   }
+
+  logger.info(
+    { meetingInstanceId: session.meetingInstanceId, route: 'dify', datasetId: session.difyDatasetId, mode },
+    'resolveAnswer: dispatching question to Dify RAG',
+  )
 
   if (session.lastQuestionAt > 0 && Date.now() - session.lastQuestionAt > CONVERSATION_IDLE_RESET_MS) {
     logger.info({ meetingInstanceId: session.meetingInstanceId }, 'Dify conversation reset: idle timeout')
