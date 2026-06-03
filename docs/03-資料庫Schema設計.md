@@ -1,5 +1,7 @@
 # 資料庫 Schema 設計
 
+> 🟢 **活文件**：須與目前程式碼同步，可當現行規格參考。若與程式不符，以程式為準並回寫本文件。最後對齊：2026-06-04。
+
 |項目|內容|
 |----|-----|
 |文件版本|v1.8|
@@ -665,28 +667,18 @@ const activeSessions = new Map<string, MeetingSession>()
 
 ---
 
-## 六、環境變數（資料庫相關）
+## 六、環境變數
+
+> **環境變數正本見 `06-後端架構.md §十`**（完整清單，避免多處重複而 drift）。
+
+與資料庫直接相關者：
 
 ```bash
-# Supabase Postgres（連線字串尾加 ?schema=app，確保 Prisma 預設操作 app schema）
+# 連線字串尾端加 ?schema=app，確保 Prisma 預設操作 app schema
 DATABASE_URL="postgresql://postgres:[PWD]@db.[PROJ].supabase.co:5432/postgres?schema=app"
-
-# Supabase（供後端 Service Role 存取 Storage）
-SUPABASE_URL="https://[PROJ].supabase.co"
-SUPABASE_SERVICE_ROLE_KEY="..."      # 絕對不可暴露給前端
-SUPABASE_STORAGE_BUCKET="meeting-materials"
-
-# Dify（四把獨立 API Key，分別對應不同用途；詳見 01-RAG_API_串接文件_v1.1.md）
-DIFY_API_BASE="https://api.dify.ai/v1"
-DIFY_DATASET_API_KEY="dataset-..."              # Knowledge Base 操作：上傳/刪除文件、查詢索引狀態
-DIFY_WORKFLOW_API_KEY="app-..."                 # RAG Q&A Chatflow（01-edu2.yml）
-DIFY_SUMMARY_WORKFLOW_API_KEY="app-..."         # 檔案摘要 Workflow（上傳檔案後的即時內容預覽）
-DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY="app-..." # 會議摘要 Workflow（會議結束後自動觸發）
-
-# Claude（Anthropic）
-ANTHROPIC_API_KEY="sk-ant-..."       # 無知識庫會議的逐字稿 Q&A 專用（answerFromTranscript 路徑）
-                                     # 摘要已改為透過 Dify 工作流處理（以 MD 檔傳入），不再直接呼叫 Claude
 ```
+
+其餘（Supabase Storage / Dify / Anthropic / Vexa / 邀請信 SMTP 等）一律以 06 §十 為準。
 
 ---
 

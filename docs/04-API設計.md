@@ -1,5 +1,7 @@
 ﻿# API 設計文件
 
+> 🟢 **活文件**：須與目前程式碼同步，可當現行規格參考。若與程式不符，以程式為準並回寫本文件。最後對齊：2026-06-04。
+
 |項目|內容|
 |----|-----|
 |文件版本|v1.9|
@@ -1412,25 +1414,11 @@ setInterval(async () => {
 
 ---
 
-## 十三、環境變數（API 相關）
+## 十三、環境變數
 
-```bash
-# Hono server
-APP_PORT=4000
-APP_CORS_ORIGINS="http://localhost:3000"
-
-# Dify（四把獨立 API Key，分別對應不同用途；完整說明見 01-RAG_API_串接文件_v1.1.md）
-DIFY_API_BASE="https://api.dify.ai/v1"
-DIFY_DATASET_API_KEY="dataset-..."              # Knowledge Base 操作（上傳/刪除文件、查詢索引狀態）
-DIFY_WORKFLOW_API_KEY="app-..."                 # RAG Q&A Chatflow（/chat-messages）
-DIFY_SUMMARY_WORKFLOW_API_KEY="app-..."         # 檔案摘要 Workflow（/workflows/run，上傳後預覽）
-DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY="app-..." # 會議摘要 Workflow（/workflows/run，會議結束後觸發）
-DIFY_CHATFLOW_TIMEOUT_MS=45000                  # Q&A Chatflow 逾時（ms）；預設 45 秒
-
-# Claude（Anthropic）
-ANTHROPIC_API_KEY="sk-ant-..."       # 無知識庫會議的逐字稿 Q&A 專用（answerFromTranscript 路徑）
-                                     # 摘要已改為透過 Dify 工作流處理（以 MD 檔傳入），不再直接呼叫 Claude
-```
+> **環境變數正本見 `06-後端架構.md §十`**（完整清單，避免多處重複而 drift）。
+> 含 Hono server（`APP_PORT`/`APP_CORS_ORIGINS`/`APP_BASE_URL`）、Dify 四把 key 與 `DIFY_CHATFLOW_TIMEOUT_MS`、
+> Anthropic、Vexa、Supabase、邀請信 SMTP（`SMTP_*`/`MAIL_FROM`/`INVITATION_TTL_DAYS`）等。
 
 > `NEXTAUTH_SECRET` 僅前端（Next.js）使用，後端不需要。
 > 後端認證改由查詢 `public.api_tokens` 驗證 vexaToken，詳見第一節。
