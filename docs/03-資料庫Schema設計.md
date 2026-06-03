@@ -347,12 +347,14 @@ enum MeetingStatus {
   PENDING // 會議實例已建立，Bot 尚未加入（Vexa API 呼叫中）
   ACTIVE  // Bot 已成功加入會議，逐字稿進行中
   ENDED   // 會議已結束（正常）：Bot 主動離開或使用者呼叫 POST /bot/leave
-  FAILED  // 終止態（異常）：
+  FAILED  // 異常終止態（但非不可逆）：
           //   - 服務重啟時發現的 zombie PENDING（5 分鐘超時清理）
           //   - Bot 異常終止：Vexa 回報 meeting.status = "failed"（Bot 在 active 前被踢出或逾時）
           //     → 由 handleSessionClose(id, 'failed') 設定，不觸發摘要工作流
+          //   - 使用者主動取消 PENDING（POST .../cancel）也會落入 FAILED
           //   ⚠️ FAILED 與 ENDED 皆不可刪除（保護歷史查詢紀錄）
-          //   前端對 FAILED 狀態顯示錯誤訊息，不顯示重試按鈕
+          //   前端對 FAILED 顯示失敗原因 + 「🔄 重新邀請蜜塔」按鈕（POST .../bot/reinvite，
+          //     轉回 PENDING 重試，不需重建會議）；ENDED 同樣可重邀
 
   @@map("meeting_status")
   @@schema("app")

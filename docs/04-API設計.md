@@ -702,14 +702,18 @@ interface PaginatedResponse<T> {
 
 ### `GET /projects/:projectId/history`
 
-取得專案資料操作的歷史紀錄。**需要：檢視權**。
+取得專案的**通用活動紀錄**（讀 `app.activity_logs`，非 `material_edit_history`）。**需要：檢視權**。
+
+> ⚠️ **資料來源已改為 `activity_logs`**：涵蓋素材增刪、成員邀請/加入/移除、權限變更、會議建立、專案改名等
+> 8 種 `ActivityAction`，由 `activity.service.listActivity` 提供（route 掛在 materials.ts）。
+> `material_edit_history` 表仍在上傳/刪除時寫入（更細粒度審計），但**目前不經此端點對外呈現**。
 
 **Query Params**
 
 | 參數 | 預設 |
 |------|------|
 | `page` | 1 |
-| `per_page` | 20 |
+| `per_page` | 30 |
 
 **Response 200**
 ```json
@@ -717,30 +721,32 @@ interface PaginatedResponse<T> {
   "items": [
     {
       "id": "uuid",
-      "action": "DELETE",
-      "filenameSnapshot": "company-rules.pdf",
-      "performedBy": {
+      "action": "MEMBER_INVITE",
+      "targetLabel": "invitee@example.com",
+      "metadata": null,
+      "actor": {
         "vexaUserId": 123,
-        "name": "User Name"
+        "email": "owner@example.com",
+        "name": "Owner Name"
       },
-      "performedAt": "2026-05-26T14:30:00Z"
+      "createdAt": "2026-05-26T14:30:00Z"
     },
     {
       "id": "uuid",
-      "action": "UPLOAD",
-      "filenameSnapshot": "company-rules.pdf",
-      "performedBy": {
-        "vexaUserId": 123,
-        "name": "User Name"
-      },
-      "performedAt": "2026-05-26T10:00:00Z"
+      "action": "MATERIAL_UPLOAD",
+      "targetLabel": "company-rules.pdf",
+      "metadata": null,
+      "actor": { "vexaUserId": 123, "email": "owner@example.com", "name": "Owner Name" },
+      "createdAt": "2026-05-26T10:00:00Z"
     }
   ],
   "total": 25,
   "page": 1,
-  "perPage": 20
+  "perPage": 30
 }
 ```
+> `action` 取值：`MATERIAL_UPLOAD`/`MATERIAL_DELETE`/`MEMBER_INVITE`/`MEMBER_ADD`/`MEMBER_REMOVE`/
+> `MEMBER_PERMISSION_UPDATE`/`MEETING_CREATE`/`PROJECT_RENAME`；`metadata` 選填（如權限變更的前後值）。
 
 ---
 
@@ -908,6 +914,30 @@ interface PaginatedResponse<T> {
 ```
 
 **離開流程（後端）：** 與 `POST /projects/:projectId/meetings/:meetingId/bot/leave` 相同（見§九），授權改為驗證 `vexaUserId === meeting.createdByVexaUserId`。
+
+---
+
+### `POST /meetings/:meetingId/cancel`
+
+取消**等待中（PENDING）**的會議（蜜塔卡在加入中時手動清除）。**需要：建立者本人**。
+僅在 `status = PENDING` 時有效，否則 `400 INVALID_REQUEST`。
+
+撤除可能已派出的 Vexa Bot、關閉 WS session，標記為 **FAILED**（**不觸發摘要**，會議從未真正開始）。
+
+**Response 200**：`{ "id": "uuid", "status": "FAILED", "endedAt": "..." }`
+
+---
+
+### `POST /meetings/:meetingId/bot/reinvite`
+
+重新邀請蜜塔加入**既有**會議（適用 `FAILED` / `ENDED` / 卡住的 `PENDING`）。**需要：建立者本人，或關聯專案的會議權**。
+若 `status = ACTIVE` 則 `400 INVALID_REQUEST`（蜜塔已在會議中）。
+
+會把會議轉回 `PENDING`、清空 `startedAt/endedAt`、記錄本次邀請者 token，再走一次「邀請 Bot + 建立 WS session」流程（同 `POST .../meetings` 步驟④⑤）。並發上限與 scope 檢查同建立流程。
+
+**Response 200**：`{ "id": "uuid", "status": "PENDING" }`
+
+**Error cases**：`400 INVALID_REQUEST`（ACTIVE 或 URL 無效）、`403 INSUFFICIENT_SCOPE`、`403 PERMISSION_DENIED`、`409 BOT_CONCURRENT_LIMIT`。
 
 ---
 
@@ -1170,6 +1200,29 @@ interface PaginatedResponse<T> {
 > **注意**：Vexa 的 Bot 控制 API 以 `{platform}/{nativeMeetingId}` 作路由參數，
 > 而非使用 Vexa 回傳的整數 `meeting_id`（後者僅用於查詢 transcriptions）。
 > 因此 `meeting_instances` 需同時儲存兩個 ID。
+>
+> ⚠️ **授權一致性備註**：`bot/leave` 與 `cancel` 的 route 目前只透過 `getProjectMeeting` 驗證**檢視權**，
+> 未在後端再強制 `canMeeting`（前端以 `canMeeting` 控制按鈕顯示）。權限矩陣標示的 `canMeeting` 為**設計意圖**，
+> 後端尚未對齊——見 `docs/12 §四`（待議的授權缺口）。`reinvite` 則已在 service 內部驗證 `建立者 / owner / canMeeting`。
+
+---
+
+### `POST /projects/:projectId/meetings/:meetingId/cancel`
+
+取消專案內**等待中（PENDING）**的會議。**需要：會議權**（設計意圖；後端現況見上方授權備註）。
+行為同全局 `POST /meetings/:meetingId/cancel`：撤 Bot、關 WS、標記 FAILED、不觸發摘要。
+
+**Response 200**：`{ "id": "uuid", "status": "FAILED", "endedAt": "..." }`
+
+---
+
+### `POST /projects/:projectId/meetings/:meetingId/bot/reinvite`
+
+重新邀請蜜塔加入專案內既有會議（`FAILED`/`ENDED`/卡住的 `PENDING`）。**需要：會議權（Owner 或 `canMeeting` 參與者，或建立者本人）**——此端點由 `reinviteBot` 在 service 內部確實驗證。
+
+**Response 200**：`{ "id": "uuid", "status": "PENDING" }`
+
+**Error cases**：同全局 reinvite（`400`/`403 INSUFFICIENT_SCOPE`/`403 PERMISSION_DENIED`/`409 BOT_CONCURRENT_LIMIT`）。
 
 ---
 
@@ -1260,6 +1313,8 @@ interface PaginatedResponse<T> {
 | `GET /meetings/:mid`（全局存取） | ✅ | ✅ | ✅ | ✅ | ✅（建立者）|
 | `PATCH /meetings/:mid`（全局改名） | —¹ | —¹ | —¹ | —¹ | ✅（建立者）|
 | `POST /meetings/:mid/bot/leave`（全局停止） | —¹ | —¹ | —¹ | —¹ | ✅（建立者）|
+| `POST /meetings/:mid/cancel`（全局取消 PENDING） | —¹ | —¹ | —¹ | —¹ | ✅（建立者）|
+| `POST /meetings/:mid/bot/reinvite`（全局重邀） | —¹ | —¹ | —¹ | —¹ | ✅（建立者）|
 | `GET /meetings/:mid/transcriptions`（全局逐字稿） | —¹ | —¹ | —¹ | —¹ | ✅（建立者）|
 | `GET /projects` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `POST /projects` | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -1282,10 +1337,15 @@ interface PaginatedResponse<T> {
 | `GET /projects/.../meetings/:mid` | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `PATCH /projects/.../meetings/:mid` | ✅ | ❌ | ❌ | ✅² | ❌ |
 | `GET /projects/.../meetings/:mid/transcriptions` | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `POST /projects/.../meetings/:mid/bot/leave` | ✅ | ❌ | ❌ | ✅² | ❌ |
+| `POST /projects/.../meetings/:mid/bot/leave` | ✅ | ❌³ | ❌³ | ✅² | ❌ |
+| `POST /projects/.../meetings/:mid/cancel` | ✅ | ❌³ | ❌³ | ✅² | ❌ |
+| `POST /projects/.../meetings/:mid/bot/reinvite` | ✅ | ❌ | ❌ | ✅² | ❌ |
 
 > ¹ **全局無關聯專案端點**（`PATCH /meetings/:mid`、`POST /meetings/:mid/bot/leave`、`GET /meetings/:mid/transcriptions`）：
 > 授權邏輯為 `vexaUserId === meeting.createdByVexaUserId`（**建立者本人**），不涉及專案成員權限。
+>
+> ³ **授權缺口（待修）**：`bot/leave`、`cancel` 的專案版 route 後端目前僅驗證檢視權，
+> 故 canView/canEdit 參與者實際上可呼叫（前端按鈕以 `canMeeting` 隱藏）。矩陣標 ❌ 為**設計意圖**，見 `docs/12 §四`。
 >
 > ² **會議操作（建立、改名、結束）需要 `canMeeting`**：
 > Owner 永遠具備此權限；參與者的 `canMeeting` 預設為 `false`，
