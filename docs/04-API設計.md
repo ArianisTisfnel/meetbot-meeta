@@ -1201,9 +1201,9 @@ interface PaginatedResponse<T> {
 > 而非使用 Vexa 回傳的整數 `meeting_id`（後者僅用於查詢 transcriptions）。
 > 因此 `meeting_instances` 需同時儲存兩個 ID。
 >
-> ⚠️ **授權一致性備註**：`bot/leave` 與 `cancel` 的 route 目前只透過 `getProjectMeeting` 驗證**檢視權**，
-> 未在後端再強制 `canMeeting`（前端以 `canMeeting` 控制按鈕顯示）。權限矩陣標示的 `canMeeting` 為**設計意圖**，
-> 後端尚未對齊——見 `docs/12 §四`（待議的授權缺口）。`reinvite` 則已在 service 內部驗證 `建立者 / owner / canMeeting`。
+> **授權一致性**：`bot/leave`、`cancel`、`reinvite` 的專案版 route **皆已在後端強制 `canMeeting`**：
+> 前兩者透過 `meeting.service.requireProjectMeetingManageAccess`（Owner 或 canMeeting + 確認會議屬此專案），
+> `reinvite` 由 `reinviteBot` service 內部驗證（建立者 / owner / canMeeting）。前端按鈕亦以 `canMeeting` 控制顯示。
 
 ---
 
@@ -1337,17 +1337,14 @@ interface PaginatedResponse<T> {
 | `GET /projects/.../meetings/:mid` | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `PATCH /projects/.../meetings/:mid` | ✅ | ❌ | ❌ | ✅² | ❌ |
 | `GET /projects/.../meetings/:mid/transcriptions` | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `POST /projects/.../meetings/:mid/bot/leave` | ✅ | ❌³ | ❌³ | ✅² | ❌ |
-| `POST /projects/.../meetings/:mid/cancel` | ✅ | ❌³ | ❌³ | ✅² | ❌ |
+| `POST /projects/.../meetings/:mid/bot/leave` | ✅ | ❌ | ❌ | ✅² | ❌ |
+| `POST /projects/.../meetings/:mid/cancel` | ✅ | ❌ | ❌ | ✅² | ❌ |
 | `POST /projects/.../meetings/:mid/bot/reinvite` | ✅ | ❌ | ❌ | ✅² | ❌ |
 
 > ¹ **全局無關聯專案端點**（`PATCH /meetings/:mid`、`POST /meetings/:mid/bot/leave`、`GET /meetings/:mid/transcriptions`）：
 > 授權邏輯為 `vexaUserId === meeting.createdByVexaUserId`（**建立者本人**），不涉及專案成員權限。
 >
-> ³ **授權缺口（待修）**：`bot/leave`、`cancel` 的專案版 route 後端目前僅驗證檢視權，
-> 故 canView/canEdit 參與者實際上可呼叫（前端按鈕以 `canMeeting` 隱藏）。矩陣標 ❌ 為**設計意圖**，見 `docs/12 §四`。
->
-> ² **會議操作（建立、改名、結束）需要 `canMeeting`**：
+> ² **會議操作（建立、改名、結束、取消、重邀）需要 `canMeeting`**：
 > Owner 永遠具備此權限；參與者的 `canMeeting` 預設為 `false`，
 > 需由 Owner 透過 `PATCH .../members/:uid` 授予。
 > 設計動機：所有者無法出席時，可授權信任的參與者代為主持（邀請 Bot、開啟/結束會議）。

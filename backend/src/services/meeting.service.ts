@@ -57,6 +57,26 @@ function requireCanView(
   }
 }
 
+/**
+ * 驗證使用者對「專案內某會議」具備會議權（Owner 或被授予 canMeeting 的參與者），
+ * 並確認該會議確實屬於此專案。供 bot/leave、cancel 等需要 canMeeting 的專案版 route 使用。
+ * （leaveMeeting / cancelMeeting 本身不含權限檢查，且同時被全局路由以 createdBy 授權呼叫，
+ *  故權限在此處的呼叫端把關，不下放到那兩個函式。）
+ */
+export async function requireProjectMeetingManageAccess(
+  projectId: string,
+  meetingId: string,
+  vexaUserId: number,
+): Promise<void> {
+  const project = await getProjectWithAccess(projectId, vexaUserId)
+  requireCanMeeting(project, vexaUserId)
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: { id: meetingId, projectId },
+    select: { id: true },
+  })
+  if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+}
+
 // ── Create meeting ─────────────────────────────────────────────────────────────
 
 export async function createMeeting(params: {

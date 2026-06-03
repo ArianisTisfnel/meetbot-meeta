@@ -196,10 +196,8 @@ app.patch('/projects/:projectId/meetings/:meetingId', async (c) => {
 
 // POST /projects/:projectId/meetings/:meetingId/bot/leave
 app.post('/projects/:projectId/meetings/:meetingId/bot/leave', async (c) => {
-  // 權限在 getProjectMeeting 內部已驗證（requireCanView），
-  // 但 bot/leave 需要 canMeeting，由 meeting.service.createMeeting 路徑的授權邏輯保證。
-  // 這裡先取得 meeting 確認存在與歸屬，再呼叫 leaveMeeting。
-  await meetingService.getProjectMeeting(
+  // bot/leave 需要會議權（canMeeting）：在後端強制驗證，不可只靠前端隱藏按鈕。
+  await meetingService.requireProjectMeetingManageAccess(
     c.req.param('projectId'),
     c.req.param('meetingId'),
     c.get('vexaUserId'),
@@ -210,7 +208,8 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/leave', async (c) => {
 
 // POST /projects/:projectId/meetings/:meetingId/cancel
 app.post('/projects/:projectId/meetings/:meetingId/cancel', async (c) => {
-  await meetingService.getProjectMeeting(
+  // cancel 同樣需要會議權（canMeeting）。
+  await meetingService.requireProjectMeetingManageAccess(
     c.req.param('projectId'),
     c.req.param('meetingId'),
     c.get('vexaUserId'),
