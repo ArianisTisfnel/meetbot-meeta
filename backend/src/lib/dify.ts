@@ -21,11 +21,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return res.json() as Promise<T>
 }
 
-export async function createDataset(name: string): Promise<string> {
-  const data = await request<{ id: string }>('POST', '/datasets', {
-    name,
-    permission: 'only_me',
-  })
+export async function createDataset(
+  name: string,
+  permission: 'only_me' | 'all_team_members' | 'partial_members' = 'only_me',
+): Promise<string> {
+  const data = await request<{ id: string }>('POST', '/datasets', { name, permission })
   return data.id
 }
 
@@ -33,29 +33,41 @@ export async function deleteDataset(datasetId: string): Promise<void> {
   await request<void>('DELETE', `/datasets/${datasetId}`)
 }
 
-const PROCESS_RULE = {
-  mode: 'hierarchical',
-  rules: {
-    pre_processing_rules: [
-      { id: 'remove_extra_spaces', enabled: true },
-      { id: 'remove_urls_emails', enabled: false },
-    ],
-    segmentation: {
-      separator: '\n',
-      max_tokens: 1500,
+export type ChunkingOptions = {
+  parentSeparator?: string
+  parentMaxTokens?: number
+  childSeparator?: string
+  childMaxTokens?: number
+  childOverlap?: number
+  docLanguage?: string
+}
+
+function buildProcessRule(opts: ChunkingOptions = {}) {
+  return {
+    mode: 'hierarchical',
+    rules: {
+      pre_processing_rules: [
+        { id: 'remove_extra_spaces', enabled: true },
+        { id: 'remove_urls_emails', enabled: false },
+      ],
+      segmentation: {
+        separator: opts.parentSeparator ?? '\n',
+        max_tokens: opts.parentMaxTokens ?? 1500,
+      },
+      subchunk_segmentation: {
+        separator: opts.childSeparator ?? '。',
+        max_tokens: opts.childMaxTokens ?? 500,
+        chunk_overlap: opts.childOverlap ?? 75,
+      },
     },
-    subchunk_segmentation: {
-      separator: '。',
-      max_tokens: 500,
-      chunk_overlap: 75,
-    },
-  },
-  doc_language: 'Chinese',
+    doc_language: opts.docLanguage ?? 'Chinese',
+  }
 }
 
 export async function uploadDocument(
   datasetId: string,
   file: { buffer: Buffer; filename: string; mimeType: string },
+  chunking: ChunkingOptions = {},
 ): Promise<{ documentId: string; batch: string }> {
   const form = new FormData()
 
@@ -65,7 +77,7 @@ export async function uploadDocument(
     'data',
     JSON.stringify({
       indexing_technique: 'high_quality',
-      process_rule: PROCESS_RULE,
+      process_rule: buildProcessRule(chunking),
     }),
   )
 
