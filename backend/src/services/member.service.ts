@@ -108,9 +108,14 @@ export async function updateMemberPermissions(
   })
   if (!member) throw new AppError('NOT_FOUND', 404, '成員不存在')
 
+  // 檢視權是每個成員的基準權限，恆為 true，不可被取消（編輯/會議為其上的加購能力）。
+  // 要移除存取請改用 removeMember。任何想把 canView 設為 false 的請求都強制矯正回 true。
+  const data = { ...permissions }
+  if (data.canView === false) data.canView = true
+
   const updated = await prisma.projectMember.update({
     where: { id: member.id },
-    data: permissions,
+    data,
   })
 
   const targetRows = await prisma.$queryRaw<Array<{ email: string | null }>>`

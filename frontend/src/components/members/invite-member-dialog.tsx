@@ -21,7 +21,8 @@ interface Props {
 
 export function InviteMemberDialog({ projectId, open, onOpenChange }: Props) {
   const [email, setEmail] = useState('')
-  const [canView, setCanView] = useState(true)
+  // 檢視權是成員基準權限，恆為 true、不可取消；只讓使用者選編輯/會議。
+  const canView = true
   const [canEdit, setCanEdit] = useState(false)
   const [canMeeting, setCanMeeting] = useState(false)
   // 未設定寄信時，後端會回傳可手動轉交的接受連結
@@ -96,11 +97,11 @@ export function InviteMemberDialog({ projectId, open, onOpenChange }: Props) {
           <div>
             <label className="text-sm font-medium">初始權限</label>
             <div className="flex gap-4 mt-2">
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={canView}
-                  onCheckedChange={(v) => setCanView(Boolean(v))}
-                />
+              <label
+                className="flex items-center gap-2 text-sm text-muted-foreground"
+                title="成員必定具備檢視權"
+              >
+                <Checkbox checked disabled />
                 檢視權
               </label>
               <label className="flex items-center gap-2 text-sm">

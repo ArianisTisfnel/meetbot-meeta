@@ -39,6 +39,24 @@ describe('updateMemberPermissions', () => {
       statusCode: 403,
     })
   })
+
+  it('強制矯正 canView=false 回 true（檢視為基準權限，不可取消）', async () => {
+    mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT) // requireOwner
+    mockPrisma.projectMember.findUnique.mockResolvedValueOnce({ id: 'mem-1', vexaUserId: 2 })
+    mockPrisma.projectMember.update.mockResolvedValueOnce({
+      id: 'mem-1',
+      vexaUserId: 2,
+      canView: true,
+      canEdit: false,
+      canMeeting: false,
+      updatedAt: new Date(),
+    })
+    mockPrisma.$queryRaw.mockResolvedValueOnce([{ email: 'm@x.com' }])
+
+    await updateMemberPermissions('proj-1', 1, 2, { canView: false })
+
+    expect(mockPrisma.projectMember.update.mock.calls[0][0].data.canView).toBe(true)
+  })
 })
 
 // ── removeMember ──────────────────────────────────────────────────────

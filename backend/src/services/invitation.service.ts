@@ -89,7 +89,8 @@ export async function createInvitation(
       projectId,
       email,
       tokenHash,
-      canView: permissions.canView,
+      // 檢視權是成員基準權限，恆為 true（編輯/會議為其上的加購能力）
+      canView: true,
       canEdit: permissions.canEdit,
       canMeeting: permissions.canMeeting,
       invitedByVexaUserId: ownerVexaUserId,

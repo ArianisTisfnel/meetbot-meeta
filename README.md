@@ -278,7 +278,7 @@ npx vitest run
 
 # 預期結果：
 # Test Files  16 passed (16)
-#      Tests  106 passed (106)
+#      Tests  105 passed (105)
 ```
 
 ---

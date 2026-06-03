@@ -69,6 +69,32 @@ describe('createInvitation', () => {
     expect(result.status).toBe('PENDING')
   })
 
+  it('強制 canView=true（即使呼叫端傳入 canView=false）', async () => {
+    mockPrisma.project.findUnique.mockResolvedValueOnce(OWNER_PROJECT)
+    mockPrisma.$queryRaw
+      .mockResolvedValueOnce([]) // 未註冊
+      .mockResolvedValueOnce([{ email: 'owner@x.com', name: 'Owner' }])
+    mockPrisma.projectInvitation.findFirst.mockResolvedValueOnce(null)
+    mockPrisma.projectInvitation.create.mockResolvedValueOnce({
+      id: 'inv-2',
+      email: 'new@example.com',
+      canView: true,
+      canEdit: true,
+      canMeeting: false,
+      status: 'PENDING',
+      expiresAt: new Date(),
+      createdAt: new Date(),
+    })
+
+    await createInvitation('proj-1', 1, 'new@example.com', {
+      canView: false,
+      canEdit: true,
+      canMeeting: false,
+    })
+
+    expect(mockPrisma.projectInvitation.create.mock.calls[0][0].data.canView).toBe(true)
+  })
+
   it('擋自我邀請（被邀 email 屬於擁有者）', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce(OWNER_PROJECT)
     mockPrisma.$queryRaw.mockResolvedValueOnce([
