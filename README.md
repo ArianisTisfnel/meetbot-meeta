@@ -119,6 +119,19 @@ VEXA_WS_URL="ws://localhost:8056"
 # Server
 APP_PORT=4000
 APP_CORS_ORIGINS="http://localhost:3000"
+APP_BASE_URL="http://localhost:3000"   # 用於組出專案邀請的接受連結
+
+# 寄信（專案邀請信）— 全部可選。未設定時邀請仍可建立，接受連結會印在 backend log，
+# 邀請對話框也會顯示可複製的連結，只是不會真的寄出 email。
+# 用 Gmail 寄信：先對「你自己的」Gmail 開啟兩步驟驗證，再到
+# https://myaccount.google.com/apppasswords 產生 16 碼應用程式密碼（填 SMTP_PASS，去除空格）。
+SMTP_HOST="smtp.gmail.com"
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER="your-own@gmail.com"
+SMTP_PASS="your16charapppassword"
+MAIL_FROM="your-own@gmail.com"
+INVITATION_TTL_DAYS=7   # 邀請連結有效天數
 ```
 
 ---
@@ -252,8 +265,8 @@ curl http://localhost:4000/health
 npx vitest run
 
 # 預期結果：
-# Test Files  14 passed (14)
-#      Tests  91 passed (91)
+# Test Files  15 passed (15)
+#      Tests  100 passed (100)
 ```
 
 ---
@@ -292,9 +305,9 @@ meetbot/
 ├── backend/              # Hono 後端 API
 │   ├── src/
 │   │   ├── routes/       # API 路由
-│   │   ├── services/     # 業務邏輯（project / material / meeting）
+│   │   ├── services/     # 業務邏輯（project / member / invitation / material / meeting）
 │   │   ├── sessions/     # Bot Session 管理（WebSocket + 喚醒詞 + 摘要）
-│   │   ├── lib/          # 外部服務封裝（dify / supabase / vexa / prisma）
+│   │   ├── lib/          # 外部服務封裝（dify / supabase / vexa / prisma / email）
 │   │   ├── middleware/   # auth / logger / error-handler
 │   │   └── types/        # env schema、hono context type
 │   └── prisma/
