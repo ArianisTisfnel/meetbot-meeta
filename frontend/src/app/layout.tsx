@@ -17,6 +17,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-TW">
+      <head>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&icon_names=draft,group,history,upload_file,video_call" />
+      </head>
       <body className={inter.className}>
         <Providers>{children}</Providers>
       </body>

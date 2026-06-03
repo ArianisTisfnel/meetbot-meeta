@@ -72,8 +72,9 @@ export function UploadZone({ projectId, onSuccess }: Props) {
           className="hidden"
           onChange={handleFileInput}
         />
-        <p className="text-muted-foreground">
-          📤 拖拉檔案至此，或點擊選擇（PDF / DOCX / TXT / MD）
+        <p className="text-muted-foreground flex items-center justify-center gap-2">
+          <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>upload_file</span>
+          拖拉檔案至此，或點擊選擇（PDF / DOCX / TXT / MD）
         </p>
         <p className="text-xs text-muted-foreground mt-1">最大 15 MB</p>
       </div>

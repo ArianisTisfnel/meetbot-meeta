@@ -8,10 +8,10 @@ interface Props {
 }
 
 const TABS = [
-  { href: 'materials', label: '📄 資料' },
-  { href: 'meetings', label: '📹 會議' },
-  { href: 'members', label: '👥 成員' },
-  { href: 'history', label: '📋 歷史' },
+  { href: 'materials', label: '資料', materialIcon: 'draft' },
+  { href: 'meetings', label: '會議', materialIcon: 'video_call' },
+  { href: 'members', label: '成員', materialIcon: 'group' },
+  { href: 'history', label: '歷史', materialIcon: 'history' },
 ]
 
 export function ProjectTabs({ projectId }: Props) {
@@ -27,12 +27,19 @@ export function ProjectTabs({ projectId }: Props) {
             key={tab.href}
             href={href}
             className={cn(
-              'px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors',
+              'flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors',
               isActive
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             )}
           >
+            {'materialIcon' in tab ? (
+              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                {tab.materialIcon}
+              </span>
+            ) : (
+              <span>{tab.emoji}</span>
+            )}
             {tab.label}
           </Link>
         )

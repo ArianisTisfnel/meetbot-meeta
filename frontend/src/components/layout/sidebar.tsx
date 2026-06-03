@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useState } from 'react'
 import { useSession, signOut } from 'next-auth/react'
-import { ChevronDown, ChevronRight, FolderOpen, CalendarDays, Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { CreateMeetingDialog } from '@/components/meetings/create-meeting-dialog'
 import { cn } from '@/lib/utils'
@@ -80,7 +80,9 @@ export function Sidebar() {
               pathname.startsWith('/meetings') && 'bg-accent font-medium'
             )}
           >
-            <CalendarDays className="w-4 h-4 shrink-0 text-muted-foreground" />
+            <span className="material-symbols-outlined text-muted-foreground" style={{ fontSize: '18px' }}>
+              video_call
+            </span>
             Meetings
           </Link>
         </nav>
