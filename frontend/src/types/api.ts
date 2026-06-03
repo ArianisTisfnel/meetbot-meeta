@@ -140,6 +140,7 @@ export type PaginatedMaterials = PaginatedResponse<Material>
 export type ActivityAction =
   | 'MATERIAL_UPLOAD'
   | 'MATERIAL_DELETE'
+  | 'MEMBER_INVITE'
   | 'MEMBER_ADD'
   | 'MEMBER_REMOVE'
   | 'MEMBER_PERMISSION_UPDATE'

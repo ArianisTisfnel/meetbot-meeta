@@ -11,6 +11,7 @@ interface Props {
 const ACTION_CONFIG: Record<ActivityAction, { icon: string; label: string }> = {
   MATERIAL_UPLOAD:          { icon: '📤', label: '上傳資料' },
   MATERIAL_DELETE:          { icon: '🗑', label: '刪除資料' },
+  MEMBER_INVITE:            { icon: '✉️', label: '邀請成員' },
   MEMBER_ADD:               { icon: '➕', label: '加入成員' },
   MEMBER_REMOVE:            { icon: '➖', label: '移除成員' },
   MEMBER_PERMISSION_UPDATE: { icon: '🔧', label: '調整權限' },
