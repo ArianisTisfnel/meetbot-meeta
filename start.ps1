@@ -50,7 +50,19 @@ if ($vexaId) {
     }
 }
 
-# 3. Generate Prisma client
+# 3. Install dependencies (auto-picks up new packages after a git pull).
+# npm install 在沒有新套件時幾乎是 no-op（只比對 package-lock），所以每次啟動都跑沒關係，
+# 好處是組員拉完最新程式碼後不必記得手動安裝新相依（例如 nodemailer）。
+Write-Host "Installing dependencies (backend + frontend)..." -ForegroundColor Cyan
+Set-Location "$rootDir\backend"
+npm install 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "Warning: backend npm install failed." -ForegroundColor Yellow }
+Set-Location "$rootDir\frontend"
+npm install 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "Warning: frontend npm install failed." -ForegroundColor Yellow }
+Write-Host "Dependencies ready." -ForegroundColor Green
+
+# 4. Generate Prisma client
 Write-Host "Generating Prisma client..." -ForegroundColor Cyan
 Set-Location "$rootDir\backend"
 npx prisma generate 2>&1 | Out-Null
@@ -60,7 +72,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Prisma client ready." -ForegroundColor Green
 }
 
-# 4. Start backend + frontend together (Ctrl+C stops both)
+# 5. Start backend + frontend together (Ctrl+C stops both)
 Write-Host ""
 Write-Host "Starting backend (port 4000) and frontend (port 3000)..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop all services." -ForegroundColor Gray

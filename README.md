@@ -245,6 +245,18 @@ npm start
 
 ---
 
+## 拉取他人更新後（git pull 之後）
+
+- **用 `start.ps1` / `start.bat` 啟動的人**：什麼都不用做。它會自動 `npm install`（backend + frontend）和 `npx prisma generate`，新相依套件會自動補上。
+- **手動 `npm run dev` 的人**：若這次更新有新增套件或改動 `schema.prisma`，記得：
+  ```bash
+  cd backend && npm install && npx prisma generate
+  cd ../frontend && npm install
+  ```
+- **資料庫**：因為全組共用同一個 Supabase，`schema.prisma` 的變更只需**任一人** `npx prisma db push` 套用一次即可，其他人**不必再 push**。
+
+---
+
 ## 驗證一切正常
 
 打開瀏覽器前，先確認後端 API 可存取（應回傳 401，代表 auth middleware 正常）：
