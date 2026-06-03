@@ -180,14 +180,8 @@ export async function revokeInvitation(
   })
 }
 
-/** 列出某專案的待處理邀請（供擁有者檢視）。 */
-export async function listProjectInvitations(projectId: string) {
-  const invitations = await prisma.projectInvitation.findMany({
-    where: { projectId, status: 'PENDING' },
-    orderBy: { createdAt: 'desc' },
-  })
-  return invitations.map(toInvitationDto)
-}
+// 註：擁有者檢視某專案的待處理邀請，改由 member.service.getMembers 內聯回傳
+// （GET .../members 的 pendingInvitations），不另設端點，故此處不再提供 listProjectInvitations。
 
 // ── 收件者側（站內信箱） ──────────────────────────────────────────────
 
