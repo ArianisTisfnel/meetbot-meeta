@@ -9,6 +9,7 @@ import { MeetingSummary } from '@/components/meetings/meeting-summary'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
+import { MeetingDebugInfo } from '@/components/meetings/meeting-debug-info'
 import { Button } from '@/components/ui/button'
 import { formatDate } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -93,6 +94,8 @@ export default function MeetingDetailPage({ params }: Props) {
           <ReinviteBotButton projectId={projectId} meetingId={meetingId} />
         )}
       </div>
+
+      <MeetingDebugInfo meeting={meeting} />
 
       {/* Content by status */}
       {meeting.status === 'FAILED' && (
