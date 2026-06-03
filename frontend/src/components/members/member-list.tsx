@@ -2,9 +2,11 @@
 import { MemberRow } from './member-row'
 import {
   useRemoveMember,
+  useUpdateMember,
   useResendInvitation,
   useRevokeInvitation,
 } from '@/hooks/use-members'
+import type { ProjectMember } from '@/types/api'
 import { displayName } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -19,6 +21,7 @@ interface Props {
 
 export function MemberList({ data, projectId, canManage }: Props) {
   const removeMutation = useRemoveMember(projectId)
+  const updateMutation = useUpdateMember(projectId)
   const resendMutation = useResendInvitation(projectId)
   const revokeMutation = useRevokeInvitation(projectId)
 
@@ -28,6 +31,20 @@ export function MemberList({ data, projectId, canManage }: Props) {
       onSuccess: () => toast.success('已移除成員'),
       onError: () => toast.error('移除失敗'),
     })
+  }
+
+  const handleUpdate = (
+    vexaUserId: number,
+    permissions: Partial<Pick<ProjectMember, 'canView' | 'canEdit' | 'canMeeting'>>,
+  ) => {
+    updateMutation.mutate(
+      { vexaUserId, ...permissions },
+      {
+        onSuccess: () => toast.success('已更新權限'),
+        onError: (e: unknown) =>
+          toast.error((e as { message?: string })?.message ?? '更新失敗'),
+      },
+    )
   }
 
   const handleResend = (invitationId: string) => {
@@ -76,6 +93,8 @@ export function MemberList({ data, projectId, canManage }: Props) {
                 member={member}
                 canManage={canManage}
                 onRemove={handleRemove}
+                onUpdate={handleUpdate}
+                isUpdating={updateMutation.isPending}
               />
             ))}
           </tbody>

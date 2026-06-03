@@ -277,8 +277,8 @@ curl http://localhost:4000/health
 npx vitest run
 
 # 預期結果：
-# Test Files  15 passed (15)
-#      Tests  100 passed (100)
+# Test Files  16 passed (16)
+#      Tests  106 passed (106)
 ```
 
 ---
