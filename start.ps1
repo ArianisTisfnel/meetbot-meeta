@@ -12,18 +12,32 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "Docker Desktop is ready." -ForegroundColor Green
 
-# 2. Start Vexa container
+# 2. Start Vexa container (looked up by image, works regardless of container name)
 Write-Host "Starting Vexa container..." -ForegroundColor Cyan
-$vexaId = "d59225c69e68"
-docker start $vexaId 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Warning: failed to start Vexa container (ID: $vexaId)." -ForegroundColor Yellow
-    Write-Host "If the container does not exist, follow docs/09-setup/00-vexa-lite-local.md to recreate it." -ForegroundColor Yellow
+$vexaId = docker ps -aqf "ancestor=vexaai/vexa-lite:latest" 2>$null
+if (-not $vexaId) {
+    Write-Host "Warning: No container found for image 'vexaai/vexa-lite:latest'." -ForegroundColor Yellow
+    Write-Host "Please create it first by following docs/09-實作計畫/00-vexa-lite-local.md." -ForegroundColor Yellow
 } else {
-    Write-Host "Vexa container started." -ForegroundColor Green
+    docker start $vexaId 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Warning: failed to start Vexa container (ID: $vexaId)." -ForegroundColor Yellow
+    } else {
+        Write-Host "Vexa container started (ID: $vexaId)." -ForegroundColor Green
+    }
 }
 
-# 3. Start backend + frontend together (Ctrl+C stops both)
+# 3. Generate Prisma client
+Write-Host "Generating Prisma client..." -ForegroundColor Cyan
+Set-Location "$rootDir\backend"
+npx prisma generate 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Warning: prisma generate failed. Backend may not start correctly." -ForegroundColor Yellow
+} else {
+    Write-Host "Prisma client ready." -ForegroundColor Green
+}
+
+# 4. Start backend + frontend together (Ctrl+C stops both)
 Write-Host ""
 Write-Host "Starting backend (port 4000) and frontend (port 3000)..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop all services." -ForegroundColor Gray
