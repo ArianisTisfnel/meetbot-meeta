@@ -2,8 +2,8 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.7|
-|撰寫日期|2026-05-28|
+|文件版本|v1.8|
+|撰寫日期|2026-06-04|
 |依據文件|`01-專案目標.md`、`02-使用者需求.md`|
 |ORM|Prisma（multiSchema）|
 |資料庫|Supabase PostgreSQL|
@@ -25,10 +25,16 @@ Supabase PostgreSQL
 └── schema: app             ← 應用獨立管理（Prisma migrate）
     ├── projects
     ├── project_members
+    ├── project_invitations    ← 待處理的專案邀請（可邀請尚未註冊者）
     ├── materials
     ├── material_edit_history
+    ├── activity_logs          ← 通用活動紀錄（成員/權限/會議/改名等）
     └── meeting_instances
 ```
+
+> **`public` schema 實際存取**：App 只讀取 `public.users`、`public.meetings`、`public.transcriptions`、
+> `public.api_tokens` 四張表，**一律以 `prisma.$queryRaw` 存取**（不建立對應 Prisma model，避免 migrate 衝突）。
+> 因此 `datasource.schemas` 只宣告 `["app"]`（見 §二）。
 
 ### 1.2 跨 Schema 關聯策略
 
@@ -41,7 +47,9 @@ Supabase PostgreSQL
 
 - `projects`、`materials` 採 soft delete（`deleted_at` 欄位）
 - `meeting_instances` **不可刪除**（無 `deleted_at`），保護歷史逐字稿
-- `project_members`、`material_edit_history` 採硬刪除或不刪除（歷史紀錄）
+- `project_members` 採硬刪除（移除成員＝`prisma.projectMember.delete`，同時寫 `activity_logs` 審計）；
+  `material_edit_history`、`activity_logs` 為純追加的審計紀錄，不刪除
+- `project_invitations` 不刪除：撤銷/拒絕/過期皆以 `status` 欄位轉換（REVOKED / DECLINED / EXPIRED）保留紀錄
 - `meeting_instances.project_id` 為 **nullable**：使用者可建立不關聯任何專案的獨立會議實例（無 Dify Knowledge Base，Q&A 功能停用，但逐字稿與摘要功能正常）
 
 ---
@@ -57,7 +65,9 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")  // 連線字串需加 ?schema=app
-  schemas  = ["app", "public"]
+  // 只宣告 app；public 表（users/meetings/transcriptions/api_tokens）一律以 $queryRaw 存取，
+  // 不建立 Prisma model，避免 Vexa 升級時 migrate 衝突。
+  schemas  = ["app"]
 }
 
 // ══════════════════════════════════════════════════
@@ -78,8 +88,10 @@ model Project {
   deletedAt       DateTime? @map("deleted_at")
 
   members          ProjectMember[]
+  invitations      ProjectInvitation[]
   materials        Material[]
   editHistory      MaterialEditHistory[]
+  activityLogs     ActivityLog[]
   meetingInstances MeetingInstance[]
 
   @@index([ownerVexaUserId])
@@ -94,9 +106,11 @@ model ProjectMember {
   projectId           String   @map("project_id")
   /// 參與者 ID，邏輯關聯 public.users.id
   vexaUserId          Int      @map("vexa_user_id")
-  /// 檢視權：查看資料清單、歷史紀錄、成員清單、會議逐字稿
+  /// 檢視權＝成員「基準權限」：恆為 true、不可取消（要移除存取請用 removeMember）。
+  /// 內容：查看資料清單、歷史紀錄、成員清單、會議逐字稿。
+  /// 應用層在 updateMemberPermissions 會把任何 canView=false 的請求強制矯正回 true。
   canView             Boolean  @default(true) @map("can_view")
-  /// 編輯權：上傳 / 刪除資料檔案
+  /// 編輯權：上傳 / 刪除資料檔案（基準權限之上的加購能力）
   canEdit             Boolean  @default(false) @map("can_edit")
   /// 會議權：建立會議實例、邀請/移除 Bot、更新會議名稱（預設 false，由所有者授權）
   canMeeting          Boolean  @default(false) @map("can_meeting")
@@ -111,6 +125,34 @@ model ProjectMember {
   @@unique([projectId, vexaUserId])
   @@index([vexaUserId])
   @@map("project_members")
+  @@schema("app")
+}
+
+/// 待處理的專案邀請。可邀請尚未在系統建立帳號的人（以 email 為依據）。
+/// 對方登入後，後端以「已驗證的 Google email」比對 PENDING 邀請，於其信箱列出供接受。
+/// token 僅存 SHA-256 hash；接受時強制 email 比對，避免連結外洩被冒領。
+model ProjectInvitation {
+  id                   String           @id @default(uuid())
+  projectId            String           @map("project_id")
+  email                String // 一律正規化為小寫儲存
+  tokenHash            String           @unique @map("token_hash") // token 的 SHA-256（不存明碼）
+  /// 檢視權為基準權限，建立邀請時恆為 true（與 ProjectMember 一致）
+  canView              Boolean          @default(true) @map("can_view")
+  canEdit              Boolean          @default(false) @map("can_edit")
+  canMeeting           Boolean          @default(false) @map("can_meeting")
+  status               InvitationStatus @default(PENDING)
+  invitedByVexaUserId  Int              @map("invited_by_vexa_user_id")
+  acceptedByVexaUserId Int?             @map("accepted_by_vexa_user_id")
+  expiresAt            DateTime         @map("expires_at")
+  acceptedAt           DateTime?        @map("accepted_at")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  updatedAt            DateTime         @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([email, status])      // 收件者信箱：以登入 email 列出待處理邀請
+  @@index([projectId, status])  // 擁有者檢視：列出某專案的待處理邀請
+  @@map("project_invitations")
   @@schema("app")
 }
 
@@ -174,6 +216,26 @@ model MaterialEditHistory {
   @@index([projectId, performedAt(sort: Desc)])
   @@index([materialId])
   @@map("material_edit_history")
+  @@schema("app")
+}
+
+/// 通用活動紀錄：素材增刪、成員邀請/增減、權限變更、會議建立、專案改名等。
+/// 與 MaterialEditHistory 不同，本表不綁定特定 materialId，可記錄任意專案層級事件。
+/// 純追加（append-only），由 activity.service.ts 的 recordActivity 寫入。
+model ActivityLog {
+  id              String         @id @default(uuid())
+  projectId       String         @map("project_id")
+  actorVexaUserId Int            @map("actor_vexa_user_id")
+  action          ActivityAction
+  /// 事件對象的快照字串（檔名 / 成員 email / 會議名稱），避免日後關聯變動導致歷史失真
+  targetLabel     String         @map("target_label")
+  metadata        Json?
+  createdAt       DateTime       @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@map("activity_logs")
   @@schema("app")
 }
 
@@ -256,6 +318,31 @@ enum EditAction {
   @@schema("app")
 }
 
+enum InvitationStatus {
+  PENDING  // 已建立，等待對方接受
+  ACCEPTED // 對方已接受（同時建立 ProjectMember）
+  DECLINED // 對方拒絕
+  REVOKED  // 擁有者撤銷
+  EXPIRED  // 逾期未接受（接受時若已過期會即時轉此狀態）
+
+  @@map("invitation_status")
+  @@schema("app")
+}
+
+enum ActivityAction {
+  MATERIAL_UPLOAD
+  MATERIAL_DELETE
+  MEMBER_INVITE            // 建立邀請（pending）
+  MEMBER_ADD               // 邀請被接受、成員正式加入
+  MEMBER_REMOVE
+  MEMBER_PERMISSION_UPDATE
+  MEETING_CREATE
+  PROJECT_RENAME
+
+  @@map("activity_action")
+  @@schema("app")
+}
+
 enum MeetingStatus {
   PENDING // 會議實例已建立，Bot 尚未加入（Vexa API 呼叫中）
   ACTIVE  // Bot 已成功加入會議，逐字稿進行中
@@ -272,9 +359,21 @@ enum MeetingStatus {
 }
 
 // ══════════════════════════════════════════════════
-// public schema：透過 `prisma db pull` 自動同步 Vexa 表定義
-// 以下為參考用途，實際定義由 prisma db pull 產生
+// public schema：Vexa 管理，App 只讀。
+// ⚠️ 以下 model 定義「不寫入 schema.prisma」（datasource.schemas 只有 "app"）——
+//    僅作為欄位參考。實際存取一律走 prisma.$queryRaw（見 06-後端架構.md §四 auth、§五之一 逐字稿）。
+//    App 實際用到的 public 表：users、meetings、transcriptions、api_tokens。
 // ══════════════════════════════════════════════════
+
+// model ApiToken {            // public.api_tokens：vexaToken 驗證 + 取得 user_id / scopes
+//   id        Int       @id @default(autoincrement())
+//   token     String
+//   userId    Int       @map("user_id")
+//   scopes    String[]                       // text[]：bot / browser / tx
+//   expiresAt DateTime? @map("expires_at")
+//   @@map("api_tokens")
+//   @@schema("public")
+// }
 
 // model User {
 //   id                Int      @id @default(autoincrement())
@@ -329,8 +428,11 @@ public.users (Vexa)
     ├─── app.projects.owner_vexa_user_id
     ├─── app.project_members.vexa_user_id
     ├─── app.project_members.invited_by_vexa_user_id
+    ├─── app.project_invitations.invited_by_vexa_user_id
+    ├─── app.project_invitations.accepted_by_vexa_user_id
     ├─── app.materials.uploaded_by_vexa_user_id
     ├─── app.material_edit_history.performed_by_vexa_user_id
+    ├─── app.activity_logs.actor_vexa_user_id
     └─── app.meeting_instances.created_by_vexa_user_id
 
 public.meetings (Vexa)
@@ -338,10 +440,12 @@ public.meetings (Vexa)
     └─── app.meeting_instances.vexa_meeting_id
 
 app.projects
-    ├─── app.project_members.project_id  ──►  [1:N]
-    ├─── app.materials.project_id        ──►  [1:N]
+    ├─── app.project_members.project_id      ──►  [1:N]
+    ├─── app.project_invitations.project_id  ──►  [1:N]
+    ├─── app.materials.project_id            ──►  [1:N]
     ├─── app.material_edit_history.project_id ──► [1:N]
-    └─── app.meeting_instances.project_id ──► [1:N, nullable]  // null = 獨立會議（無關聯專案）
+    ├─── app.activity_logs.project_id        ──►  [1:N]
+    └─── app.meeting_instances.project_id    ──► [1:N, nullable]  // null = 獨立會議（無關聯專案）
 
 app.materials
     └─── app.material_edit_history.material_id ──► [1:N]
@@ -505,6 +609,33 @@ const activeSessions = new Map<string, MeetingSession>()
 > 可解析出 `platform = "google_meet"` 與 `nativeMeetingId = "abc-defg-hij"`，
 > 並存入 `meeting_instances.vexa_native_meeting_id` 欄位，供 session 恢復時使用。
 
+### 4.7 成員邀請生命週期（`project_invitations`）
+
+邀請改為「**先建 pending 邀請、再由對方接受**」，可邀請**尚未註冊**的人：
+
+```
+擁有者輸入 email（POST /projects/:id/members）
+  → 正規化小寫；既有帳號才檢查 SELF_INVITE / ALREADY_MEMBER；同專案同 email 已 PENDING → ALREADY_INVITED
+  → 產生 token（回傳明碼一次）+ tokenHash（SHA-256 存 DB），status=PENDING，寄出邀請信
+  → 寫 activity_logs（MEMBER_INVITE）
+
+對方登入後
+  - 站內信箱：以「已驗證 email」比對 PENDING 且未過期的邀請（GET /me/invitations）
+  - email 連結落地頁：以 token 接受（accept-by-token）
+  → 接受時強制 invitation.email === 登入 email（否則 EMAIL_MISMATCH）
+  → $transaction：建立 ProjectMember（沿用邀請的 canView/canEdit/canMeeting）+ status=ACCEPTED
+  → 寫 activity_logs（MEMBER_ADD）；冪等：已接受/已是成員直接回成功
+```
+
+- **token 安全**：DB 只存 `tokenHash`（SHA-256），明碼 token 僅在建立/重寄當下回傳一次（供未設定 SMTP 時手動轉交）。
+- **過期**：`expiresAt = now + INVITATION_TTL_DAYS`；接受時若已過期，即時把 status 轉 `EXPIRED` 並回 `INVITATION_EXPIRED`。
+- **撤銷/重寄**：撤銷把 status 轉 `REVOKED`；重寄重新產 token、刷新 `expiresAt`、再寄一次（僅限 PENDING）。
+- **canView 基準權限**：建立邀請與調整成員權限時，`canView` 一律強制為 `true`（基準權限），`canEdit`/`canMeeting` 為其上的加購開關。要移除存取請刪除成員，而非取消 canView。
+
+> **與「不直接存 email」原則的關係**：成員紀錄（`project_members`）仍只存 `vexa_user_id`；
+> 但邀請的受邀者**可能尚無帳號**，登入後必須靠 email 比對才找得到邀請，因此 `project_invitations` **必須存 email**。
+> 這是功能必需（覆蓋 02 早期「後端不直接存 email」的敘述，見 02-使用者需求.md §1.1）。
+
 ---
 
 ## 五、索引設計總覽
@@ -513,8 +644,12 @@ const activeSessions = new Map<string, MeetingSession>()
 |--------|---------|------|
 | `projects` | `owner_vexa_user_id` | 查詢某使用者擁有的所有專案 |
 | `projects` | `deleted_at` | 過濾已刪除的專案 |
-| `project_members` | `(project_id, vexa_user_id)` UNIQUE | 防重複邀請 + 查詢成員 |
+| `project_members` | `(project_id, vexa_user_id)` UNIQUE | 防重複加入 + 查詢成員 |
 | `project_members` | `vexa_user_id` | 查詢某使用者參與的所有專案 |
+| `project_invitations` | `token_hash` UNIQUE | 以 token（hash）接受邀請（連結落地頁） |
+| `project_invitations` | `(email, status)` | 收件者信箱：以登入 email 列出 PENDING 邀請 |
+| `project_invitations` | `(project_id, status)` | 擁有者檢視：列出某專案的 PENDING 邀請 |
+| `activity_logs` | `(project_id, created_at DESC)` | 專案活動紀錄分頁 |
 | `materials` | `(project_id, sha256)` UNIQUE | 判重 |
 | `materials` | `(project_id, uploaded_at DESC)` | 專案資料清單分頁 |
 | `materials` | `indexing_status` | Background job 輪詢 PROCESSING 狀態 |

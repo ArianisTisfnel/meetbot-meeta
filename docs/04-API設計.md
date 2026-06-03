@@ -2,8 +2,8 @@
 
 |項目|內容|
 |----|-----|
-|文件版本|v1.8|
-|撰寫日期|2026-05-29|
+|文件版本|v1.9|
+|撰寫日期|2026-06-04|
 |依據文件|`02-使用者需求.md`、`03-資料庫Schema設計.md`|
 |後端框架|Hono（Node.js）|
 |Base URL（開發）|`http://localhost:4000`|
@@ -82,19 +82,29 @@ interface ErrorResponse {
 
 | HTTP 狀態碼 | error_code | 說明 |
 |------------|-----------|------|
-| 400 | `INVALID_REQUEST` | 請求格式錯誤 |
+| 400 | `INVALID_REQUEST` | 請求格式錯誤（Zod 驗證失敗也回此碼） |
+| 400 | `SELF_INVITE` | 擁有者邀請自己 |
 | 401 | `UNAUTHORIZED` | 未提供或無效的 token |
 | 403 | `PERMISSION_DENIED` | 已認證但無此操作權限（非 owner/member） |
 | 403 | `INSUFFICIENT_SCOPE` | vexaToken 缺少 bot/browser/tx scope |
+| 403 | `EMAIL_MISMATCH` | 接受邀請者的登入 email 與被邀請 email 不符 |
 | 404 | `NOT_FOUND` | 資源不存在 |
+| 404 | `INVALID_INVITATION` | 邀請不存在或連結（token）無效 |
+| 404 | `USER_NOT_FOUND_IN_VEXA` | `GET /users/lookup` 查無此 email（**僅 lookup 使用**；邀請流程不再用此碼） |
 | 409 | `DUPLICATE_FILE` | 相同檔案已存在於此專案 |
-| 409 | `ALREADY_MEMBER` | 使用者已是此專案的參與者 |
+| 409 | `ALREADY_MEMBER` | 使用者已是此專案的成員 |
+| 409 | `ALREADY_INVITED` | 此 email 已有待處理邀請（請改用「重寄」） |
+| 409 | `INVITATION_NOT_PENDING` | 邀請已非 PENDING（已接受/撤銷/拒絕），無法重寄或撤銷 |
 | 409 | `BOT_CONCURRENT_LIMIT` | 使用者已達 Bot 並發上限 |
+| 410 | `INVITATION_EXPIRED` | 邀請連結已過期 |
 | 413 | `FILE_TOO_LARGE` | 超過 15 MB 限制 |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | 不支援的檔案格式 |
-| 422 | `USER_NOT_FOUND_IN_VEXA` | email 尚未在 Vexa 建立帳號 |
 | 500 | `INTERNAL_ERROR` | 伺服器內部錯誤 |
+| 503 | `CREATOR_TOKEN_UNAVAILABLE` | 邀請者 vexaToken 已過期/撤銷，無法向 Vexa 取逐字稿（見 §九 逐字稿端點） |
 | 503 | `EXTERNAL_SERVICE_ERROR` | Dify / Supabase / Vexa 呼叫失敗 |
+
+> ⚠️ **`USER_NOT_FOUND_IN_VEXA` 由 422 改為 404**，且**僅** `GET /users/lookup` 使用。
+> 邀請流程已改為「可邀請尚未註冊者」，不再因查無帳號而報錯（見 §六 `POST .../members`）。
 
 ---
 
@@ -335,7 +345,10 @@ interface PaginatedResponse<T> {
 
 ### `GET /projects/:projectId/members`
 
-取得專案成員清單。**需要：檢視權**。
+取得專案成員清單（含**待處理邀請**）。**需要：檢視權**。
+
+> 待處理邀請（`pendingInvitations`）隨此端點一併回傳（後端 `getMembers` 內聯查詢 `status=PENDING`），
+> **不另設 list 端點**。前端成員頁的「邀請中（尚未接受）」區塊即由此欄位渲染。
 
 **Response 200**
 ```json
@@ -356,6 +369,17 @@ interface PaginatedResponse<T> {
       "canMeeting": false,
       "invitedAt": "2026-05-21T12:00:00Z"
     }
+  ],
+  "pendingInvitations": [
+    {
+      "id": "uuid",
+      "email": "invitee@example.com",
+      "canView": true,
+      "canEdit": false,
+      "canMeeting": false,
+      "expiresAt": "2026-06-04T12:00:00Z",
+      "invitedAt": "2026-05-28T12:00:00Z"
+    }
   ]
 }
 ```
@@ -364,7 +388,10 @@ interface PaginatedResponse<T> {
 
 ### `POST /projects/:projectId/members`
 
-邀請新參與者。**需要：Owner（管理權）**。
+**建立邀請（pending）**並寄出邀請信。可邀請**尚未在系統註冊**的人（以 email 為依據）。**需要：Owner（管理權）**。
+
+> 此端點名稱保留 `/members`，但語意已改為「建立邀請」而非「直接加入成員」。
+> 對方需登入後在站內信箱或 email 連結接受，才會成為正式成員（見 §六之一）。
 
 **Request**
 ```json
@@ -375,34 +402,122 @@ interface PaginatedResponse<T> {
   "canMeeting": false
 }
 ```
+> `canView` 為基準權限，後端強制為 `true`（即使傳入 false 也會被矯正）；只有 `canEdit`/`canMeeting` 可調。
 
 **Response 201**
 ```json
 {
   "id": "uuid",
-  "vexaUserId": 789,
   "email": "newmember@example.com",
-  "name": "New Member",
   "canView": true,
   "canEdit": false,
   "canMeeting": false,
-  "invitedAt": "2026-05-26T10:00:00Z"
+  "status": "PENDING",
+  "expiresAt": "2026-06-04T10:00:00Z",
+  "invitedAt": "2026-05-26T10:00:00Z",
+  "acceptUrl": "https://app.example.com/invitations/accept?token=...",
+  "emailSent": true
 }
 ```
+> `acceptUrl` 含**明碼 token，僅此次回傳一次**（DB 只存其 SHA-256）。未設定 SMTP 時 `emailSent=false`，
+> 擁有者可複製 `acceptUrl` 手動轉交對方。
 
 **Error cases**
 ```json
-// 422：對方尚未登入系統
-{ "error_code": "USER_NOT_FOUND_IN_VEXA", "message": "..." }
+// 400：邀請自己
+{ "error_code": "SELF_INVITE", "message": "您是專案擁有者，無需邀請自己" }
 
 // 409：對方已是此專案成員
-{ "error_code": "ALREADY_MEMBER", "message": "..." }
+{ "error_code": "ALREADY_MEMBER", "message": "此使用者已是此專案的成員" }
+
+// 409：此 email 已有待處理邀請
+{ "error_code": "ALREADY_INVITED", "message": "此 email 已有待處理的邀請，請改用「重寄」" }
 ```
 
-**邀請流程：**
+**建立流程（後端 `invitation.service.createInvitation`）：**
 ```
-① 呼叫 GET /users/lookup?email=... 確認使用者存在 → 取得 vexaUserId
-② Prisma create ProjectMember
+① requireOwner；email 正規化為小寫
+② 既有帳號才檢查 SELF_INVITE / ALREADY_MEMBER；同專案同 email PENDING → ALREADY_INVITED
+③ 產生 token（明碼回傳一次）+ tokenHash（SHA-256 存 DB），status=PENDING，expiresAt=now+TTL
+④ 寫 activity_logs（MEMBER_INVITE）
+⑤ 寄出邀請信（未設定 SMTP 則退回 emailSent=false，由前端顯示可手動轉交的連結）
+```
+
+---
+
+### `POST /projects/:projectId/invitations/:invitationId/resend`
+
+重寄邀請信：**重產 token、刷新過期時間**、再寄一次。**需要：Owner**。僅限 PENDING 邀請。
+
+**Response 200**（格式同 `POST .../members`：含新的 `acceptUrl` 與 `emailSent`）
+
+**Error cases**：`404 NOT_FOUND`（邀請不存在）、`409 INVITATION_NOT_PENDING`。
+
+---
+
+### `DELETE /projects/:projectId/invitations/:invitationId`
+
+撤銷邀請（status → REVOKED）。**需要：Owner**。僅限 PENDING 邀請。
+
+**Response 204**（no body）
+
+**Error cases**：`404 NOT_FOUND`、`409 INVITATION_NOT_PENDING`。
+
+---
+
+## 六之一、我的邀請 API（站內信箱）
+
+這組端點以**登入者本人的 email** 為準，供受邀者檢視與處理寄給自己的邀請。
+
+### `GET /me/invitations`
+
+列出「我」（登入 email）的 PENDING 且未過期邀請。**需要：登入使用者（且 token 帶 email）**。
+
+**Response 200**
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "email": "me@example.com",
+      "canView": true, "canEdit": false, "canMeeting": false,
+      "status": "PENDING",
+      "expiresAt": "2026-06-04T12:00:00Z",
+      "invitedAt": "2026-05-28T12:00:00Z",
+      "projectName": "Q3 產品規劃",
+      "inviterName": "Owner Name"
+    }
+  ]
+}
+```
+
+### `POST /me/invitations/:invitationId/accept`
+
+以邀請 id 接受（信箱路徑）。後端強制 `invitation.email === 登入 email`。
+
+**Response 200**：`{ "projectId": "uuid", "alreadyAccepted": false }`（冪等：已接受回 `alreadyAccepted: true`）
+
+**Error cases**：`403 EMAIL_MISMATCH`、`404 INVALID_INVITATION`、`409 INVITATION_NOT_PENDING`、`410 INVITATION_EXPIRED`。
+
+### `POST /me/invitations/:invitationId/decline`
+
+拒絕邀請（status → DECLINED）。需 email 相符。**Response 204**（冪等）。
+
+### `POST /me/invitations/accept-by-token`
+
+以 token 接受（email 邀請連結落地頁 `/invitations/accept?token=...` 使用）。
+
+**Request**：`{ "token": "..." }`　**Response 200**：同 accept（`{ projectId, alreadyAccepted }`）。
+
+**Error cases**：同 accept（另含 `404 INVALID_INVITATION` 當 token 無效）。
+
+**接受流程（後端，accept-by-id 與 accept-by-token 共用 `acceptInvitationRecord`）：**
+```
+① 查邀請（id 或 tokenHash）；查無 → INVALID_INVITATION
+② invitation.email !== 登入 email → EMAIL_MISMATCH
+③ 已 ACCEPTED → 冪等回成功；非 PENDING → INVITATION_NOT_PENDING；已過期 → 轉 EXPIRED + INVITATION_EXPIRED
+④ $transaction：create ProjectMember（沿用邀請的 canView/canEdit/canMeeting）+ invitation 轉 ACCEPTED
+⑤ 寫 activity_logs（MEMBER_ADD）
 ```
 
 ---
@@ -421,6 +536,7 @@ interface PaginatedResponse<T> {
 ```
 
 > 三個欄位均為選填，只傳需要修改的欄位即可；未傳入的欄位保持原值。
+> ⚠️ `canView` 為基準權限：傳入 `false` 會被後端強制矯正回 `true`（要移除存取請改用 `DELETE .../members/:uid`）。
 
 **Response 200**
 ```json
@@ -1137,6 +1253,8 @@ interface PaginatedResponse<T> {
 |----------|-------|---------------------|---------------------|------------------------|--------------|
 | `GET /me` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `GET /users/lookup` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `GET /me/invitations` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `POST /me/invitations/:id/accept`、`/decline`、`/accept-by-token` | ✅ | ✅ | ✅ | ✅ | ✅（email 相符者）|
 | `POST /meetings`（全局建立） | ✅ | ✅ | ✅ | ✅ | ✅（projectId 留空時）|
 | `GET /meetings`（全局列表） | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `GET /meetings/:mid`（全局存取） | ✅ | ✅ | ✅ | ✅ | ✅（建立者）|
@@ -1149,7 +1267,9 @@ interface PaginatedResponse<T> {
 | `PATCH /projects/:id` | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `DELETE /projects/:id` | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `GET .../members` | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `POST .../members` | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `POST .../members`（建立邀請） | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `POST .../invitations/:id/resend` | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `DELETE .../invitations/:id`（撤銷） | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `PATCH .../members/:uid` | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `DELETE .../members/:uid` | ✅ | ❌ | ❌ | ❌ | ❌ |
 | `POST .../materials`（上傳） | ✅ | ❌ | ✅ | ❌ | ❌ |
