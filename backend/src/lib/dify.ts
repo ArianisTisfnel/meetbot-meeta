@@ -23,7 +23,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export async function createDataset(
   name: string,
-  permission: 'only_me' | 'all_team_members' | 'partial_members' = 'only_me',
+  permission: 'only_me' | 'all_team_members' | 'partial_members' = 'all_team_members',
 ): Promise<string> {
   const data = await request<{ id: string }>('POST', '/datasets', { name, permission })
   return data.id
