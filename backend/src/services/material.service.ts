@@ -338,49 +338,6 @@ export async function deleteMaterial(projectId: string, materialId: string, vexa
   })
 }
 
-export async function listHistory(
-  projectId: string,
-  vexaUserId: number,
-  params: { page?: number; perPage?: number } = {},
-) {
-  await requireViewAccess(projectId, vexaUserId)
-
-  const { page = 1, perPage = 20 } = params
-
-  const where = { projectId }
-
-  const [items, total] = await Promise.all([
-    prisma.materialEditHistory.findMany({
-      where,
-      orderBy: { performedAt: 'desc' },
-      skip: (page - 1) * perPage,
-      take: perPage,
-    }),
-    prisma.materialEditHistory.count({ where }),
-  ])
-
-  const performerIds = [...new Set(items.map((i) => i.performedByVexaUserId))]
-  let performerMap = new Map<number, { name: string | null }>()
-  if (performerIds.length > 0) {
-    const rows = await prisma.$queryRaw<Array<{ id: number; name: string | null }>>`
-      SELECT id, name FROM public.users WHERE id IN (${Prisma.join(performerIds)})
-    `
-    performerMap = new Map(rows.map((r) => [r.id, { name: r.name }]))
-  }
-
-  return {
-    items: items.map((i) => ({
-      id: i.id,
-      action: i.action,
-      filenameSnapshot: i.filenameSnapshot,
-      performedBy: {
-        vexaUserId: i.performedByVexaUserId,
-        name: performerMap.get(i.performedByVexaUserId)?.name ?? null,
-      },
-      performedAt: i.performedAt,
-    })),
-    total,
-    page,
-    perPage,
-  }
-}
+// 註：專案歷史頁改讀 activity_logs（activity.service.listActivity），不再使用 materialEditHistory。
+// material_edit_history 仍於 upload/delete 時寫入（細粒度審計），但目前無對外讀取路徑，
+// 故此處不再提供 listHistory()。
