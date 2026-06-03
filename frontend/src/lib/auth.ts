@@ -8,10 +8,35 @@ const VEXA_ADMIN_API_KEY = process.env.VEXA_ADMIN_API_KEY ?? ''
 // forwarding can't reach it. We use docker exec to call it from within the container.
 function getVexaContainerId(): string | null {
   try {
-    const result = execFileSync('docker', ['ps', '--filter', 'ancestor=vexaai/vexa-lite:latest', '-q'], {
-      timeout: 3000,
-    })
-    return result.toString().trim().split('\n')[0] || null
+    // 1) 先用 ancestor 精確過濾。
+    const byAncestor = execFileSync(
+      'docker',
+      ['ps', '--filter', 'ancestor=vexaai/vexa-lite:latest', '-q'],
+      { timeout: 3000 },
+    )
+      .toString()
+      .trim()
+      .split('\n')
+      .filter(Boolean)[0]
+    if (byAncestor) return byAncestor
+
+    // 2) Fallback：當 vexaai/vexa-lite:latest tag 飄移（被重新 pull 指到新 image，
+    //    但執行中的容器仍是舊 image）時，ancestor filter 會失效。改列出所有執行中
+    //    容器、比對其「建立時的 image 名稱」前綴，避開 tag 飄移問題。
+    const ids = execFileSync('docker', ['ps', '-q'], { timeout: 3000 })
+      .toString()
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+    for (const id of ids) {
+      const image = execFileSync('docker', ['inspect', id, '--format', '{{.Config.Image}}'], {
+        timeout: 3000,
+      })
+        .toString()
+        .trim()
+      if (image.startsWith('vexaai/vexa-lite')) return id
+    }
+    return null
   } catch {
     return null
   }

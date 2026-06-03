@@ -16,6 +16,21 @@ const envSchema = z.object({
   VEXA_WS_URL: z.string().url(),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),
+  // 前端基底 URL，用於組出邀請接受連結。
+  APP_BASE_URL: z.string().url().default('http://localhost:3000'),
+  // 寄信（邀請信）設定。皆為 optional：未設定時 EmailService 退回「只印 log」模式，
+  // 功能照常 end-to-end，僅不會真的寄出 email。
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
+  MAIL_FROM: z.string().optional(),
+  // 邀請過期天數。
+  INVITATION_TTL_DAYS: z.coerce.number().default(7),
 })
 
 const result = envSchema.safeParse(process.env)

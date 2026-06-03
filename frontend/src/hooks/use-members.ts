@@ -1,7 +1,7 @@
 'use client'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
-import type { MembersResponse, ProjectMember } from '@/types/api'
+import type { MembersResponse, ProjectMember, InvitationResult } from '@/types/api'
 
 export function useMembers(projectId: string) {
   return useQuery({
@@ -20,7 +20,29 @@ export function useInviteMember(projectId: string) {
       canView: boolean
       canEdit: boolean
       canMeeting: boolean
-    }) => apiClient.post<ProjectMember>(`/projects/${projectId}/members`, data),
+    }) => apiClient.post<InvitationResult>(`/projects/${projectId}/members`, data),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['members', projectId] }),
+  })
+}
+
+export function useResendInvitation(projectId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (invitationId: string) =>
+      apiClient.post<InvitationResult>(
+        `/projects/${projectId}/invitations/${invitationId}/resend`,
+      ),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['members', projectId] }),
+  })
+}
+
+export function useRevokeInvitation(projectId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (invitationId: string) =>
+      apiClient.delete(`/projects/${projectId}/invitations/${invitationId}`),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['members', projectId] }),
   })

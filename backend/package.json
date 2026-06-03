@@ -12,12 +12,14 @@
     "@hono/node-server": "^1",
     "@prisma/client": "^5",
     "hono": "^4",
+    "nodemailer": "^8.0.10",
     "pino": "^9",
     "ws": "^8.21.0",
     "zod": "^3"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/nodemailer": "^8.0.0",
     "@types/ws": "^8.18.1",
     "prisma": "^5",
     "tsx": "^4",

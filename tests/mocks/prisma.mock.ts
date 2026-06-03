@@ -16,6 +16,15 @@ export const mockPrisma = {
     update: vi.fn(),
     delete: vi.fn(),
   },
+  projectInvitation: {
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+  },
+  $transaction: vi.fn(),
   material: {
     findFirst: vi.fn(),
     findMany: vi.fn(),

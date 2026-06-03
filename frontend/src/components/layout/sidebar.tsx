@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import { Button } from '@/components/ui/button'
 import { CreateMeetingDialog } from '@/components/meetings/create-meeting-dialog'
+import { InboxButton } from '@/components/inbox/inbox-button'
 import { cn } from '@/lib/utils'
 
 export function Sidebar() {
@@ -47,6 +48,10 @@ export function Sidebar() {
             </Link>
           ))}
         </nav>
+
+        <div className="px-3 pb-1">
+          <InboxButton />
+        </div>
 
         <div className="p-4 border-t">
           <div className="text-xs text-muted-foreground truncate mb-2">

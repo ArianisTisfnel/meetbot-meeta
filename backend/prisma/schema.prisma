@@ -23,6 +23,7 @@ model Project {
   deletedAt       DateTime? @map("deleted_at")
 
   members          ProjectMember[]
+  invitations      ProjectInvitation[]
   materials        Material[]
   editHistory      MaterialEditHistory[]
   activityLogs     ActivityLog[]
@@ -50,6 +51,33 @@ model ProjectMember {
   @@unique([projectId, vexaUserId])
   @@index([vexaUserId])
   @@map("project_members")
+  @@schema("app")
+}
+
+/// 待處理的專案邀請。可邀請尚未在系統建立帳號的人（以 email 為依據）。
+/// 對方登入後，後端以「已驗證的 Google email」比對 PENDING 邀請，於其信箱列出供接受。
+/// token 僅存 SHA-256 hash；接受時強制 email 比對，避免連結外洩被冒領。
+model ProjectInvitation {
+  id                   String           @id @default(uuid())
+  projectId            String           @map("project_id")
+  email                String // 一律正規化為小寫儲存
+  tokenHash            String           @unique @map("token_hash") // token 的 SHA-256（不存明碼）
+  canView              Boolean          @default(true) @map("can_view")
+  canEdit              Boolean          @default(false) @map("can_edit")
+  canMeeting           Boolean          @default(false) @map("can_meeting")
+  status               InvitationStatus @default(PENDING)
+  invitedByVexaUserId  Int              @map("invited_by_vexa_user_id")
+  acceptedByVexaUserId Int?             @map("accepted_by_vexa_user_id")
+  expiresAt            DateTime         @map("expires_at")
+  acceptedAt           DateTime?        @map("accepted_at")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  updatedAt            DateTime         @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([email, status])
+  @@index([projectId, status])
+  @@map("project_invitations")
   @@schema("app")
 }
 
@@ -171,6 +199,7 @@ enum EditAction {
 enum ActivityAction {
   MATERIAL_UPLOAD
   MATERIAL_DELETE
+  MEMBER_INVITE
   MEMBER_ADD
   MEMBER_REMOVE
   MEMBER_PERMISSION_UPDATE
@@ -178,6 +207,17 @@ enum ActivityAction {
   PROJECT_RENAME
 
   @@map("activity_action")
+  @@schema("app")
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+  EXPIRED
+
+  @@map("invitation_status")
   @@schema("app")
 }
 

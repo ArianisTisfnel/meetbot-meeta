@@ -75,9 +75,45 @@ export interface ProjectMember {
   invitedAt: string
 }
 
+export interface PendingInvitation {
+  id: string
+  email: string
+  canView: boolean
+  canEdit: boolean
+  canMeeting: boolean
+  expiresAt: string
+  invitedAt: string
+}
+
 export interface MembersResponse {
   owner: UserSummary
   members: ProjectMember[]
+  pendingInvitations: PendingInvitation[]
+}
+
+/** 建立邀請後的回傳（含可手動轉交的接受連結） */
+export interface InvitationResult extends PendingInvitation {
+  status: string
+  acceptUrl: string
+  emailSent: boolean
+}
+
+/** 站內信箱：我的待處理邀請 */
+export interface MyInvitation {
+  id: string
+  email: string
+  canView: boolean
+  canEdit: boolean
+  canMeeting: boolean
+  status: string
+  expiresAt: string
+  invitedAt: string
+  projectName: string | null
+  inviterName: string | null
+}
+
+export interface MyInvitationsResponse {
+  items: MyInvitation[]
 }
 
 // ── 資料 ─────────────────────────────────────────────

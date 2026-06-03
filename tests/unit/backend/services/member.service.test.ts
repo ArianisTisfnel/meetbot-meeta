@@ -6,7 +6,6 @@ vi.mock('../../../../backend/src/lib/prisma', () => ({
 }))
 
 import {
-  inviteMember,
   updateMemberPermissions,
   removeMember,
 } from '../../../../backend/src/services/member.service'
@@ -21,41 +20,8 @@ const MOCK_PROJECT = {
   deletedAt: null,
 }
 
-// ── inviteMember ──────────────────────────────────────────────────────
-
-describe('inviteMember', () => {
-  beforeEach(() => vi.clearAllMocks())
-
-  it('throws 422 USER_NOT_FOUND_IN_VEXA when email does not exist in Vexa', async () => {
-    mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT)
-    mockPrisma.$queryRaw.mockResolvedValueOnce([]) // no user found
-
-    await expect(
-      inviteMember('proj-1', 1, 'unknown@example.com', {
-        canView: true,
-        canEdit: false,
-        canMeeting: false,
-      }),
-    ).rejects.toMatchObject({ code: 'USER_NOT_FOUND_IN_VEXA', statusCode: 422 })
-  })
-
-  it('throws 409 ALREADY_MEMBER when prisma returns P2002 unique constraint error', async () => {
-    mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT)
-    mockPrisma.$queryRaw.mockResolvedValueOnce([
-      { id: 2, email: 'existing@example.com', name: 'Existing User' },
-    ])
-    const p2002 = Object.assign(new Error('Unique constraint violation'), { code: 'P2002' })
-    mockPrisma.projectMember.create.mockRejectedValueOnce(p2002)
-
-    await expect(
-      inviteMember('proj-1', 1, 'existing@example.com', {
-        canView: true,
-        canEdit: false,
-        canMeeting: false,
-      }),
-    ).rejects.toMatchObject({ code: 'ALREADY_MEMBER', statusCode: 409 })
-  })
-})
+// 註：邀請流程已改為「pending 邀請」模型，inviteMember 已移除，
+// 相關測試見 invitation.service.test.ts。
 
 // ── updateMemberPermissions ───────────────────────────────────────────
 
