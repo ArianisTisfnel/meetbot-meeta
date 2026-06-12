@@ -47,7 +47,7 @@ export function HoverHint({ hint, children }: Props) {
           <span
             role="tooltip"
             style={style}
-            className="pointer-events-none z-50 block w-64 rounded-md bg-slate-900 px-3 py-2 text-xs leading-relaxed text-white shadow-lg"
+            className="pointer-events-none z-50 block w-64 rounded-md bg-hive px-3 py-2 text-xs leading-relaxed text-hive-fg shadow-lg"
           >
             {hint}
           </span>,

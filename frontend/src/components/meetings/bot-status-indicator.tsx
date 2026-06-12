@@ -23,7 +23,7 @@ const STATUS_CONFIG: Record<
   ENDED: {
     icon: '⚪',
     label: '蜜塔已離開',
-    color: 'text-gray-500',
+    color: 'text-muted-foreground',
     hint: '會議已結束，點進去可查看摘要與完整逐字稿。',
   },
   FAILED: {

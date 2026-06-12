@@ -5,12 +5,12 @@ type ButtonVariant = 'default' | 'destructive' | 'outline' | 'secondary' | 'ghos
 type ButtonSize = 'default' | 'sm' | 'lg' | 'icon'
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
-  default:     'bg-slate-900 text-white hover:bg-slate-800',
-  destructive: 'bg-red-500 text-white hover:bg-red-600',
-  outline:     'border border-slate-200 bg-transparent hover:bg-slate-100',
-  secondary:   'bg-slate-100 text-slate-900 hover:bg-slate-200',
-  ghost:       'hover:bg-slate-100',
-  link:        'text-slate-900 underline-offset-4 hover:underline',
+  default:     'bg-primary text-primary-foreground hover:bg-honey-dark',
+  destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+  outline:     'border border-border bg-transparent hover:bg-accent',
+  secondary:   'bg-secondary text-secondary-foreground hover:bg-secondary/70',
+  ghost:       'hover:bg-accent',
+  link:        'text-foreground underline-offset-4 hover:underline',
 }
 
 const SIZE_CLASSES: Record<ButtonSize, string> = {
@@ -31,7 +31,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     if (asChild && React.isValidElement(children)) {
       return React.cloneElement(children as React.ReactElement<any>, {
         className: cn(
-          'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
+          'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50',
           VARIANT_CLASSES[variant],
           SIZE_CLASSES[size],
           className,
@@ -45,7 +45,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={cn(
-          'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
+          'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50',
           VARIANT_CLASSES[variant],
           SIZE_CLASSES[size],
           className
