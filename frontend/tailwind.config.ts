@@ -58,6 +58,7 @@ const config: Config = {
         ink: {
           DEFAULT: '#271C0E',
           soft: '#5C5243',
+          light: '#43331C',
         },
         honey: {
           DEFAULT: '#E89B0C',
