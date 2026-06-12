@@ -23,6 +23,45 @@ const NAV_ITEMS = [
 
 const COLLAPSED_KEY = 'mb-sidebar-collapsed'
 
+/** 使用者頭像：有 Google 照片就顯示，否則用名字／Email 首字母。 */
+function UserAvatar({
+  name,
+  email,
+  image,
+}: {
+  name?: string | null
+  email?: string | null
+  image?: string | null
+}) {
+  const [imgError, setImgError] = useState(false)
+  const initial = (name ?? email ?? '?').trim().charAt(0).toUpperCase()
+
+  if (image && !imgError) {
+    return (
+      // 28px 小頭像用原生 img：免設定 next/image 外部網域白名單
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={image}
+        alt=""
+        width={28}
+        height={28}
+        referrerPolicy="no-referrer"
+        onError={() => setImgError(true)}
+        className="size-7 shrink-0 rounded-full border border-line"
+      />
+    )
+  }
+
+  return (
+    <span
+      aria-hidden="true"
+      className="flex size-7 shrink-0 items-center justify-center rounded-full bg-pollen font-display text-sm font-bold text-honey-deep"
+    >
+      {initial}
+    </span>
+  )
+}
+
 export function Sidebar() {
   const pathname = usePathname()
   const [meetingDialogOpen, setMeetingDialogOpen] = useState(false)
@@ -120,10 +159,28 @@ export function Sidebar() {
         </div>
 
         <div className={cn('border-t p-3', collapsed && 'p-2.5')}>
-          {!collapsed && (
-            <p className="mb-2 truncate px-1 text-xs text-muted-foreground">
-              {session?.user?.email ?? ''}
-            </p>
+          {collapsed ? (
+            <div
+              className="mb-2 flex justify-center"
+              title={session?.user?.email ?? undefined}
+            >
+              <UserAvatar
+                name={session?.user?.name}
+                email={session?.user?.email}
+                image={session?.user?.image}
+              />
+            </div>
+          ) : (
+            <div className="mb-2 flex items-center gap-2 px-1">
+              <UserAvatar
+                name={session?.user?.name}
+                email={session?.user?.email}
+                image={session?.user?.image}
+              />
+              <p className="min-w-0 truncate text-xs text-muted-foreground">
+                {session?.user?.email ?? ''}
+              </p>
+            </div>
           )}
           <Button
             variant="outline"
