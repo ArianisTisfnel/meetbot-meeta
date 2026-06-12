@@ -9,6 +9,11 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['var(--font-sans)', 'system-ui', 'sans-serif'],
+        display: ['var(--font-display)', 'var(--font-sans)', 'serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
+      },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
@@ -47,6 +52,25 @@ const config: Config = {
         card: {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
+        },
+        // 蜜塔品牌色（landing / login 專用）
+        paper: '#FFFDF7',
+        ink: {
+          DEFAULT: '#271C0E',
+          soft: '#5C5243',
+        },
+        honey: {
+          DEFAULT: '#E89B0C',
+          deep: '#8A5B00',
+          dark: '#D88F08',
+        },
+        pollen: '#F7EDD8',
+        line: '#EADFC8',
+        hive: {
+          DEFAULT: '#1F1A12',
+          fg: '#F2EADB',
+          muted: '#C9BCA4',
+          faint: '#9C8F77',
         },
       },
     },

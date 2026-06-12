@@ -57,4 +57,44 @@
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
   }
+  a,
+  button {
+    touch-action: manipulation;
+  }
+}
+
+/* ── 蜜塔 landing/login 動畫 ──
+   動畫只在使用者未要求減少動態時播放；
+   reduced-motion 下元素直接呈現最終狀態。 */
+@media (prefers-reduced-motion: no-preference) {
+  .mb-rise {
+    animation: mb-rise 0.6s ease-out both;
+    animation-delay: var(--d, 0s);
+  }
+  .mb-line {
+    animation: mb-line 0.5s ease-out both;
+    animation-delay: var(--d, 0s);
+  }
+}
+
+@keyframes mb-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes mb-line {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
