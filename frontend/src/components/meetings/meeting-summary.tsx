@@ -9,8 +9,17 @@ interface Props {
 export function MeetingSummary({ summary, actionItems }: Props) {
   if (summary === null) {
     return (
-      <div className="rounded-lg border p-6 text-center text-muted-foreground">
-        <p className="animate-pulse">⏳ 蜜塔正在生成會議摘要…（通常需要 10-30 秒）</p>
+      <div
+        role="status"
+        className="rounded-lg border p-6 text-center text-muted-foreground"
+      >
+        <p className="flex items-center justify-center gap-2.5">
+          <span
+            aria-hidden="true"
+            className="size-4 animate-spin rounded-full border-2 border-line border-t-honey-deep motion-reduce:animate-none"
+          />
+          蜜塔正在生成會議摘要…（通常需要 10-30 秒）
+        </p>
       </div>
     )
   }
@@ -26,16 +35,19 @@ export function MeetingSummary({ summary, actionItems }: Props) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div className="rounded-lg border p-6">
-        <h3 className="font-semibold mb-3">📋 摘要</h3>
+        <h3 className="font-semibold mb-3">摘要</h3>
         <p className="text-sm leading-relaxed whitespace-pre-wrap">{summary}</p>
       </div>
       {actionItems.length > 0 && (
         <div className="rounded-lg border p-6">
-          <h3 className="font-semibold mb-3">🔖 交辦事項</h3>
+          <h3 className="font-semibold mb-3">交辦事項</h3>
           <ul className="space-y-2">
             {actionItems.map((item, i) => (
               <li key={i} className="flex items-start gap-2 text-sm">
-                <span>☐</span>
+                <span
+                  aria-hidden="true"
+                  className="mt-1 size-3.5 shrink-0 rounded-sm border-2 border-line"
+                />
                 <span>
                   {item.task}
                   {item.owner && (

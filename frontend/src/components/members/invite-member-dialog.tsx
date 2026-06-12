@@ -91,7 +91,7 @@ export function InviteMemberDialog({ projectId, open, onOpenChange }: Props) {
               className="mt-1"
             />
             <p className="text-xs text-muted-foreground mt-1">
-              對方不需事先註冊；登入後會在「📬 信箱」看到此邀請並接受。
+              對方不需事先註冊；登入後會在側欄「信箱」看到此邀請並接受。
             </p>
           </div>
           <div>

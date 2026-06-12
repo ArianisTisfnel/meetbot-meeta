@@ -13,8 +13,8 @@
     --card-foreground: 34 47% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 34 47% 10%;
-    --primary: 39 90% 48%; /* honey */
-    --primary-foreground: 34 47% 10%; /* ink on honey，同 landing CTA */
+    --primary: 34 47% 10%; /* ink：主要動作用深褐，蜂蜜色留給強調 */
+    --primary-foreground: 39 47% 90%; /* 暖米白（hive-fg），同 landing 深色卡片 */
     --secondary: 41 66% 91%; /* pollen */
     --secondary-foreground: 34 47% 10%;
     --muted: 41 66% 94%;

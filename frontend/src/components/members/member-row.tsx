@@ -2,6 +2,7 @@
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { TrashIcon } from '@/components/ui/icons'
 import { displayName } from '@/lib/utils'
 import type { ProjectMember } from '@/types/api'
 
@@ -65,7 +66,7 @@ export function MemberRow({ member, canManage, onRemove, onUpdate, isUpdating }:
             onClick={() => onRemove(member.vexaUserId)}
             aria-label="移除成員"
           >
-            🗑
+            <TrashIcon />
           </Button>
         )}
       </td>

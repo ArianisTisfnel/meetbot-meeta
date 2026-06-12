@@ -5,7 +5,7 @@ type ButtonVariant = 'default' | 'destructive' | 'outline' | 'secondary' | 'ghos
 type ButtonSize = 'default' | 'sm' | 'lg' | 'icon'
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
-  default:     'bg-primary text-primary-foreground hover:bg-honey-dark',
+  default:     'bg-primary text-primary-foreground hover:bg-ink-light',
   destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
   outline:     'border border-border bg-transparent hover:bg-accent',
   secondary:   'bg-secondary text-secondary-foreground hover:bg-secondary/70',
