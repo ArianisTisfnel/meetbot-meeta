@@ -13,8 +13,8 @@
     --card-foreground: 34 47% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 34 47% 10%;
-    --primary: 34 47% 10%; /* ink：主要動作用深褐，蜂蜜色留給強調 */
-    --primary-foreground: 39 47% 90%; /* 暖米白（hive-fg），同 landing 深色卡片 */
+    --primary: 23 83% 31%; /* roast #92400E：烘焙咖啡棕，與蜂蜜同暖琥珀色相 */
+    --primary-foreground: 39 47% 90%; /* 暖米白（hive-fg），對 roast 5.9:1 */
     --secondary: 41 66% 91%; /* pollen */
     --secondary-foreground: 34 47% 10%;
     --muted: 41 66% 94%;

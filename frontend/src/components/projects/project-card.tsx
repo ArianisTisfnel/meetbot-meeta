@@ -43,7 +43,7 @@ export function ProjectCard({ project }: Props) {
           {/* stretched link：整張卡都是「進入」的點擊範圍 */}
           <Link
             href={`/projects/${project.id}`}
-            className="inline-flex h-9 shrink-0 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-ink-light focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background after:absolute after:inset-0 after:rounded-lg after:content-['']"
+            className="inline-flex h-9 shrink-0 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-roast-deep focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background after:absolute after:inset-0 after:rounded-lg after:content-['']"
           >
             進入 →
           </Link>
