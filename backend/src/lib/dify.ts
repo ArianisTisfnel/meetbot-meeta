@@ -34,14 +34,21 @@ export async function deleteDataset(datasetId: string): Promise<void> {
 }
 
 export type ChunkingOptions = {
+  parentMode?: 'paragraph' | 'full-doc'
   parentSeparator?: string
   parentMaxTokens?: number
+  parentOverlap?: number
   childSeparator?: string
   childMaxTokens?: number
   childOverlap?: number
   docLanguage?: string
 }
 
+/**
+ * 產生 parent-child（hierarchical）chunking 的 process_rule。
+ * 注意：要真正啟用 parent-child，必須在 data 同時帶 `doc_form: 'hierarchical_model'`（見 uploadDocument）；
+ * 只設 process_rule.mode='hierarchical' 而少了 doc_form，Dify 會退回 general（text_model）。
+ */
 function buildProcessRule(opts: ChunkingOptions = {}) {
   return {
     mode: 'hierarchical',
@@ -50,17 +57,18 @@ function buildProcessRule(opts: ChunkingOptions = {}) {
         { id: 'remove_extra_spaces', enabled: true },
         { id: 'remove_urls_emails', enabled: false },
       ],
+      parent_mode: opts.parentMode ?? 'paragraph',
       segmentation: {
-        separator: opts.parentSeparator ?? '\n',
+        separator: opts.parentSeparator ?? '\n\n',
         max_tokens: opts.parentMaxTokens ?? 1500,
+        chunk_overlap: opts.parentOverlap ?? 150,
       },
       subchunk_segmentation: {
-        separator: opts.childSeparator ?? '。',
+        separator: opts.childSeparator ?? '\n',
         max_tokens: opts.childMaxTokens ?? 500,
         chunk_overlap: opts.childOverlap ?? 75,
       },
     },
-    doc_language: opts.docLanguage ?? 'Chinese',
   }
 }
 
@@ -77,6 +85,9 @@ export async function uploadDocument(
     'data',
     JSON.stringify({
       indexing_technique: 'high_quality',
+      // 關鍵：doc_form=hierarchical_model 才會用 parent-child；缺這個會被當成 general。
+      doc_form: 'hierarchical_model',
+      doc_language: chunking.docLanguage ?? 'Chinese',
       process_rule: buildProcessRule(chunking),
     }),
   )
