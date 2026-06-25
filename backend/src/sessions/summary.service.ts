@@ -3,7 +3,8 @@ import { logger } from '../middleware/logger.js'
 import * as vexaClient from '../lib/vexa.js'
 import * as dify from '../lib/dify.js'
 import { upsertFile } from '../lib/supabase.js'
-import type { VexaRestSegment } from '../types/session.js'
+import { botProvider, type BotSession, type TranscriptSegment } from '../provider/index.js'
+import { normalizeRestSegment } from '../provider/vexa-adapter.js'
 
 export const SUMMARY_INITIAL_WAIT_MS = 5_000
 export const SUMMARY_POLL_INTERVAL_MS = 3_000
@@ -19,9 +20,9 @@ export function formatSeconds(seconds: number): string {
     : `${m}:${String(s).padStart(2, '0')}`
 }
 
-export function formatTranscriptAsMarkdown(segments: VexaRestSegment[]): string {
+export function formatTranscriptAsMarkdown(segments: TranscriptSegment[]): string {
   const lines = segments.map((seg) => {
-    const ts = formatSeconds(seg.start)
+    const ts = formatSeconds(seg.startTime)
     const speaker = seg.speaker || '參與者'
     return `**[${ts}] ${speaker}**: ${seg.text}`
   })
@@ -29,19 +30,17 @@ export function formatTranscriptAsMarkdown(segments: VexaRestSegment[]): string 
 }
 
 export async function waitForTranscriptStable(
-  platform: string,
-  nativeMeetingId: string,
-  token: string,
-): Promise<VexaRestSegment[]> {
+  fetchSegments: () => Promise<TranscriptSegment[]>,
+): Promise<TranscriptSegment[]> {
   await new Promise((r) => setTimeout(r, SUMMARY_INITIAL_WAIT_MS))
 
   const deadline = Date.now() + SUMMARY_TIMEOUT_MS
   let prevCount = -1
   let stableCount = 0
-  let lastSegments: VexaRestSegment[] = []
+  let lastSegments: TranscriptSegment[] = []
 
   while (Date.now() < deadline) {
-    lastSegments = await vexaClient.getTranscriptions(platform, nativeMeetingId, token)
+    lastSegments = await fetchSegments()
     const count = lastSegments.length
 
     if (count === prevCount) {
@@ -55,7 +54,7 @@ export async function waitForTranscriptStable(
   }
 
   logger.warn(
-    { nativeMeetingId, segmentCount: lastSegments.length },
+    { segmentCount: lastSegments.length },
     'transcript stabilization timeout, proceeding with available segments',
   )
   return lastSegments
@@ -67,13 +66,20 @@ export async function generateSummaryAsync(params: {
   nativeMeetingId: string
   creatorVexaToken: string
   difyDatasetId: string | null
+  /** 會議結束時仍在記憶體的 bot session；有則用 provider 抽象層取逐字稿（provider-agnostic）。 */
+  session?: BotSession
 }): Promise<void> {
   try {
-    const segments = await waitForTranscriptStable(
-      params.platform,
-      params.nativeMeetingId,
-      params.creatorVexaToken,
-    )
+    // 正常結束路徑：用 provider 抽象層取逐字稿（涵蓋 Vexa / Recall）。
+    // 重啟復原路徑（無 session）：退回 Vexa REST（DB 只持久化 Vexa 識別碼，見 session-manager 限制說明）。
+    const fetchSegments: () => Promise<TranscriptSegment[]> = params.session
+      ? () => botProvider.getTranscript(params.session!)
+      : () =>
+          vexaClient
+            .getTranscriptions(params.platform, params.nativeMeetingId, params.creatorVexaToken)
+            .then((raw) => raw.map(normalizeRestSegment))
+
+    const segments = await waitForTranscriptStable(fetchSegments)
 
     if (!segments.length) {
       logger.info({ meetingInstanceId: params.meetingInstanceId }, 'no transcript, skipping summary')

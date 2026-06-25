@@ -4,6 +4,14 @@ import { mockVexa } from '../../../mocks/vexa.mock'
 
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('../../../../backend/src/lib/vexa', () => mockVexa)
+vi.mock('../../../../backend/src/types/env', () => ({
+  env: {
+    VEXA_API_URL: 'http://vexa.test',
+    VEXA_WS_URL: 'ws://vexa.test',
+    DIFY_API_BASE: 'http://dify.test',
+    BOT_ADMISSION_TIMEOUT_MS: 30000,
+  },
+}))
 vi.mock('../../../../backend/src/lib/dify', () => ({
   uploadTranscriptFile: vi.fn().mockResolvedValue('dify-file-id'),
   generateSummary: vi.fn().mockResolvedValue({
@@ -24,26 +32,30 @@ import {
   generateSummaryAsync,
   SUMMARY_INITIAL_WAIT_MS,
   SUMMARY_POLL_INTERVAL_MS,
-  SUMMARY_TIMEOUT_MS,
 } from '../../../../backend/src/sessions/summary.service'
 import * as difyMod from '../../../../backend/src/lib/dify'
 import * as supabaseMod from '../../../../backend/src/lib/supabase'
-import type { VexaRestSegment } from '../../../../backend/src/types/session'
+import type { TranscriptSegment } from '../../../../backend/src/provider/types'
 
+/** 統一 schema 的 segment（formatTranscriptAsMarkdown / waitForTranscriptStable 用）。 */
 function makeSeg(
   start: number,
   text = `seg-text-${start}`,
   speaker: string | null = 'Alice',
-): VexaRestSegment {
+): TranscriptSegment {
   return {
-    segment_id: `seg-${start}`,
+    segmentId: `seg-${start}`,
     text,
     speaker,
-    start,
-    end: start + 5,
+    startTime: start,
+    endTime: start + 5,
     language: 'zh',
-    completed: true,
   }
+}
+
+/** Vexa REST 原始 segment（generateSummaryAsync 無 session 時的 REST fallback 用）。 */
+function makeRestSeg(start: number, text = `seg-text-${start}`, speaker: string | null = 'Alice') {
+  return { segment_id: `seg-${start}`, text, speaker, start, end: start + 5, language: 'zh', completed: true }
 }
 
 const baseParams = {
@@ -107,9 +119,9 @@ describe('waitForTranscriptStable', () => {
 
   it('連續 2 次 segment count 相同 → 提早回傳（穩定偵測）', async () => {
     const segs = [makeSeg(1), makeSeg(2)]
-    mockVexa.getTranscriptions.mockResolvedValue(segs)
+    const fetchSegments = vi.fn().mockResolvedValue(segs)
 
-    const promise = waitForTranscriptStable('google_meet', 'abc-defg-hij', 'tok')
+    const promise = waitForTranscriptStable(fetchSegments)
 
     // 初始等待（5 s）
     await vi.advanceTimersByTimeAsync(SUMMARY_INITIAL_WAIT_MS)
@@ -122,18 +134,18 @@ describe('waitForTranscriptStable', () => {
 
     const result = await promise
     expect(result).toEqual(segs)
-    expect(mockVexa.getTranscriptions).toHaveBeenCalledTimes(3)
+    expect(fetchSegments).toHaveBeenCalledTimes(3)
   })
 
   it('超過 30 秒仍未穩定 → 回傳目前最後取得的 segments', async () => {
     let callCount = 0
-    mockVexa.getTranscriptions.mockImplementation(async () => {
+    const fetchSegments = vi.fn().mockImplementation(async () => {
       callCount++
       // 交替回傳不同長度，確保 stableCount 永遠重設
       return callCount % 2 === 0 ? [makeSeg(1)] : [makeSeg(1), makeSeg(2)]
     })
 
-    const promise = waitForTranscriptStable('google_meet', 'abc-defg-hij', 'tok')
+    const promise = waitForTranscriptStable(fetchSegments)
 
     // 初始等待（5 s），之後每 3 s 一次輪詢
     // deadline = Date.now() + 30000（5000ms 後）
@@ -147,7 +159,7 @@ describe('waitForTranscriptStable', () => {
     // 函式應回傳最後一次取得的 segments（不是空陣列）
     expect(Array.isArray(result)).toBe(true)
     // 共呼叫 10 次（第 10 次 poll timer 到達 deadline，while 條件不成立後 exit）
-    expect(mockVexa.getTranscriptions).toHaveBeenCalledTimes(10)
+    expect(fetchSegments).toHaveBeenCalledTimes(10)
   })
 })
 
@@ -157,8 +169,9 @@ describe('generateSummaryAsync', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
-    // 預設：有 2 段逐字稿，且每次回傳相同（穩定偵測在 3 次 poll 後完成）
-    mockVexa.getTranscriptions.mockResolvedValue([makeSeg(1), makeSeg(2)])
+    // 預設：有 2 段逐字稿，且每次回傳相同（穩定偵測在 3 次 poll 後完成）。
+    // generateSummaryAsync 無 session → 走 Vexa REST fallback，故 mock 回傳 REST 原始 segment。
+    mockVexa.getTranscriptions.mockResolvedValue([makeRestSeg(1), makeRestSeg(2)])
     mockPrisma.meetingInstance.update.mockResolvedValue({})
   })
 

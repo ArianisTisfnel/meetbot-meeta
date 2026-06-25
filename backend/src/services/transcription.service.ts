@@ -2,6 +2,8 @@ import { prisma } from '../lib/prisma.js'
 import * as vexaClient from '../lib/vexa.js'
 import { AppError } from '../middleware/error-handler.js'
 import { activeSessions } from '../sessions/session-store.js'
+import { botProvider, type TranscriptSegment } from '../provider/index.js'
+import { normalizeRestSegment } from '../provider/vexa-adapter.js'
 
 /**
  * 取得呼叫 Vexa transcription API 所需的 creatorVexaToken。
@@ -49,40 +51,47 @@ export async function getTranscriptions(params: {
   page?: number
   perPage?: number
 }): Promise<TranscriptionResult> {
-  const token = await resolveCreatorToken(params.meetingInstanceId, params.creatorApiTokenId)
-  if (!token) {
-    throw new AppError(
-      'CREATOR_TOKEN_UNAVAILABLE',
-      503,
-      '邀請者的 token 已過期，無法取得逐字稿',
-    )
+  // 取全量逐字稿（已正規化成統一 TranscriptSegment schema）。
+  // 優先用記憶體中的活躍 session（provider-agnostic，涵蓋 Vexa / Recall）；
+  // session 不在記憶體時（會議已結束/重啟）退回 Vexa REST（需邀請者 token）。
+  let all: TranscriptSegment[]
+  const session = activeSessions.get(params.meetingInstanceId)
+  if (session?.botSession) {
+    all = await botProvider.getTranscript(session.botSession)
+  } else {
+    const token = await resolveCreatorToken(params.meetingInstanceId, params.creatorApiTokenId)
+    if (!token) {
+      throw new AppError(
+        'CREATOR_TOKEN_UNAVAILABLE',
+        503,
+        '邀請者的 token 已過期，無法取得逐字稿',
+      )
+    }
+    const raw = await vexaClient.getTranscriptions(params.platform, params.vexaNativeMeetingId, token)
+    all = raw.map(normalizeRestSegment)
   }
-
-  // 取全量逐字稿，在記憶體中 filter
-  const all = await vexaClient.getTranscriptions(params.platform, params.vexaNativeMeetingId, token)
 
   // 使用 >= 確保邊界 segment 包含在內
   const filtered =
     params.sinceStartTime !== undefined
-      ? all.filter((seg) => seg.start >= params.sinceStartTime!)
+      ? all.filter((seg) => seg.startTime >= params.sinceStartTime!)
       : all
 
   // 依 startTime 排序
-  const sorted = [...filtered].sort((a, b) => a.start - b.start)
+  const sorted = [...filtered].sort((a, b) => a.startTime - b.startTime)
 
   const page = params.page ?? 1
   const perPage = params.perPage ?? 50
   const sliced = sorted.slice((page - 1) * perPage, page * perPage)
 
-  // 欄位映射：start/end → startTime/endTime（camelCase）
   const items = sliced.map((seg) => ({
     text: seg.text,
     speaker: seg.speaker ?? null,
-    startTime: seg.start,
-    endTime: seg.end,
+    startTime: seg.startTime,
+    endTime: seg.endTime,
     language: seg.language ?? null,
-    segmentId: seg.segment_id ?? null,
-    createdAt: (seg as any).created_at ?? null,
+    segmentId: seg.segmentId ?? null,
+    createdAt: null,
   }))
 
   return { items, total: filtered.length, page, perPage }

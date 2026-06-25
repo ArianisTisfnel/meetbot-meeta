@@ -3,6 +3,11 @@ import { prisma } from '../lib/prisma.js'
 import type { AppEnv } from '../types/hono.js'
 
 export const authMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
+  // 外部 webhook（如 Recall realtime）不帶我們的 Bearer，改用各自的 ?token= 密鑰自行驗證。
+  if (c.req.path.startsWith('/webhooks/')) {
+    return next()
+  }
+
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token) {
     return c.json({ error_code: 'UNAUTHORIZED', message: '缺少 Authorization header' }, 401)

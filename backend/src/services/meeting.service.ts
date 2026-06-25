@@ -1,12 +1,9 @@
 import { prisma } from '../lib/prisma.js'
-import * as vexaClient from '../lib/vexa.js'
-import { VexaConcurrentLimitError, parseGoogleMeetUrl } from '../lib/vexa.js'
+import { parseGoogleMeetUrl } from '../lib/vexa.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
-import { createSession, closeSession, handleSessionClose } from '../sessions/session-manager.js'
+import { startBotSession, closeSession, handleSessionClose } from '../sessions/session-manager.js'
 import { recordActivity } from './activity.service.js'
-
-const PLATFORM = 'google_meet'
 
 const BOT_REQUIRED_SCOPES = ['bot', 'browser', 'tx']
 
@@ -153,46 +150,16 @@ export async function createMeeting(params: {
     })
   }
 
-  // ④ 邀請 Vexa Bot
-  let vexaMeetingId: number
-  try {
-    const result = await vexaClient.inviteBot({ googleMeetUrl, vexaToken })
-    vexaMeetingId = result.vexaMeetingId
-  } catch (err) {
-    if (err instanceof VexaConcurrentLimitError) {
-      // 並發競態：刪除剛建立的 PENDING record，回傳 409
-      await prisma.meetingInstance.delete({ where: { id: meeting.id } })
-      throw new AppError('BOT_CONCURRENT_LIMIT', 409, `您目前已有進行中的 Bot，無法再建立`, {
-        maxConcurrentBots,
-        activeBotCount,
-      })
-    }
-    // 其他錯誤（網路/逾時）：保留 PENDING，UI 顯示重試
-    logger.warn({ err, meetingId: meeting.id }, 'inviteBot failed, keeping PENDING')
-    return formatMeetingResponse(meeting, vexaUserId, projectName)
-  }
-
-  // ⑤ 建立 WS Session
-  try {
-    await createSession(meeting.id, {
-      vexaMeetingId,
-      platform: PLATFORM,
-      nativeMeetingId,
-      difyDatasetId,
-      creatorVexaToken: vexaToken,
-    })
-    // 成功：更新 DB 中的 Vexa IDs（狀態維持 PENDING，等 WS active 事件後才轉 ACTIVE）
-    await prisma.meetingInstance.update({
-      where: { id: meeting.id },
-      data: { vexaMeetingId, vexaNativeMeetingId: nativeMeetingId, creatorApiTokenId: vexaApiTokenId },
-    })
-  } catch (err) {
-    // WS 連線失敗：撤銷 Bot，保留 PENDING
-    logger.warn({ err, meetingId: meeting.id }, 'createSession failed, removing bot')
-    await vexaClient.removeBot(PLATFORM, nativeMeetingId, vexaToken).catch((e) =>
-      logger.warn({ e }, 'removeBot after createSession failure also failed'),
-    )
-  }
+  // ④ 透過 provider 抽象層派 bot（含 Vexa→Recall failover）。
+  //    背景執行、不阻塞此回應：bot 被 admitted → DB 轉 ACTIVE；兩個 provider 都進不去 → DB 轉 FAILED。
+  //    狀態維持 PENDING 直到背景流程有結果（沿用既有「PENDING→ACTIVE」輪詢 UX）。
+  void startBotSession({
+    meetingInstanceId: meeting.id,
+    googleMeetUrl,
+    nativeMeetingId,
+    difyDatasetId,
+    creatorVexaToken: vexaToken,
+  })
 
   return formatMeetingResponse(meeting, vexaUserId, projectName)
 }
@@ -230,25 +197,7 @@ export async function leaveMeeting(meetingInstanceId: string): Promise<{
     throw new AppError('INVALID_REQUEST', 400, '只有進行中的會議才能讓 Bot 離開')
   }
 
-  // 取得邀請者 token（可能已過期）
-  const tokenRows = await prisma.$queryRaw<Array<{ token: string }>>`
-    SELECT token FROM public.api_tokens
-    WHERE id = ${meeting.creatorApiTokenId}
-      AND (expires_at IS NULL OR expires_at > NOW())
-    LIMIT 1
-  `
-
-  if (!tokenRows.length) {
-    logger.warn({ meetingInstanceId }, 'leaveMeeting: creator token expired, skipping DELETE /bots')
-  } else {
-    try {
-      await vexaClient.removeBot(PLATFORM, meeting.vexaNativeMeetingId!, tokenRows[0].token)
-    } catch (err) {
-      logger.warn({ err, meetingInstanceId }, 'leaveMeeting: removeBot failed, continuing')
-    }
-  }
-
-  // handleSessionClose 原子鎖更新 DB
+  // handleSessionClose 原子鎖更新 DB，並透過 provider 抽象層讓 bot 離開（含撤除）。
   await handleSessionClose(meetingInstanceId)
 
   return {
@@ -278,27 +227,10 @@ export async function cancelMeeting(meetingInstanceId: string): Promise<{
     throw new AppError('INVALID_REQUEST', 400, '只有等待中（蜜塔加入中）的會議才能取消')
   }
 
-  // 關閉可能存在的 WS session（closeSession 先從 Map 移除再關閉，避免自動重連）
+  // 關閉可能存在的 session（closeSession 先從 Map 移除再透過 provider 讓 bot 離開，避免重連/遺留）
   await closeSession(meetingInstanceId).catch((err) =>
     logger.warn({ err, meetingInstanceId }, 'cancelMeeting: closeSession failed, continuing'),
   )
-
-  // 若已派出 Vexa bot，嘗試撤除（best effort）
-  if (meeting.vexaNativeMeetingId) {
-    const tokenRows = await prisma.$queryRaw<Array<{ token: string }>>`
-      SELECT token FROM public.api_tokens
-      WHERE id = ${meeting.creatorApiTokenId}
-        AND (expires_at IS NULL OR expires_at > NOW())
-      LIMIT 1
-    `
-    if (tokenRows.length) {
-      try {
-        await vexaClient.removeBot(PLATFORM, meeting.vexaNativeMeetingId, tokenRows[0].token)
-      } catch (err) {
-        logger.warn({ err, meetingInstanceId }, 'cancelMeeting: removeBot failed, continuing')
-      }
-    }
-  }
 
   const updated = await prisma.meetingInstance.update({
     where: { id: meetingInstanceId },
@@ -391,42 +323,14 @@ export async function reinviteBot(params: {
     },
   })
 
-  // 邀請 Vexa Bot
-  let vexaMeetingId: number
-  try {
-    const result = await vexaClient.inviteBot({ googleMeetUrl: meeting.googleMeetUrl, vexaToken })
-    vexaMeetingId = result.vexaMeetingId
-  } catch (err) {
-    if (err instanceof VexaConcurrentLimitError) {
-      throw new AppError('BOT_CONCURRENT_LIMIT', 409, '您目前已有進行中的 Bot，無法再邀請', {
-        maxConcurrentBots,
-        activeBotCount,
-      })
-    }
-    // 其他錯誤：保留 PENDING，UI 顯示可重試
-    logger.warn({ err, meetingInstanceId }, 'reinviteBot: inviteBot failed, keeping PENDING')
-    return { id: meetingInstanceId, status: 'PENDING' }
-  }
-
-  // 建立 WS Session
-  try {
-    await createSession(meetingInstanceId, {
-      vexaMeetingId,
-      platform: PLATFORM,
-      nativeMeetingId,
-      difyDatasetId: meeting.project?.difyDatasetId ?? null,
-      creatorVexaToken: vexaToken,
-    })
-    await prisma.meetingInstance.update({
-      where: { id: meetingInstanceId },
-      data: { vexaMeetingId, vexaNativeMeetingId: nativeMeetingId },
-    })
-  } catch (err) {
-    logger.warn({ err, meetingInstanceId }, 'reinviteBot: createSession failed, removing bot')
-    await vexaClient.removeBot(PLATFORM, nativeMeetingId, vexaToken).catch((e) =>
-      logger.warn({ e }, 'reinviteBot: removeBot after createSession failure also failed'),
-    )
-  }
+  // 透過 provider 抽象層派 bot（含 Vexa→Recall failover），背景等待 admitted。
+  void startBotSession({
+    meetingInstanceId,
+    googleMeetUrl: meeting.googleMeetUrl,
+    nativeMeetingId,
+    difyDatasetId: meeting.project?.difyDatasetId ?? null,
+    creatorVexaToken: vexaToken,
+  })
 
   return { id: meetingInstanceId, status: 'PENDING' }
 }

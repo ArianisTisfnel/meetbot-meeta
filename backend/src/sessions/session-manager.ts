@@ -1,90 +1,145 @@
-import WebSocket from 'ws'
 import { prisma } from '../lib/prisma.js'
 import { logger } from '../middleware/logger.js'
-import * as vexaClient from '../lib/vexa.js'
+import { botProvider } from '../provider/index.js'
+import type { BotSession, LiveHandlers } from '../provider/types.js'
 import { activeSessions } from './session-store.js'
 import { handleTranscriptSegment, handleChatMessage } from './wake-word-detector.js'
 import { generateSummaryAsync } from './summary.service.js'
-import { env } from '../types/env.js'
 import type { MeetingSession } from '../types/session.js'
 
-// ── createSession ─────────────────────────────────────────────────────────────
+const PLATFORM = 'google_meet'
 
-export async function createSession(
-  meetingInstanceId: string,
-  params: {
-    vexaMeetingId: number
-    platform: string
-    nativeMeetingId: string
-    difyDatasetId: string | null
-    creatorVexaToken: string
-  },
-  initialProcessedIds: Set<string> = new Set(),
-): Promise<void> {
-  const ws = new WebSocket(`${env.VEXA_WS_URL}/ws`, {
-    headers: { 'X-API-Key': params.creatorVexaToken },
-  })
+// ── 歡迎訊息 ───────────────────────────────────────────────────────────────────
 
+function welcomeMessage(difyDatasetId: string | null): string {
+  return difyDatasetId
+    ? '嗨大家好！我是蜜塔（Meeta），你們今天的會議小幫手 🎉\n\n你可以用語音或聊天室呼叫我：\n  語音：說「蜜塔」或「小幫手」，再接上你的問題\n  聊天室：輸入「蜜塔」或「小幫手」，再接上你的問題\n\n我會根據此專案上傳的資料來回答問題，例如：\n「蜜塔，請問去年 Q3 目標是什麼？」\n\n有問題就找我！'
+    : '嗨大家好！我是蜜塔（Meeta），你們今天的會議小幫手 🎉\n\n你可以用語音或聊天室呼叫我：\n  語音：說「蜜塔」或「小幫手」，再接上你的問題\n  聊天室：輸入「蜜塔」或「小幫手」，再接上你的問題\n\n我會根據本次會議的逐字稿記錄來回答問題，例如：\n「蜜塔，剛才提到的時程安排是什麼？」\n\n有問題就找我！'
+}
+
+// ── startBotSession ─────────────────────────────────────────────────────────
+//
+// 取代舊的 createSession：透過 provider 抽象層派 bot（含 Vexa→Recall failover），
+// 在背景等待 bot 被 admitted。**不阻塞 HTTP 呼叫端**（createMeeting 立即回 PENDING）：
+//   - admitted（join resolve）→ DB 轉 ACTIVE、發歡迎訊息
+//   - 兩個 provider 都進不去（join reject）→ DB 轉 FAILED
+//
+// 此函式自身吞掉所有錯誤、永不 throw，呼叫端以 `void startBotSession(...)` 觸發。
+
+export async function startBotSession(params: {
+  meetingInstanceId: string
+  googleMeetUrl: string
+  nativeMeetingId: string
+  difyDatasetId: string | null
+  creatorVexaToken: string
+  initialProcessedIds?: Set<string>
+}): Promise<void> {
+  const { meetingInstanceId, googleMeetUrl, nativeMeetingId, difyDatasetId, creatorVexaToken } = params
+
+  // 先把 MeetingSession 放進 Map，讓 live handlers（admitted 前可能就有事件）能查到它。
   const session: MeetingSession = {
     meetingInstanceId,
-    vexaMeetingId: params.vexaMeetingId,
-    platform: params.platform,
-    nativeMeetingId: params.nativeMeetingId,
-    difyDatasetId: params.difyDatasetId,
-    creatorVexaToken: params.creatorVexaToken,
+    vexaMeetingId: null,
+    platform: PLATFORM,
+    nativeMeetingId,
+    difyDatasetId,
+    creatorVexaToken,
     isSpeaking: false,
     lastWakeAt: 0,
-    processedSegmentIds: initialProcessedIds,
-    wsConnection: ws,
+    processedSegmentIds: params.initialProcessedIds ?? new Set(),
+    botSession: null,
     difyConversationId: null,
     lastQuestionAt: 0,
   }
   activeSessions.set(meetingInstanceId, session)
 
-  // 等待連線建立後訂閱 channel
-  await new Promise<void>((resolve, reject) => {
-    ws.once('open', () => {
-      ws.send(
-        JSON.stringify({
-          action: 'subscribe',
-          meetings: [{ platform: params.platform, native_id: params.nativeMeetingId }],
-        }),
-      )
-      resolve()
-    })
-    ws.once('error', (err) => reject(err))
-  })
-
-  // 掛載訊息處理器
-  ws.on('message', (data) => {
-    try {
-      const msg = JSON.parse(data.toString())
+  const handlers: LiveHandlers = {
+    onSegment: (seg) => {
       const s = activeSessions.get(meetingInstanceId)
-      if (!s) return
-      handleVexaWsMessage(s, msg)
-    } catch (err) {
-      logger.warn({ err, meetingInstanceId }, 'failed to parse vexa ws message')
-    }
-  })
-
-  // 非主動關閉時自動重連
-  ws.on('close', () => {
-    logger.warn({ meetingInstanceId }, 'Per-session WS disconnected')
-    const existing = activeSessions.get(meetingInstanceId)
-    if (existing) {
-      setTimeout(
-        () => createSession(meetingInstanceId, params, existing.processedSegmentIds),
-        3000,
+      if (!s || !s.botSession) return
+      if (!seg.text?.trim() || !seg.segmentId) return
+      handleTranscriptSegment(s, {
+        segment_id: seg.segmentId,
+        text: seg.text,
+        speaker: seg.speaker ?? '',
+        start_time: seg.startTime,
+        end_time: seg.endTime,
+      }).catch((err) =>
+        logger.error({ err, meetingInstanceId }, 'handleTranscriptSegment error'),
       )
-    }
-  })
+    },
+    onChat: (msg) => {
+      const s = activeSessions.get(meetingInstanceId)
+      if (!s || !s.botSession) return
+      handleChatMessage(s, {
+        sender: msg.sender,
+        text: msg.text,
+        timestamp: msg.timestamp,
+        is_from_bot: msg.isFromBot,
+      }).catch((err) => logger.error({ err, meetingInstanceId }, 'handleChatMessage error'))
+    },
+    onStatus: (ev) => {
+      // admitted 由 join resolve 處理；此處只處理會議結束（非 mid-meeting failover）。
+      if (ev.type === 'ended') {
+        handleSessionClose(meetingInstanceId, ev.reason).catch((err) =>
+          logger.error({ err, meetingInstanceId }, 'onStatus ended → handleSessionClose error'),
+        )
+      }
+    },
+  }
 
-  ws.on('error', (err) =>
-    logger.error({ err, meetingInstanceId }, 'Per-session WS error'),
-  )
+  try {
+    const botSession = await botProvider.join(
+      googleMeetUrl,
+      { platform: PLATFORM, nativeMeetingId, vexaToken: creatorVexaToken, difyDatasetId },
+      handlers,
+    )
+
+    // 可能在等待期間已被取消（closeSession 從 Map 移除）→ 立即收掉剛 admitted 的 bot。
+    const still = activeSessions.get(meetingInstanceId)
+    if (!still) {
+      await botProvider.leave(botSession).catch(() => {})
+      return
+    }
+    still.botSession = botSession
+
+    // Vexa 用數字 meeting id；Recall 用字串 bot id（不寫進 Vexa 專用欄位）。
+    const vexaMeetingId =
+      typeof botSession.providerMeetingId === 'number' ? botSession.providerMeetingId : null
+    still.vexaMeetingId = vexaMeetingId
+
+    await prisma.meetingInstance.update({
+      where: { id: meetingInstanceId },
+      data: {
+        status: 'ACTIVE',
+        startedAt: new Date(),
+        vexaNativeMeetingId: nativeMeetingId,
+        ...(vexaMeetingId !== null ? { vexaMeetingId } : {}),
+      },
+    })
+
+    logger.info({ meetingInstanceId, provider: botSession.provider }, 'Bot admitted → meeting ACTIVE')
+
+    // 歡迎訊息（best-effort；provider 不支援聊天室時容錯）。
+    if (botSession.adapter.sendChat) {
+      botSession.adapter
+        .sendChat(botSession, welcomeMessage(difyDatasetId))
+        .catch((err) => logger.warn({ err, meetingInstanceId }, 'welcome chat failed (best-effort)'))
+    }
+  } catch (err) {
+    // 兩個 provider 都無法讓 bot 進會議。
+    logger.warn({ err, meetingInstanceId }, 'startBotSession: all providers failed to admit bot')
+    activeSessions.delete(meetingInstanceId)
+    await prisma.meetingInstance
+      .update({ where: { id: meetingInstanceId }, data: { status: 'FAILED', endedAt: new Date() } })
+      .catch((e) => logger.error({ e, meetingInstanceId }, 'failed to mark meeting FAILED'))
+  }
 }
 
 // ── closeSession ──────────────────────────────────────────────────────────────
+//
+// 取消用：從 Map 移除（先移除以阻止任何重連 / admitted 後遺留）並讓 bot 離開。
+// 不更新 DB、不觸發摘要。
 
 export async function closeSession(meetingInstanceId: string): Promise<void> {
   const session = activeSessions.get(meetingInstanceId)
@@ -92,120 +147,35 @@ export async function closeSession(meetingInstanceId: string): Promise<void> {
 
   activeSessions.delete(meetingInstanceId)
 
-  try {
-    session.wsConnection?.send(
-      JSON.stringify({
-        action: 'unsubscribe',
-        meetings: [{ platform: session.platform, native_id: session.nativeMeetingId }],
-      }),
-    )
-    session.wsConnection?.close()
-  } catch {
-    logger.warn({ meetingInstanceId }, 'closeSession: WS already closed, skipping unsubscribe')
+  if (session.botSession) {
+    await botProvider
+      .leave(session.botSession)
+      .catch((err) => logger.warn({ err, meetingInstanceId }, 'closeSession: leave failed'))
   }
-}
-
-// ── handleVexaWsMessage ───────────────────────────────────────────────────────
-
-function handleVexaWsMessage(session: MeetingSession, msg: any): void {
-  switch (msg.type) {
-    case 'transcript.bundle':
-    case 'transcript': {
-      const confirmedSegs: any[] = msg.confirmed ?? []
-      for (const seg of confirmedSegs) {
-        if (!seg.text?.trim() || !seg.segment_id) continue
-        handleTranscriptSegment(session, {
-          segment_id: seg.segment_id,
-          text: seg.text,
-          speaker: seg.speaker || msg.speaker || '',
-          start_time: seg.start ?? seg.start_time ?? 0,
-          end_time: seg.end ?? seg.end_time ?? 0,
-        }).catch((err) =>
-          logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'handleTranscriptSegment error'),
-        )
-      }
-      break
-    }
-    case 'meeting.status': {
-      const status = msg.payload?.status
-      if (status) {
-        handleBotStatusChange(session, status).catch((err) =>
-          logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'handleBotStatusChange error'),
-        )
-      }
-      break
-    }
-    case 'chat.new_message': {
-      if (!msg.payload?.is_from_bot) {
-        handleChatMessage(session, msg.payload).catch((err) =>
-          logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'handleChatMessage error'),
-        )
-      }
-      break
-    }
-    default:
-      logger.debug(
-        { type: msg.type, meetingInstanceId: session.meetingInstanceId },
-        'unhandled vexa ws message type',
-      )
-  }
-}
-
-// ── handleBotStatusChange ─────────────────────────────────────────────────────
-
-export async function handleBotStatusChange(session: MeetingSession, status: string): Promise<void> {
-  if (status === 'active') {
-    logger.info({ meetingInstanceId: session.meetingInstanceId }, 'Bot entered meeting → marking ACTIVE')
-    await prisma.meetingInstance.update({
-      where: { id: session.meetingInstanceId },
-      data: { status: 'ACTIVE', startedAt: new Date() },
-    })
-
-    const welcomeMsg = session.difyDatasetId
-      ? '嗨大家好！我是蜜塔（Meeta），你們今天的會議小幫手 🎉\n\n你可以用語音或聊天室呼叫我：\n  語音：說「蜜塔」或「小幫手」，再接上你的問題\n  聊天室：輸入「蜜塔」或「小幫手」，再接上你的問題\n\n我會根據此專案上傳的資料來回答問題，例如：\n「蜜塔，請問去年 Q3 目標是什麼？」\n\n有問題就找我！'
-      : '嗨大家好！我是蜜塔（Meeta），你們今天的會議小幫手 🎉\n\n你可以用語音或聊天室呼叫我：\n  語音：說「蜜塔」或「小幫手」，再接上你的問題\n  聊天室：輸入「蜜塔」或「小幫手」，再接上你的問題\n\n我會根據本次會議的逐字稿記錄來回答問題，例如：\n「蜜塔，剛才提到的時程安排是什麼？」\n\n有問題就找我！'
-
-    vexaClient
-      .chatSend(session.platform, session.nativeMeetingId, session.creatorVexaToken, {
-        text: welcomeMsg,
-      })
-      .catch((err) =>
-        logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'welcome chat failed'),
-      )
-
-    return
-  }
-
-  const isTerminal = ['completed', 'failed', 'needs_help', 'needs_human_help'].includes(status)
-  if (!isTerminal) return
-
-  logger.info({ meetingInstanceId: session.meetingInstanceId, vexaStatus: status }, 'Bot left meeting')
-
-  const isLobbyFail = status === 'needs_help' || status === 'needs_human_help'
-  const normalizedStatus = isLobbyFail ? 'failed' : status
-  await handleSessionClose(session.meetingInstanceId, normalizedStatus)
 }
 
 // ── handleSessionClose ────────────────────────────────────────────────────────
+//
+// 會議結束（自然結束 / 使用者讓 bot 離開）：原子鎖更新 DB、讓 bot 離開、觸發摘要。
 
 export async function handleSessionClose(
   meetingInstanceId: string,
-  vexaStatus?: string,
+  reason?: 'completed' | 'failed',
 ): Promise<void> {
   const session = activeSessions.get(meetingInstanceId)
   if (!session) return
 
-  // 原子鎖：先從 Map 移除，防止雙重觸發
+  // 原子鎖：先從 Map 移除，防止雙重觸發。
   activeSessions.delete(meetingInstanceId)
 
-  const meetbotFinalStatus = vexaStatus === 'failed' ? 'FAILED' : 'ENDED'
+  const meetbotFinalStatus = reason === 'failed' ? 'FAILED' : 'ENDED'
 
   await prisma.meetingInstance.update({
     where: { id: meetingInstanceId },
     data: { status: meetbotFinalStatus, endedAt: new Date() },
   })
 
-  // P6: 觸發摘要工作流
+  // 摘要：用仍在記憶體的 botSession 取逐字稿（provider-agnostic）。
   if (meetbotFinalStatus === 'ENDED') {
     generateSummaryAsync({
       meetingInstanceId,
@@ -213,23 +183,22 @@ export async function handleSessionClose(
       nativeMeetingId: session.nativeMeetingId,
       creatorVexaToken: session.creatorVexaToken,
       difyDatasetId: session.difyDatasetId,
+      session: session.botSession ?? undefined,
     })
   }
 
-  try {
-    session.wsConnection?.send(
-      JSON.stringify({
-        action: 'unsubscribe',
-        meetings: [{ platform: session.platform, native_id: session.nativeMeetingId }],
-      }),
-    )
-    session.wsConnection?.close()
-  } catch {
-    logger.warn({ meetingInstanceId }, 'handleSessionClose: WS already closed, skipping unsubscribe')
+  if (session.botSession) {
+    await botProvider
+      .leave(session.botSession)
+      .catch((err) => logger.warn({ err, meetingInstanceId }, 'handleSessionClose: leave failed'))
   }
 }
 
 // ── restoreActiveSessions ─────────────────────────────────────────────────────
+//
+// ⚠️ 已知限制（v1，受「不改 DB schema」約束）：DB 只持久化 Vexa 識別碼，
+// 因此重啟後只能復原跑在 Vexa 上的 session。當時若已 failover 到 Recall 的會議，
+// 重啟後無法重新接上 live stream（會在下方因缺 vexaMeetingId 而 skip，並由 stale 清理收尾）。
 
 export async function restoreActiveSessions(): Promise<void> {
   // 階段一：清理 zombie PENDING（超過 5 分鐘仍 PENDING 者標為 FAILED）
@@ -244,7 +213,7 @@ export async function restoreActiveSessions(): Promise<void> {
     logger.warn({ count: staleResult.count }, 'startup: cleaned up zombie PENDING meetings')
   }
 
-  // 階段二：恢復 ACTIVE sessions
+  // 階段二：恢復 ACTIVE sessions（Vexa-only，見上方限制）
   const activeMeetings = await prisma.meetingInstance.findMany({
     where: { status: 'ACTIVE' },
     include: { project: { select: { difyDatasetId: true } } },
@@ -253,7 +222,7 @@ export async function restoreActiveSessions(): Promise<void> {
   let restored = 0
   for (const meeting of activeMeetings) {
     if (!meeting.vexaMeetingId || !meeting.vexaNativeMeetingId) {
-      logger.warn({ meetingInstanceId: meeting.id }, 'missing vexa IDs, skipping restore')
+      logger.warn({ meetingInstanceId: meeting.id }, 'missing vexa IDs (likely Recall), skipping restore')
       continue
     }
 
@@ -306,16 +275,16 @@ export async function restoreActiveSessions(): Promise<void> {
     }
 
     try {
-      await createSession(meeting.id, {
-        vexaMeetingId: meeting.vexaMeetingId,
-        platform: 'google_meet',
+      await startBotSession({
+        meetingInstanceId: meeting.id,
+        googleMeetUrl: meeting.googleMeetUrl,
         nativeMeetingId: meeting.vexaNativeMeetingId,
         difyDatasetId: meeting.project?.difyDatasetId ?? null,
         creatorVexaToken: tokenRows[0].token,
       })
       restored++
     } catch (err) {
-      logger.warn({ err, meetingInstanceId: meeting.id }, 'startup: failed to restore WS session')
+      logger.warn({ err, meetingInstanceId: meeting.id }, 'startup: failed to restore session')
     }
   }
 
@@ -359,4 +328,3 @@ export async function restoreActiveSessions(): Promise<void> {
     'startup restore completed',
   )
 }
-

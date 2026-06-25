@@ -1,9 +1,27 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
-import * as vexaClient from '../lib/vexa.js'
+import { botProvider } from '../provider/index.js'
+import type { BotSession } from '../provider/types.js'
 import * as dify from '../lib/dify.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
+
+/** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
+function requireBotSession(session: MeetingSession): BotSession {
+  if (!session.botSession) {
+    throw new Error(`session ${session.meetingInstanceId} has no active bot session`)
+  }
+  return session.botSession
+}
+
+/** 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。 */
+async function sendChatBestEffort(session: MeetingSession, text: string): Promise<void> {
+  try {
+    await botProvider.sendChat?.(requireBotSession(session), text)
+  } catch (err) {
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'sendChat failed (best-effort)')
+  }
+}
 
 const WAKE_WORD_REGEX = /[蜜密祕秘迷][塔搭]|小幫手|[Mm]eeta|[Mm]ita/
 const DEBOUNCE_MS = 2000
@@ -138,11 +156,8 @@ async function dispatchQuestion(
     const lockTimer = setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + 10_000)
 
     try {
-      await vexaClient.speak(session.platform, session.nativeMeetingId, session.creatorVexaToken, {
-        text: pendingVoice,
-        provider: 'openai',
-        voice: 'alloy',
-      })
+      const botSession = requireBotSession(session)
+      await botProvider.speak(botSession, pendingVoice)
 
       const rawAnswer = await resolveAnswer(session, question, 'voice')
 
@@ -157,31 +172,21 @@ async function dispatchQuestion(
       const answerEstimatedMs = Math.max(3000, (answer.length / 4) * 1000 + 1500)
       setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + answerEstimatedMs)
 
-      await vexaClient.speak(session.platform, session.nativeMeetingId, session.creatorVexaToken, {
-        text: answer,
-        provider: 'openai',
-        voice: 'alloy',
-      })
+      await botProvider.speak(botSession, answer)
     } catch (err) {
       clearTimeout(lockTimer)
       session.isSpeaking = false
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion voice failed')
     }
   } else {
-    await vexaClient.chatSend(session.platform, session.nativeMeetingId, session.creatorVexaToken, {
-      text: pendingChat,
-    })
+    await sendChatBestEffort(session, pendingChat)
 
     try {
       const answer = await resolveAnswer(session, question, 'chat')
-      await vexaClient.chatSend(session.platform, session.nativeMeetingId, session.creatorVexaToken, {
-        text: answer,
-      })
+      await sendChatBestEffort(session, answer)
     } catch (err) {
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion chat failed')
-      await vexaClient.chatSend(session.platform, session.nativeMeetingId, session.creatorVexaToken, {
-        text: '抱歉，查詢時發生錯誤，請稍後再試。',
-      })
+      await sendChatBestEffort(session, '抱歉，查詢時發生錯誤，請稍後再試。')
     }
   }
 }
@@ -192,11 +197,7 @@ async function answerFromTranscript(
   session: MeetingSession,
   question: string,
 ): Promise<{ answer: string }> {
-  const allSegments = await vexaClient.getTranscriptions(
-    session.platform,
-    session.nativeMeetingId,
-    session.creatorVexaToken,
-  )
+  const allSegments = await botProvider.getTranscript(requireBotSession(session))
   const recentSegments = allSegments.slice(-30)
   if (!recentSegments.length) {
     return { answer: '目前還沒有足夠的逐字稿內容可以回答，請稍後再試。' }

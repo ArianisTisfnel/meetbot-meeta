@@ -1,7 +1,13 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest'
-import { mockVexa } from '../../../mocks/vexa.mock'
 
-vi.mock('../../../../backend/src/lib/vexa', () => mockVexa)
+// 喚醒詞偵測現在透過 provider 抽象層說話 / 發聊天室訊息（不再直接呼叫 vexaClient）。
+const mockBotProvider = vi.hoisted(() => ({
+  speak: vi.fn().mockResolvedValue(undefined),
+  sendChat: vi.fn().mockResolvedValue(undefined),
+  getTranscript: vi.fn().mockResolvedValue([]),
+}))
+
+vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
 vi.mock('../../../../backend/src/lib/dify', () => ({
   askQuestion: vi.fn().mockResolvedValue({ answer: '測試回答', conversationId: 'conv-1' }),
 }))
@@ -25,6 +31,16 @@ vi.mock('@anthropic-ai/sdk', () => ({
 
 import { handleTranscriptSegment, handleChatMessage } from '../../../../backend/src/sessions/wake-word-detector'
 import type { MeetingSession } from '../../../../backend/src/types/session'
+import type { BotSession } from '../../../../backend/src/provider/types'
+
+const fakeBotSession: BotSession = {
+  provider: 'vexa',
+  platform: 'google_meet',
+  nativeMeetingId: 'abc-defg-hij',
+  providerMeetingId: 42,
+  adapter: mockBotProvider as any,
+  state: {},
+}
 
 function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
   return {
@@ -37,7 +53,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     isSpeaking: false,
     lastWakeAt: 0,
     processedSegmentIds: new Set<string>(),
-    wsConnection: null as any,
+    botSession: fakeBotSession,
     difyConversationId: null,
     lastQuestionAt: 0,
     ...overrides,
@@ -58,7 +74,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 3,
     })
-    expect(mockVexa.speak).toHaveBeenCalled()
+    expect(mockBotProvider.speak).toHaveBeenCalled()
   })
 
   it('「小幫手請問」→ 觸發（前置標點去除）', async () => {
@@ -70,7 +86,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
-    expect(mockVexa.speak).toHaveBeenCalled()
+    expect(mockBotProvider.speak).toHaveBeenCalled()
   })
 
   it('「Meeta, what is this?」→ 觸發（英文）', async () => {
@@ -82,7 +98,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
-    expect(mockVexa.speak).toHaveBeenCalled()
+    expect(mockBotProvider.speak).toHaveBeenCalled()
   })
 
   it('「mita 今天的議程」→ 觸發（小寫英文）', async () => {
@@ -94,7 +110,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
-    expect(mockVexa.speak).toHaveBeenCalled()
+    expect(mockBotProvider.speak).toHaveBeenCalled()
   })
 
   it('同一 segment_id 第二次 → 不觸發（processedSegmentIds 去重）', async () => {
@@ -115,7 +131,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
-    expect(mockVexa.speak).not.toHaveBeenCalled()
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
   })
 
   it('2 秒內第二個觸發 → 被 debounce 阻止', async () => {
@@ -129,7 +145,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
-    expect(mockVexa.speak).not.toHaveBeenCalled()
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
   })
 
   it('segment 無 segment_id → 不處理', async () => {
@@ -141,7 +157,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
-    expect(mockVexa.speak).not.toHaveBeenCalled()
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
   })
 
   it('processedSegmentIds 超過 5000 → 減半（size 約 2500）', async () => {
@@ -174,7 +190,7 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
-    expect(mockVexa.speak).not.toHaveBeenCalled()
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
   })
 })
 
@@ -191,10 +207,10 @@ describe('handleChatMessage — 聊天室喚醒詞', () => {
       timestamp: Date.now(),
       is_from_bot: true,
     })
-    expect(mockVexa.chatSend).not.toHaveBeenCalled()
+    expect(mockBotProvider.sendChat).not.toHaveBeenCalled()
   })
 
-  it('聊天室正常觸發 → 呼叫 chatSend', async () => {
+  it('聊天室正常觸發 → 呼叫 sendChat', async () => {
     const session = makeSession()
     await handleChatMessage(session, {
       sender: 'User',
@@ -202,6 +218,6 @@ describe('handleChatMessage — 聊天室喚醒詞', () => {
       timestamp: Date.now(),
       is_from_bot: false,
     })
-    expect(mockVexa.chatSend).toHaveBeenCalled()
+    expect(mockBotProvider.sendChat).toHaveBeenCalled()
   })
 })

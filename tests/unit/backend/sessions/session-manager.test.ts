@@ -1,65 +1,47 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest'
 import { mockPrisma } from '../../../mocks/prisma.mock'
-import { mockVexa } from '../../../mocks/vexa.mock'
+
+// session-manager 現在透過 provider 抽象層派 bot / 取逐字稿 / 讓 bot 離開。
+const mockBotProvider = vi.hoisted(() => ({
+  join: vi.fn(),
+  getTranscript: vi.fn().mockResolvedValue([]),
+  speak: vi.fn().mockResolvedValue(undefined),
+  sendChat: vi.fn().mockResolvedValue(undefined),
+  leave: vi.fn().mockResolvedValue(undefined),
+}))
+const generateSummaryAsync = vi.hoisted(() => vi.fn())
 
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
-vi.mock('../../../../backend/src/lib/vexa', () => mockVexa)
-vi.mock('../../../../backend/src/lib/dify', () => ({
-  uploadTranscriptFile: vi.fn().mockResolvedValue('file-id-1'),
-  generateSummary: vi.fn().mockResolvedValue({
-    summary: '摘要',
-    actionItems: [],
-    keyTopics: [],
-    decisions: [],
-  }),
-}))
-vi.mock('../../../../backend/src/lib/supabase', () => ({
-  upsertFile: vi.fn().mockResolvedValue(undefined),
-}))
-vi.mock('../../../../backend/src/types/env', () => ({
-  env: {
-    VEXA_WS_URL: 'ws://localhost:8056',
-    SUPABASE_URL: 'http://supabase.test',
-    SUPABASE_SERVICE_ROLE_KEY: 'test-key',
-    SUPABASE_STORAGE_BUCKET: 'test-bucket',
-    DIFY_API_BASE: 'http://dify.test',
-    DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY: 'app-test',
-    ANTHROPIC_API_KEY: 'sk-ant-test',
-  },
-}))
+vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
 vi.mock('../../../../backend/src/sessions/wake-word-detector', () => ({
   handleTranscriptSegment: vi.fn(),
   handleChatMessage: vi.fn(),
 }))
-
-// mock ws module
-vi.mock('ws', () => {
-  const EventEmitter = require('events')
-  const MockWS = vi.fn().mockImplementation(() => {
-    const emitter = new EventEmitter()
-    return {
-      on: emitter.on.bind(emitter),
-      once: emitter.once.bind(emitter),
-      emit: emitter.emit.bind(emitter),
-      send: vi.fn(),
-      close: vi.fn(),
-      readyState: 1, // OPEN
-    }
-  })
-  return { default: MockWS }
-})
+vi.mock('../../../../backend/src/sessions/summary.service', () => ({ generateSummaryAsync }))
 
 import { activeSessions } from '../../../../backend/src/sessions/session-store'
 import {
-  handleBotStatusChange,
+  startBotSession,
   handleSessionClose,
   closeSession,
-  createSession,
 } from '../../../../backend/src/sessions/session-manager'
+import type { BotSession } from '../../../../backend/src/provider/types'
 import type { MeetingSession } from '../../../../backend/src/types/session'
 
-function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
+function fakeBotSession(overrides: Partial<BotSession> = {}): BotSession {
   return {
+    provider: 'vexa',
+    platform: 'google_meet',
+    nativeMeetingId: 'abc-defg-hij',
+    providerMeetingId: 42,
+    adapter: { name: 'vexa', sendChat: vi.fn().mockResolvedValue(undefined) } as any,
+    state: {},
+    ...overrides,
+  }
+}
+
+function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
+  const session: MeetingSession = {
     meetingInstanceId: 'meet-1',
     vexaMeetingId: 42,
     platform: 'google_meet',
@@ -69,30 +51,35 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     isSpeaking: false,
     lastWakeAt: 0,
     processedSegmentIds: new Set(),
-    wsConnection: {
-      send: vi.fn(),
-      close: vi.fn(),
-      on: vi.fn(),
-      once: vi.fn(),
-    } as any,
+    botSession: fakeBotSession(),
     difyConversationId: null,
     lastQuestionAt: 0,
     ...overrides,
   }
+  activeSessions.set(session.meetingInstanceId, session)
+  return session
 }
 
-describe('handleBotStatusChange', () => {
+const BASE = {
+  meetingInstanceId: 'meet-1',
+  googleMeetUrl: 'https://meet.google.com/abc-defg-hij',
+  nativeMeetingId: 'abc-defg-hij',
+  difyDatasetId: 'dataset-abc',
+  creatorVexaToken: 'tok-123',
+}
+
+describe('startBotSession', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     activeSessions.clear()
     mockPrisma.meetingInstance.update.mockResolvedValue({})
   })
 
-  it('active → Prisma update ACTIVE + startedAt，呼叫 chatSend 歡迎訊息', async () => {
-    const session = makeSession()
-    activeSessions.set('meet-1', session)
+  it('bot 被 admitted（join resolve）→ DB 轉 ACTIVE、發歡迎訊息、session 入 Map', async () => {
+    const bs = fakeBotSession()
+    mockBotProvider.join.mockResolvedValue(bs)
 
-    await handleBotStatusChange(session, 'active')
+    await startBotSession(BASE)
 
     expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -100,48 +87,38 @@ describe('handleBotStatusChange', () => {
         data: expect.objectContaining({ status: 'ACTIVE' }),
       }),
     )
-    // chatSend 為非同步 fire-and-forget，等待一個 tick
-    await new Promise((r) => setTimeout(r, 10))
-    expect(mockVexa.chatSend).toHaveBeenCalled()
+    expect(activeSessions.get('meet-1')?.botSession).toBe(bs)
+    // 歡迎訊息走 adapter.sendChat
+    await new Promise((r) => setTimeout(r, 0))
+    expect(bs.adapter.sendChat).toHaveBeenCalled()
   })
 
-  it('completed → 呼叫 handleSessionClose，DB 更新為 ENDED', async () => {
-    const session = makeSession()
-    activeSessions.set('meet-1', session)
+  it('兩個 provider 都進不去（join reject）→ DB 轉 FAILED、session 移出 Map', async () => {
+    mockBotProvider.join.mockRejectedValue(new Error('all providers failed'))
 
-    await handleBotStatusChange(session, 'completed')
+    await startBotSession(BASE)
 
     expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ status: 'ENDED' }),
+        data: expect.objectContaining({ status: 'FAILED' }),
       }),
     )
     expect(activeSessions.has('meet-1')).toBe(false)
   })
 
-  it('failed → DB 更新為 FAILED', async () => {
-    const session = makeSession()
-    activeSessions.set('meet-1', session)
+  it('等待期間被取消（Map 已被移除）→ 收掉剛 admitted 的 bot，不寫 ACTIVE', async () => {
+    const bs = fakeBotSession()
+    // join 期間模擬取消：在 resolve 前清掉 Map
+    mockBotProvider.join.mockImplementation(async () => {
+      activeSessions.delete('meet-1')
+      return bs
+    })
 
-    await handleBotStatusChange(session, 'failed')
+    await startBotSession(BASE)
 
-    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: 'FAILED' }),
-      }),
-    )
-  })
-
-  it('needs_human_help → DB 更新為 FAILED（與 failed 相同處理）', async () => {
-    const session = makeSession()
-    activeSessions.set('meet-1', session)
-
-    await handleBotStatusChange(session, 'needs_human_help')
-
-    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: 'FAILED' }),
-      }),
+    expect(mockBotProvider.leave).toHaveBeenCalledWith(bs)
+    expect(mockPrisma.meetingInstance.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'ACTIVE' }) }),
     )
   })
 })
@@ -153,14 +130,36 @@ describe('handleSessionClose', () => {
     mockPrisma.meetingInstance.update.mockResolvedValue({})
   })
 
-  it('被呼叫兩次（雙重清理競態）→ 第二次因 Map 已空而 early return，只更新 DB 一次', async () => {
-    const session = makeSession()
-    activeSessions.set('meet-1', session)
+  it('被呼叫兩次（雙重清理競態）→ 第二次 early return，只更新 DB 一次', async () => {
+    putSession()
 
     await handleSessionClose('meet-1')
-    await handleSessionClose('meet-1')  // 第二次呼叫
+    await handleSessionClose('meet-1')
 
     expect(mockPrisma.meetingInstance.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('正常結束（ENDED）→ 觸發摘要、讓 bot 離開', async () => {
+    const session = putSession()
+
+    await handleSessionClose('meet-1')
+
+    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'ENDED' }) }),
+    )
+    expect(generateSummaryAsync).toHaveBeenCalledTimes(1)
+    expect(mockBotProvider.leave).toHaveBeenCalledWith(session.botSession)
+  })
+
+  it('reason=failed → DB 轉 FAILED，不觸發摘要', async () => {
+    putSession()
+
+    await handleSessionClose('meet-1', 'failed')
+
+    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED' }) }),
+    )
+    expect(generateSummaryAsync).not.toHaveBeenCalled()
   })
 })
 
@@ -170,15 +169,13 @@ describe('closeSession', () => {
     activeSessions.clear()
   })
 
-  it('closeSession 後，WS close 不再觸發重連（activeSessions 已移除）', async () => {
-    const session = makeSession()
-    activeSessions.set('meet-1', session)
+  it('從 Map 移除並讓 bot 離開（不更新 DB、不觸發摘要）', async () => {
+    const session = putSession()
 
     await closeSession('meet-1')
 
-    // session 從 Map 移除
     expect(activeSessions.has('meet-1')).toBe(false)
-    // WS close 被呼叫
-    expect(session.wsConnection?.close).toHaveBeenCalled()
+    expect(mockBotProvider.leave).toHaveBeenCalledWith(session.botSession)
+    expect(generateSummaryAsync).not.toHaveBeenCalled()
   })
 })
