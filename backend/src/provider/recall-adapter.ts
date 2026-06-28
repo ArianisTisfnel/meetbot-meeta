@@ -73,14 +73,25 @@ export function dispatchRecallEvent(event: any): void {
   const type: string | undefined = event?.event
   const data = event?.data
   const botId: string | undefined = data?.bot?.id
-  if (!type || !botId) return
+  if (!type || !botId) {
+    logger.info({ type, botId }, 'recall webhook: event without type/botId, ignored')
+    return
+  }
   const reg = realtimeRegistry.get(botId)
-  if (!reg) return
+  if (!reg) {
+    logger.warn({ type, botId }, 'recall webhook: no registered handlers for botId (orphaned bot?)')
+    return
+  }
 
   if (type === 'transcript.data') {
     const utter = data?.data
-    if (isBotParticipant(reg, utter?.participant)) return
     const seg = normalizeRecallRealtimeUtterance(utter, data?.transcript?.id)
+    const speaker = utter?.participant?.name
+    logger.info(
+      { botId, speaker, isBot: isBotParticipant(reg, utter?.participant), text: seg?.text?.slice(0, 60) ?? null },
+      'recall webhook: transcript.data',
+    )
+    if (isBotParticipant(reg, utter?.participant)) return
     if (seg) reg.handlers.onSegment?.(seg)
     return
   }
@@ -88,8 +99,12 @@ export function dispatchRecallEvent(event: any): void {
   if (type === 'participant_events.chat_message') {
     const d = data?.data
     const participant = d?.participant
-    if (isBotParticipant(reg, participant)) return
     const text: string = d?.text ?? d?.message ?? d?.data?.text ?? ''
+    logger.info(
+      { botId, sender: participant?.name, isBot: isBotParticipant(reg, participant), text: text.slice(0, 60) },
+      'recall webhook: chat_message',
+    )
+    if (isBotParticipant(reg, participant)) return
     if (!text.trim()) return
     reg.handlers.onChat?.({
       sender: participant?.name ?? 'unknown',
@@ -97,7 +112,10 @@ export function dispatchRecallEvent(event: any): void {
       timestamp: Date.now(),
       isFromBot: false,
     })
+    return
   }
+
+  logger.info({ type, botId }, 'recall webhook: other event')
 }
 
 /** bot 已在會議中並錄製 ≈ admitted。 */

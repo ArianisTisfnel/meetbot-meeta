@@ -43,6 +43,31 @@ function firstNum(candidates: unknown[]): number | undefined {
   return undefined
 }
 
+/** CJK（中日韓 + 假名 + 諺文）字元：相鄰時不補空格。 */
+function isCJK(ch: string): boolean {
+  return /[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]/.test(ch)
+}
+
+/**
+ * 把 Recall 的 words[] 串成文字。
+ * recallai_streaming 會逐詞用空格切開（「蜜 塔 我 想」）；中文字之間補空格會害喚醒詞「蜜塔」
+ * 比對失敗，因此：兩側皆非 CJK（純英文詞）才補空格，只要有一側是 CJK 就直接相連。
+ */
+export function joinRecallWords(words: any[]): string {
+  let out = ''
+  for (const w of words) {
+    const t = (w?.text ?? '').trim()
+    if (!t) continue
+    if (out.length) {
+      const a = out[out.length - 1]
+      const b = t[0]
+      if (!isCJK(a) && !isCJK(b)) out += ' '
+    }
+    out += t
+  }
+  return out
+}
+
 /**
  * Recall realtime webhook 的單一 `transcript.data` utterance → 統一 schema。
  * payload 形狀：{ words:[{text,start_timestamp:{relative},end_timestamp:{relative}}], participant:{id,name}, language_code }
@@ -53,7 +78,7 @@ export function normalizeRecallRealtimeUtterance(
   transcriptId?: string,
 ): TranscriptSegment | null {
   const words: any[] = data?.words ?? []
-  const text = (data?.text ?? words.map((w) => w?.text ?? '').join(' ')).trim()
+  const text = (data?.text ?? joinRecallWords(words)).trim()
   if (!text) return null
 
   const startTime = firstNum([words[0]?.start_timestamp?.relative, words[0]?.start_time, data?.start_time]) ?? 0
@@ -85,7 +110,7 @@ export function normalizeRecallTranscript(raw: any[]): TranscriptSegment[] {
 
   raw.forEach((entry, idx) => {
     const words: any[] = entry?.words ?? []
-    const text = (entry?.text ?? words.map((w) => w?.text ?? '').join(' ')).trim()
+    const text = (entry?.text ?? joinRecallWords(words)).trim()
     if (!text) return
 
     const startTime =

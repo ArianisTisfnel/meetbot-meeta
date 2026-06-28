@@ -127,7 +127,8 @@ describe('Recall realtime utterance normalization', () => {
     )
     expect(seg).not.toBeNull()
     assertUnifiedShape(seg!)
-    expect(seg!.text).toBe('蜜塔 你好')
+    // CJK 之間不補空格（避免喚醒詞「蜜塔」因空格比對失敗）
+    expect(seg!.text).toBe('蜜塔你好')
     expect(seg!.speaker).toBe('Wendy')
     expect(seg!.startTime).toBe(3.0)
     expect(seg!.endTime).toBe(4.0)
@@ -140,6 +141,20 @@ describe('Recall realtime utterance normalization', () => {
   it('空 utterance → null', () => {
     expect(normalizeRecallRealtimeUtterance({ words: [] }, 'tx')).toBeNull()
     expect(normalizeRecallRealtimeUtterance({ words: [{ text: '  ' }] }, 'tx')).toBeNull()
+  })
+
+  it('STT 把「蜜塔」切成兩個 word → 中文相連無空格，喚醒詞仍可比對', () => {
+    const seg = normalizeRecallRealtimeUtterance(
+      { words: [{ text: '蜜' }, { text: '塔' }, { text: '請問' }] },
+      'tx',
+    )
+    expect(seg!.text).toBe('蜜塔請問')
+    expect(/[蜜密祕秘迷][塔搭]/.test(seg!.text)).toBe(true) // 與 wake-word regex 相容
+  })
+
+  it('英文詞之間仍補空格', () => {
+    const seg = normalizeRecallRealtimeUtterance({ words: [{ text: 'hello' }, { text: 'world' }] }, 'tx')
+    expect(seg!.text).toBe('hello world')
   })
 })
 
