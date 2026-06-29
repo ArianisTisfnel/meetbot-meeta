@@ -72,9 +72,9 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Prisma client ready." -ForegroundColor Green
 }
 
-# 5. Start ngrok tunnel — Recall realtime webhook 用。
-# Recall 的即時逐字稿/聊天會 POST 到 .env 的 RECALL_WEBHOOK_URL，再轉進本機 backend(4000)。
-# 網址從各自的 backend\.env 讀取（每個開發者用自己的固定網域；authtoken 已存在 ngrok 設定檔）。
+# 5. Start ngrok tunnel for Recall realtime webhook.
+# Recall POSTs realtime transcript/chat to RECALL_WEBHOOK_URL, forwarded to local backend(4000).
+# The domain is read from each developer's backend\.env (authtoken is stored in ngrok config).
 Write-Host "Starting ngrok tunnel (Recall webhook)..." -ForegroundColor Cyan
 $ngrokExe = "$rootDir\tools\ngrok.exe"
 $webhookUrl = $null
@@ -84,9 +84,9 @@ if (Test-Path $envFile) {
     if ($line) { $webhookUrl = ($line.Line -replace '^\s*RECALL_WEBHOOK_URL=', '').Trim().Trim('"') }
 }
 if (-not (Test-Path $ngrokExe)) {
-    Write-Host "Note: tools\ngrok.exe not found -> 略過 ngrok（Recall 即時語音/聊天問答不會動，其餘正常）。" -ForegroundColor Yellow
+    Write-Host "Note: tools\ngrok.exe not found -> skipping ngrok (Recall realtime voice/chat will not work; everything else is fine)." -ForegroundColor Yellow
 } elseif (-not $webhookUrl) {
-    Write-Host "Note: backend\.env 沒有 RECALL_WEBHOOK_URL -> 略過 ngrok（Recall 即時功能不會動）。" -ForegroundColor Yellow
+    Write-Host "Note: RECALL_WEBHOOK_URL not set in backend\.env -> skipping ngrok (Recall realtime will not work)." -ForegroundColor Yellow
 } elseif (Get-Process ngrok -ErrorAction SilentlyContinue) {
     Write-Host "ngrok already running." -ForegroundColor Green
 } else {
@@ -98,7 +98,7 @@ if (-not (Test-Path $ngrokExe)) {
 Write-Host ""
 Write-Host "Starting backend (port 4000) and frontend (port 3000)..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop all services." -ForegroundColor Gray
-Write-Host "(ngrok 在獨立視窗執行；要停 ngrok 請關那個最小化視窗或 Stop-Process ngrok)" -ForegroundColor Gray
+Write-Host "(ngrok runs in a separate minimized window; to stop it: Stop-Process -Name ngrok)" -ForegroundColor Gray
 Write-Host ""
 Set-Location $rootDir
 npm start
