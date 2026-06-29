@@ -32,6 +32,7 @@
 | [Supabase](https://supabase.com) | PostgreSQL + Storage |
 | [Dify](https://dify.ai) | RAG Q&A + 會議摘要 Workflow |
 | Google Cloud Console | Google OAuth 登入 |
+| [Recall.ai](https://recall.ai) + [ngrok](https://ngrok.com)（optional） | Vexa 進不去時 failover + 即時問答，設定見 [docs/13](docs/13-Recall-Failover-開發設定.md) |
 
 ---
 

@@ -72,10 +72,33 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Prisma client ready." -ForegroundColor Green
 }
 
-# 5. Start backend + frontend together (Ctrl+C stops both)
+# 5. Start ngrok tunnel — Recall realtime webhook 用。
+# Recall 的即時逐字稿/聊天會 POST 到 .env 的 RECALL_WEBHOOK_URL，再轉進本機 backend(4000)。
+# 網址從各自的 backend\.env 讀取（每個開發者用自己的固定網域；authtoken 已存在 ngrok 設定檔）。
+Write-Host "Starting ngrok tunnel (Recall webhook)..." -ForegroundColor Cyan
+$ngrokExe = "$rootDir\tools\ngrok.exe"
+$webhookUrl = $null
+$envFile = "$rootDir\backend\.env"
+if (Test-Path $envFile) {
+    $line = Select-String -Path $envFile -Pattern '^\s*RECALL_WEBHOOK_URL=' | Select-Object -First 1
+    if ($line) { $webhookUrl = ($line.Line -replace '^\s*RECALL_WEBHOOK_URL=', '').Trim().Trim('"') }
+}
+if (-not (Test-Path $ngrokExe)) {
+    Write-Host "Note: tools\ngrok.exe not found -> 略過 ngrok（Recall 即時語音/聊天問答不會動，其餘正常）。" -ForegroundColor Yellow
+} elseif (-not $webhookUrl) {
+    Write-Host "Note: backend\.env 沒有 RECALL_WEBHOOK_URL -> 略過 ngrok（Recall 即時功能不會動）。" -ForegroundColor Yellow
+} elseif (Get-Process ngrok -ErrorAction SilentlyContinue) {
+    Write-Host "ngrok already running." -ForegroundColor Green
+} else {
+    Start-Process -FilePath $ngrokExe -ArgumentList 'http', "--url=$webhookUrl", '4000' -WindowStyle Minimized
+    Write-Host "ngrok started -> $webhookUrl" -ForegroundColor Green
+}
+
+# 6. Start backend + frontend together (Ctrl+C stops both)
 Write-Host ""
 Write-Host "Starting backend (port 4000) and frontend (port 3000)..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop all services." -ForegroundColor Gray
+Write-Host "(ngrok 在獨立視窗執行；要停 ngrok 請關那個最小化視窗或 Stop-Process ngrok)" -ForegroundColor Gray
 Write-Host ""
 Set-Location $rootDir
 npm start
