@@ -240,6 +240,67 @@ export async function cancelMeeting(meetingInstanceId: string): Promise<{
   return { id: meetingInstanceId, status: updated.status, endedAt: updated.endedAt! }
 }
 
+// ── Delete meeting ───────────────────────────────────────────────────────────
+
+/**
+ * 刪除一筆會議記錄（硬刪除）。
+ * 授權：專案會議僅「專案擁有者」可刪；全局（無專案）會議僅建立者本人可刪。
+ * 安全限制：ACTIVE / PENDING（蜜塔仍在或加入中）不可刪，須先結束或取消。
+ * 清理：best-effort 刪除 Storage 內的逐字稿檔；會議 row 為硬刪除。
+ * 歷史：專案會議刪除記入專案活動（MEETING_DELETE）。
+ */
+export async function deleteMeeting(
+  meetingId: string,
+  vexaUserId: number,
+  projectId?: string,
+): Promise<void> {
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: projectId ? { id: meetingId, projectId } : { id: meetingId },
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      transcriptStoragePath: true,
+      projectId: true,
+      createdByVexaUserId: true,
+    },
+  })
+  if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+
+  // 授權：專案會議僅擁有者可刪；全局會議僅建立者本人可刪（以 DB 的 projectId 為準）。
+  if (meeting.projectId) {
+    const project = await getProjectWithAccess(meeting.projectId, vexaUserId)
+    if (project.ownerVexaUserId !== vexaUserId) {
+      throw new AppError('PERMISSION_DENIED', 403, '只有專案擁有者可刪除此會議')
+    }
+  } else if (meeting.createdByVexaUserId !== vexaUserId) {
+    throw new AppError('PERMISSION_DENIED', 403, '只有建立者可刪除此會議')
+  }
+
+  if (meeting.status === 'ACTIVE' || meeting.status === 'PENDING') {
+    throw new AppError('INVALID_REQUEST', 400, '進行中或加入中的會議無法刪除，請先結束或取消')
+  }
+
+  // best-effort 清掉 Storage 逐字稿檔（失敗不擋刪除）
+  if (meeting.transcriptStoragePath) {
+    const { deleteFile } = await import('../lib/supabase.js')
+    await deleteFile(meeting.transcriptStoragePath).catch((err: unknown) =>
+      logger.warn({ err, meetingId }, 'deleteMeeting: failed to delete transcript storage file'),
+    )
+  }
+
+  await prisma.meetingInstance.delete({ where: { id: meetingId } })
+
+  if (meeting.projectId) {
+    await recordActivity({
+      projectId: meeting.projectId,
+      actorVexaUserId: vexaUserId,
+      action: 'MEETING_DELETE',
+      targetLabel: meeting.name,
+    })
+  }
+}
+
 // ── Re-invite bot ──────────────────────────────────────────────────────────────
 
 /**
@@ -384,7 +445,7 @@ export async function listMeetings(vexaUserId: number, params: ListMeetingsParam
       orderBy: { createdAt: order },
       skip: (page - 1) * perPage,
       take: perPage,
-      include: { project: { select: { name: true } } },
+      include: { project: { select: { name: true, ownerVexaUserId: true } } },
     }),
     prisma.meetingInstance.count({ where }),
   ])
@@ -399,6 +460,10 @@ export async function listMeetings(vexaUserId: number, params: ListMeetingsParam
       projectName: m.project?.name ?? null,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      // 刪除權：專案會議看擁有者、全局會議看建立者
+      canDelete: m.projectId
+        ? m.project?.ownerVexaUserId === vexaUserId
+        : m.createdByVexaUserId === vexaUserId,
       createdAt: m.createdAt,
     })),
     total,
@@ -435,6 +500,8 @@ export async function listProjectMeetings(
     prisma.meetingInstance.count({ where }),
   ])
 
+  const canDelete = project.ownerVexaUserId === vexaUserId
+
   return {
     items: items.map((m) => ({
       id: m.id,
@@ -443,6 +510,7 @@ export async function listProjectMeetings(
       status: m.status,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      canDelete,
       createdAt: m.createdAt,
     })),
     total,
@@ -489,6 +557,10 @@ export async function getMeeting(meetingId: string, vexaUserId: number) {
     keyTopics: meeting.keyTopics ?? null,
     decisions: meeting.decisions ?? null,
     hasTranscript: Boolean(meeting.transcriptStoragePath),
+    // 刪除權：專案會議看擁有者、全局會議看建立者
+    canDelete: meeting.projectId
+      ? meeting.project?.ownerVexaUserId === vexaUserId
+      : meeting.createdByVexaUserId === vexaUserId,
     createdAt: meeting.createdAt,
     updatedAt: meeting.updatedAt,
   }
@@ -525,6 +597,8 @@ export async function getProjectMeeting(
     keyTopics: meeting.keyTopics ?? null,
     decisions: meeting.decisions ?? null,
     hasTranscript: Boolean(meeting.transcriptStoragePath),
+    // 專案會議：刪除權看是否為專案擁有者
+    canDelete: project.ownerVexaUserId === vexaUserId,
     createdAt: meeting.createdAt,
     updatedAt: meeting.updatedAt,
   }

@@ -6,6 +6,7 @@ import { usePermissions } from '@/hooks/use-permissions'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
 import { MeetingTranscript } from '@/components/meetings/meeting-transcript'
+import { DeleteMeetingButton } from '@/components/meetings/delete-meeting-button'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
@@ -90,7 +91,16 @@ export default function MeetingDetailPage({ params }: Props) {
           <CancelMeetingButton projectId={projectId} meetingId={meetingId} />
         )}
         {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
-          <ReinviteBotButton projectId={projectId} meetingId={meetingId} />
+          <div className="flex items-center gap-2">
+            <ReinviteBotButton projectId={projectId} meetingId={meetingId} />
+            {permissions.canMeeting && (
+              <DeleteMeetingButton
+                projectId={projectId}
+                meetingId={meetingId}
+                redirectTo={`/projects/${projectId}/meetings`}
+              />
+            )}
+          </div>
         )}
       </div>
 

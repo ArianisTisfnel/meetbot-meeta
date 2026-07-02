@@ -5,6 +5,7 @@ import { useMeeting, useBotLeave } from '@/hooks/use-meeting'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
 import { MeetingTranscript } from '@/components/meetings/meeting-transcript'
+import { DeleteMeetingButton } from '@/components/meetings/delete-meeting-button'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
@@ -66,7 +67,10 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
           <CancelMeetingButton projectId={null} meetingId={meetingId} />
         )}
         {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
-          <ReinviteBotButton projectId={null} meetingId={meetingId} />
+          <div className="flex items-center gap-2">
+            <ReinviteBotButton projectId={null} meetingId={meetingId} />
+            <DeleteMeetingButton projectId={null} meetingId={meetingId} redirectTo="/meetings" />
+          </div>
         )}
       </div>
 

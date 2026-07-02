@@ -145,6 +145,7 @@ export type ActivityAction =
   | 'MEMBER_REMOVE'
   | 'MEMBER_PERMISSION_UPDATE'
   | 'MEETING_CREATE'
+  | 'MEETING_DELETE'
   | 'PROJECT_RENAME'
 
 export interface ActivityItem {
@@ -176,6 +177,8 @@ export interface MeetingListItem {
   projectName?: string | null
   startedAt: string | null
   endedAt: string | null
+  /** 目前使用者是否可刪除此會議（專案會議＝擁有者、全局會議＝建立者）。 */
+  canDelete: boolean
   createdAt: string
 }
 
@@ -196,6 +199,8 @@ export interface MeetingDetail {
   decisions: string[] | null
   /** 會後完整逐字稿是否已存進 Storage（true 才顯示「查看逐字稿」）。 */
   hasTranscript: boolean
+  /** 目前使用者是否可刪除此會議（專案會議＝擁有者、全局會議＝建立者）。 */
+  canDelete: boolean
   createdAt: string
   updatedAt: string
 }

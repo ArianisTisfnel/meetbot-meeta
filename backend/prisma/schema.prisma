@@ -204,6 +204,7 @@ enum ActivityAction {
   MEMBER_REMOVE
   MEMBER_PERMISSION_UPDATE
   MEETING_CREATE
+  MEETING_DELETE
   PROJECT_RENAME
 
   @@map("activity_action")

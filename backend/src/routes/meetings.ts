@@ -132,6 +132,12 @@ app.get('/meetings/:meetingId/transcriptions', async (c) => {
   return c.json(result)
 })
 
+// DELETE /meetings/:meetingId — 全局刪除會議記錄（建立者本人）
+app.delete('/meetings/:meetingId', async (c) => {
+  await meetingService.deleteMeeting(c.req.param('meetingId'), c.get('vexaUserId'))
+  return c.body(null, 204)
+})
+
 // GET /meetings/:meetingId/transcript — 全局會後完整逐字稿（Markdown，讀 Storage）
 app.get('/meetings/:meetingId/transcript', async (c) => {
   const meetingId = c.req.param('meetingId')
@@ -280,6 +286,16 @@ app.get('/projects/:projectId/meetings/:meetingId/transcriptions', async (c) => 
     perPage: q.per_page ? parseInt(q.per_page) : 50,
   })
   return c.json(result)
+})
+
+// DELETE /projects/:projectId/meetings/:meetingId — 專案內刪除會議記錄（需 canMeeting）
+app.delete('/projects/:projectId/meetings/:meetingId', async (c) => {
+  await meetingService.deleteMeeting(
+    c.req.param('meetingId'),
+    c.get('vexaUserId'),
+    c.req.param('projectId'),
+  )
+  return c.body(null, 204)
 })
 
 // GET /projects/:projectId/meetings/:meetingId/transcript — 專案內會後完整逐字稿
