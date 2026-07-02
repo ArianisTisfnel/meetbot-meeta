@@ -2,9 +2,9 @@
 import { use } from 'react'
 import Link from 'next/link'
 import { useMeeting, useBotLeave } from '@/hooks/use-meeting'
-import { useTranscriptions } from '@/hooks/use-transcriptions'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
+import { MeetingTranscript } from '@/components/meetings/meeting-transcript'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
@@ -22,10 +22,6 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
   const { meetingId } = use(params)
   const { data: meeting, isLoading } = useMeeting(null, meetingId)
   const botLeave = useBotLeave(null, meetingId)
-  const { data: transcript } = useTranscriptions(
-    meeting?.status === 'ENDED' ? null : null,
-    meetingId
-  )
 
   if (isLoading) {
     return <div className="p-6 text-muted-foreground">載入中…</div>
@@ -110,10 +106,19 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
       )}
 
       {meeting.status === 'ENDED' && (
-        <MeetingSummary
-          summary={meeting.summary}
-          actionItems={meeting.actionItems}
-        />
+        <>
+          <MeetingSummary
+            summary={meeting.summary}
+            actionItems={meeting.actionItems}
+            keyTopics={meeting.keyTopics}
+            decisions={meeting.decisions}
+          />
+          <MeetingTranscript
+            projectId={null}
+            meetingId={meetingId}
+            hasTranscript={meeting.hasTranscript}
+          />
+        </>
       )}
     </div>
   )

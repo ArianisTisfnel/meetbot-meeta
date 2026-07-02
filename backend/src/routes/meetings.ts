@@ -132,6 +132,17 @@ app.get('/meetings/:meetingId/transcriptions', async (c) => {
   return c.json(result)
 })
 
+// GET /meetings/:meetingId/transcript — 全局會後完整逐字稿（Markdown，讀 Storage）
+app.get('/meetings/:meetingId/transcript', async (c) => {
+  const meetingId = c.req.param('meetingId')
+  const meeting = await meetingService.getMeeting(meetingId, c.get('vexaUserId'))
+  if (meeting.createdBy.vexaUserId !== c.get('vexaUserId')) {
+    throw new AppError('PERMISSION_DENIED', 403, '只有建立者可查看此會議的逐字稿')
+  }
+  const markdown = await meetingService.getMeetingTranscriptMarkdown(meetingId)
+  return c.json({ markdown })
+})
+
 // ── 專案內 meeting 端點 ──────────────────────────────────────────────────────
 
 // POST /projects/:projectId/meetings
@@ -269,6 +280,15 @@ app.get('/projects/:projectId/meetings/:meetingId/transcriptions', async (c) => 
     perPage: q.per_page ? parseInt(q.per_page) : 50,
   })
   return c.json(result)
+})
+
+// GET /projects/:projectId/meetings/:meetingId/transcript — 專案內會後完整逐字稿
+app.get('/projects/:projectId/meetings/:meetingId/transcript', async (c) => {
+  const meetingId = c.req.param('meetingId')
+  // 存取權限驗證（getProjectMeeting 內含 canView 檢查）
+  await meetingService.getProjectMeeting(c.req.param('projectId'), meetingId, c.get('vexaUserId'))
+  const markdown = await meetingService.getMeetingTranscriptMarkdown(meetingId)
+  return c.json({ markdown })
 })
 
 export default app

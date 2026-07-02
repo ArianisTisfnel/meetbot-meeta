@@ -486,6 +486,9 @@ export async function getMeeting(meetingId: string, vexaUserId: number) {
     endedAt: meeting.endedAt ?? null,
     summary: meeting.summary ?? null,
     actionItems: meeting.actionItems ?? null,
+    keyTopics: meeting.keyTopics ?? null,
+    decisions: meeting.decisions ?? null,
+    hasTranscript: Boolean(meeting.transcriptStoragePath),
     createdAt: meeting.createdAt,
     updatedAt: meeting.updatedAt,
   }
@@ -519,9 +522,28 @@ export async function getProjectMeeting(
     endedAt: meeting.endedAt ?? null,
     summary: meeting.summary ?? null,
     actionItems: meeting.actionItems ?? null,
+    keyTopics: meeting.keyTopics ?? null,
+    decisions: meeting.decisions ?? null,
+    hasTranscript: Boolean(meeting.transcriptStoragePath),
     createdAt: meeting.createdAt,
     updatedAt: meeting.updatedAt,
   }
+}
+
+/**
+ * 取得會後完整逐字稿的 Markdown（provider-agnostic）。
+ * 來源為摘要階段存進 Supabase Storage 的 transcript.md——這是 Recall 會議結束後
+ * 唯一可靠的逐字稿來源（session 已離開記憶體、Recall bot id 未持久化，無法即時重抓）。
+ * 權限與 getMeeting / getProjectMeeting 一致（呼叫端先做存取檢查）。
+ */
+export async function getMeetingTranscriptMarkdown(meetingId: string): Promise<string | null> {
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: { id: meetingId },
+    select: { transcriptStoragePath: true },
+  })
+  if (!meeting?.transcriptStoragePath) return null
+  const { downloadTextFile } = await import('../lib/supabase.js')
+  return downloadTextFile(meeting.transcriptStoragePath)
 }
 
 export async function updateMeetingName(

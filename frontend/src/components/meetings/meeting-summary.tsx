@@ -4,9 +4,11 @@ import type { ActionItem } from '@/types/api'
 interface Props {
   summary: string | null
   actionItems: ActionItem[]
+  keyTopics?: string[] | null
+  decisions?: string[] | null
 }
 
-export function MeetingSummary({ summary, actionItems }: Props) {
+export function MeetingSummary({ summary, actionItems, keyTopics, decisions }: Props) {
   if (summary === null) {
     return (
       <div
@@ -32,6 +34,9 @@ export function MeetingSummary({ summary, actionItems }: Props) {
     )
   }
 
+  const topics = keyTopics ?? []
+  const decisionList = decisions ?? []
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div className="rounded-lg border p-6">
@@ -56,6 +61,36 @@ export function MeetingSummary({ summary, actionItems }: Props) {
                     </span>
                   )}
                 </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {topics.length > 0 && (
+        <div className="rounded-lg border p-6">
+          <h3 className="font-semibold mb-3">重點主題</h3>
+          <div className="flex flex-wrap gap-2">
+            {topics.map((topic, i) => (
+              <span
+                key={i}
+                className="rounded-full border border-line bg-muted/40 px-3 py-1 text-sm"
+              >
+                {topic}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {decisionList.length > 0 && (
+        <div className="rounded-lg border p-6">
+          <h3 className="font-semibold mb-3">會議決議</h3>
+          <ul className="space-y-2">
+            {decisionList.map((decision, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm">
+                <span aria-hidden="true" className="mt-1 shrink-0 text-honey-deep">
+                  ✓
+                </span>
+                <span>{decision}</span>
               </li>
             ))}
           </ul>

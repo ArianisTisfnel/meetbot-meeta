@@ -3,9 +3,9 @@ import { use } from 'react'
 import Link from 'next/link'
 import { useMeeting, useBotLeave } from '@/hooks/use-meeting'
 import { usePermissions } from '@/hooks/use-permissions'
-import { useTranscriptions } from '@/hooks/use-transcriptions'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
+import { MeetingTranscript } from '@/components/meetings/meeting-transcript'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
@@ -24,10 +24,6 @@ export default function MeetingDetailPage({ params }: Props) {
   const { data: meeting, isLoading } = useMeeting(projectId, meetingId)
   const permissions = usePermissions(projectId)
   const botLeave = useBotLeave(projectId, meetingId)
-  const { data: transcript } = useTranscriptions(
-    meeting?.status === 'ENDED' ? projectId : null,
-    meetingId
-  )
 
   if (isLoading) {
     return <div className="p-6 text-muted-foreground">載入中…</div>
@@ -143,26 +139,14 @@ export default function MeetingDetailPage({ params }: Props) {
           <MeetingSummary
             summary={meeting.summary}
             actionItems={meeting.actionItems}
+            keyTopics={meeting.keyTopics}
+            decisions={meeting.decisions}
           />
-          {transcript && transcript.items.length > 0 && (
-            <div className="rounded-lg border p-6">
-              <h3 className="font-semibold mb-4">完整逐字稿</h3>
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {transcript.items.map((seg, i) => (
-                  <div key={i} className="text-sm">
-                    <span className="text-muted-foreground mr-2">
-                      {Math.floor(seg.startTime / 60)}:
-                      {String(Math.floor(seg.startTime % 60)).padStart(2, '0')}
-                    </span>
-                    <span className="font-medium mr-2">
-                      [{seg.speaker ?? '參與者'}]
-                    </span>
-                    <span>{seg.text}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <MeetingTranscript
+            projectId={projectId}
+            meetingId={meetingId}
+            hasTranscript={meeting.hasTranscript}
+          />
         </>
       )}
     </div>

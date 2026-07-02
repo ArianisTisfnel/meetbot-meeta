@@ -1,7 +1,7 @@
 'use client'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
-import type { MeetingDetail } from '@/types/api'
+import type { MeetingDetail, MeetingTranscriptResponse } from '@/types/api'
 
 /**
  * 計算 useMeeting 的 refetchInterval。
@@ -33,6 +33,29 @@ export function useMeeting(projectId: string | null, meetingId: string) {
         : apiClient.get<MeetingDetail>(`/meetings/${meetingId}`),
     enabled: !!meetingId,
     refetchInterval: (query) => computeRefetchInterval(query.state.data),
+  })
+}
+
+/**
+ * 會後完整逐字稿（Markdown）。僅在 `enabled` 為 true 時抓取
+ * （呼叫端應在 meeting.hasTranscript 為 true 時才啟用，避免無謂請求）。
+ */
+export function useMeetingTranscript(
+  projectId: string | null,
+  meetingId: string,
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: ['meeting-transcript', meetingId],
+    queryFn: () =>
+      projectId
+        ? apiClient.get<MeetingTranscriptResponse>(
+            `/projects/${projectId}/meetings/${meetingId}/transcript`
+          )
+        : apiClient.get<MeetingTranscriptResponse>(
+            `/meetings/${meetingId}/transcript`
+          ),
+    enabled: enabled && !!meetingId,
   })
 }
 
