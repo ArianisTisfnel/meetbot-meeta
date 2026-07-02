@@ -26,9 +26,20 @@ const VEXA_TTS_VOICE = 'alloy'
 const VEXA_TERMINAL_STATUSES = ['completed', 'failed', 'needs_help', 'needs_human_help']
 const VEXA_BLOCKED_STATUSES = ['needs_help', 'needs_human_help']
 
+/** VexaAdapter 實際用到的 WS 介面子集（單元測試以假物件注入）。 */
+export interface WsLike {
+  send(data: string): void
+  close(): void
+  on(event: string, listener: (...args: any[]) => void): unknown
+  once(event: string, listener: (...args: any[]) => void): unknown
+}
+
+/** 可注入的 WS 建構器；預設用真的 ws 套件。 */
+export type WsFactory = (url: string, opts: { headers: Record<string, string> }) => WsLike
+
 interface VexaSessionState extends Record<string, unknown> {
   vexaToken: string
-  ws: WebSocket | null
+  ws: WsLike | null
   /** 主動關閉旗標：true 時 WS close 不再重連。 */
   intentionallyClosed: boolean
   /** 是否已被 admitted（避免重複觸發 onStatus admitted）。 */
@@ -42,7 +53,10 @@ function getState(session: BotSession): VexaSessionState {
 export class VexaAdapter implements MeetingBotProvider {
   readonly name = 'vexa'
 
-  constructor(private readonly admissionTimeoutMs: number = ADMISSION_TIMEOUT_MS) {}
+  constructor(
+    private readonly admissionTimeoutMs: number = ADMISSION_TIMEOUT_MS,
+    private readonly createWs: WsFactory = (url, opts) => new WebSocket(url, opts),
+  ) {}
 
   async join(url: string, opts: BotOptions, handlers: LiveHandlers): Promise<BotSession> {
     const vexaToken = opts.vexaToken
@@ -122,7 +136,7 @@ export class VexaAdapter implements MeetingBotProvider {
     admission: { onAdmitted: () => void; onBlocked: (reason?: string) => void },
   ): void {
     const state = getState(session)
-    const ws = new WebSocket(`${env.VEXA_WS_URL}/ws`, {
+    const ws = this.createWs(`${env.VEXA_WS_URL}/ws`, {
       headers: { 'X-API-Key': state.vexaToken },
     })
     state.ws = ws
@@ -193,9 +207,12 @@ export class VexaAdapter implements MeetingBotProvider {
 
         if (VEXA_TERMINAL_STATUSES.includes(status)) {
           const blocked = VEXA_BLOCKED_STATUSES.includes(status)
-          // 尚未 admitted 就進入 terminal → 視為「被擋在門外」(join 失敗訊號)
+          // 尚未 admitted 就進入 terminal → 只發「被擋」的 join 失敗訊號，**不得**發 ended。
+          // ended 會觸發上層 handleSessionClose 撤掉 session，害接手的 failover bot 被立即踢出
+          // （實測：bot 遇 reCAPTCHA 十餘秒內就回報 needs_human_help，必踩這條路）。
           if (!state.admitted) {
             admission.onBlocked(status)
+            break
           }
           handlers.onStatus?.({
             type: 'ended',

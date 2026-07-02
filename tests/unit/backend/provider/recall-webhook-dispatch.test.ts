@@ -88,4 +88,15 @@ describe('dispatchRecallEvent', () => {
     expect(() => dispatchRecallEvent({})).not.toThrow()
     expect(() => dispatchRecallEvent({ event: 'transcript.data', data: {} })).not.toThrow()
   })
+
+  it('transcript.data → segment 累積到註冊的 segments array（getTranscript 回退來源），bot 自己的發言不累積', () => {
+    const segments: import('../../../../backend/src/provider/types').TranscriptSegment[] = []
+    registerRealtimeHandlers(BOT_ID, handlers, BOT_NAME, segments)
+
+    dispatchRecallEvent(transcriptEvent('Wendy', '蜜塔請問'))
+    dispatchRecallEvent(transcriptEvent(BOT_NAME, '我是蜜塔')) // bot 自己 → 過濾
+    dispatchRecallEvent(transcriptEvent('Wendy', '第二句'))
+
+    expect(segments.map((s) => s.text)).toEqual(['蜜塔請問', '第二句'])
+  })
 })

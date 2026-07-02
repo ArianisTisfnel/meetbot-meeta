@@ -28,14 +28,25 @@ import {
  * 需設定 RECALL_WEBHOOK_URL（公開可達）+ RECALL_WEBHOOK_TOKEN；未設定則退回 meeting_captions
  * （只有會後逐字稿、無即時喚醒詞問答）。
  *
+ * 逐字稿雙軌策略：Recall 的最終逐字稿（download_url）要等會議結束「後處理完成」（status=done，
+ * 通常需數分鐘）才拿得到，遠超摘要服務的等待視窗。因此 realtime webhook 進來的 segment
+ * 會同步累積在 session state；getTranscript 優先用最終逐字稿，未就緒時回退用累積結果——
+ * 會議進行中（喚醒詞問答）與剛結束（摘要）都因此拿得到內容。
+ *
  * ⚠️ 已知限制：
  *   - speak() 需要 OPENAI_API_KEY 做 TTS；未設定時會丟出明確錯誤（不會 silently 跳過）。
  *     未設金鑰時 realtime 仍可用「聊天文字」回答（sendChat）。
  *   - sendChat 為 best-effort，部分會議平台可能不支援。
+ *   - 未設定 webhook（無 realtime）時沒有累積可回退，摘要仍受最終逐字稿處理時間限制。
  */
 
 const ADMISSION_TIMEOUT_MS = 30_000
-const STATUS_POLL_INTERVAL_MS = 2_000
+/** admission 等待期輪詢間隔（短：失敗要快，failover 才不會拖太久）。 */
+const ADMISSION_POLL_INTERVAL_MS = 2_000
+/** admitted 後偵測會議結束的輪詢間隔（寬：Recall rate limit 為 workspace 級，省請求）。 */
+const ENDED_POLL_INTERVAL_MS = 10_000
+/** realtime segment 累積上限（防禦性；一場會議遠達不到）。 */
+const MAX_REALTIME_SEGMENTS = 50_000
 const DEFAULT_BOT_NAME = '蜜塔'
 
 // ── Realtime webhook registry ────────────────────────────────────────────────
@@ -45,13 +56,20 @@ const DEFAULT_BOT_NAME = '蜜塔'
 interface RealtimeRegistration {
   handlers: LiveHandlers
   botName: string
+  /** 與 session.state.segments 同一個 array reference：webhook 累積、getTranscript 回退讀取。 */
+  segments: TranscriptSegment[]
 }
 
 const realtimeRegistry = new Map<string, RealtimeRegistration>()
 
 /** 註冊 bot.id → handlers（join 時呼叫；webhook 進來時依此找回）。 */
-export function registerRealtimeHandlers(botId: string, handlers: LiveHandlers, botName: string): void {
-  realtimeRegistry.set(botId, { handlers, botName })
+export function registerRealtimeHandlers(
+  botId: string,
+  handlers: LiveHandlers,
+  botName: string,
+  segments: TranscriptSegment[] = [],
+): void {
+  realtimeRegistry.set(botId, { handlers, botName, segments })
 }
 
 /** 移除註冊（leave 時呼叫）。 */
@@ -92,7 +110,10 @@ export function dispatchRecallEvent(event: any): void {
       'recall webhook: transcript.data',
     )
     if (isBotParticipant(reg, utter?.participant)) return
-    if (seg) reg.handlers.onSegment?.(seg)
+    if (seg) {
+      if (reg.segments.length < MAX_REALTIME_SEGMENTS) reg.segments.push(seg)
+      reg.handlers.onSegment?.(seg)
+    }
     return
   }
 
@@ -127,6 +148,8 @@ interface RecallSessionState extends Record<string, unknown> {
   botId: string
   statusTimer: ReturnType<typeof setInterval> | null
   closed: boolean
+  /** realtime webhook 累積的 segment（最終逐字稿未就緒時的回退來源）。 */
+  segments: TranscriptSegment[]
 }
 
 function getState(session: BotSession): RecallSessionState {
@@ -205,8 +228,10 @@ export class RecallAdapter implements MeetingBotProvider {
     })
 
     // 註冊 realtime handlers（webhook 進來時依 bot.id 找回）。
+    // segments 與 session.state 共用同一個 array：webhook 累積、getTranscript 回退讀取。
+    const segments: TranscriptSegment[] = []
     if (realtimeEnabled) {
-      registerRealtimeHandlers(bot.id, handlers, botName)
+      registerRealtimeHandlers(bot.id, handlers, botName, segments)
     } else {
       logger.warn(
         { botId: bot.id },
@@ -224,6 +249,7 @@ export class RecallAdapter implements MeetingBotProvider {
         botId: bot.id,
         statusTimer: null,
         closed: false,
+        segments,
       } satisfies RecallSessionState,
     }
 
@@ -285,7 +311,7 @@ export class RecallAdapter implements MeetingBotProvider {
         }
       }
 
-      state.statusTimer = setInterval(tick, STATUS_POLL_INTERVAL_MS)
+      state.statusTimer = setInterval(tick, ADMISSION_POLL_INTERVAL_MS)
       void tick()
     })
   }
@@ -306,25 +332,37 @@ export class RecallAdapter implements MeetingBotProvider {
       } catch (err) {
         logger.warn({ err, botId: state.botId }, 'RecallAdapter: post-admission status poll error')
       }
-    }, STATUS_POLL_INTERVAL_MS)
+    }, ENDED_POLL_INTERVAL_MS)
   }
 
   async getTranscript(session: BotSession): Promise<TranscriptSegment[]> {
     const state = getState(session)
+    // 優先用最終逐字稿（完整、含後處理修正）；未就緒（會議進行中 / 會後處理中，常需數分鐘）
+    // 則回退用 realtime webhook 累積的 segment，讓喚醒詞問答與摘要都拿得到內容。
+    const finalSegments = await this.fetchFinalTranscript(state.botId).catch((err) => {
+      logger.warn({ err, botId: state.botId }, 'RecallAdapter.getTranscript: final transcript fetch failed, falling back to realtime buffer')
+      return null
+    })
+    if (finalSegments && finalSegments.length) return finalSegments
+    return [...state.segments]
+  }
+
+  /** 取最終逐字稿；尚未就緒回傳 null。 */
+  private async fetchFinalTranscript(botId: string): Promise<TranscriptSegment[] | null> {
     // 新版 API：bot → recordings[0].media_shortcuts.transcript.id → GET /transcript/{id}/ → data.download_url
     // 逐字稿內容放在一個預簽 URL 的 JSON 檔（會議進行中為 processing，結束處理完才 done）。
-    const bot = await recallFetch<any>('GET', `/api/v1/bot/${state.botId}/`)
+    const bot = await recallFetch<any>('GET', `/api/v1/bot/${botId}/`)
     const transcriptId = bot?.recordings?.[0]?.media_shortcuts?.transcript?.id
-    if (!transcriptId) return []
+    if (!transcriptId) return null
 
     const transcript = await recallFetch<any>('GET', `/api/v1/transcript/${transcriptId}/`)
-    if (transcript?.status?.code !== 'done') return [] // 尚在處理（通常代表會議仍進行中）
+    if (transcript?.status?.code !== 'done') return null // 尚在處理
     const downloadUrl: string | null = transcript?.data?.download_url ?? null
-    if (!downloadUrl) return []
+    if (!downloadUrl) return null
 
     // download_url 為預簽 URL，不可帶 Recall token。
     const res = await fetch(downloadUrl)
-    if (!res.ok) return []
+    if (!res.ok) return null
     const raw = (await res.json()) as any[]
     return normalizeRecallTranscript(raw)
   }
