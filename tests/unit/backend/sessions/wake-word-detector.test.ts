@@ -269,6 +269,15 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
     )
   })
 
+  it('明確停止指令（閉嘴）→ 即使很短也停止，且不轉貼被打斷內容', async () => {
+    const session = makeSession({ isSpeaking: true, currentSpeech: '被打斷的答案' })
+    await handleBargeIn(session, { text: '閉嘴', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.isSpeaking).toBe(false)
+    expect(mockBotProvider.sendChat).not.toHaveBeenCalled()
+  })
+
   it('短附和（嗯嗯）→ 不觸發讓路', async () => {
     const session = makeSession({ isSpeaking: true, currentSpeech: '答案' })
     await handleBargeIn(session, { text: '嗯嗯', speaker: 'A' })

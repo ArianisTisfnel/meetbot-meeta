@@ -51,13 +51,17 @@ const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 
 /** 短於此長度的內容視為附和（嗯、好的），不觸發讓路。 */
 const BARGE_IN_MIN_CHARS = 4
+/** 明確停止指令：再短也觸發讓路，且不再轉貼被打斷的內容（使用者就是不想聽）。 */
+const STOP_COMMAND_REGEX = /^(閉嘴|安靜|住嘴|停|停止|別說了|不用了|不用說了|夠了)[。！!～~]*$/
 
 export async function handleBargeIn(
   session: MeetingSession,
   speech: { text: string; speaker: string },
 ): Promise<void> {
   if (!session.isSpeaking) return
-  if (speech.text.trim().length < BARGE_IN_MIN_CHARS) return
+  const trimmed = speech.text.trim()
+  const isStopCommand = STOP_COMMAND_REGEX.test(trimmed)
+  if (!isStopCommand && trimmed.length < BARGE_IN_MIN_CHARS) return
 
   // 先翻旗標再做 I/O：重複 partial 不會重入
   session.isSpeaking = false
@@ -76,8 +80,8 @@ export async function handleBargeIn(
     logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'barge-in: stopSpeaking failed (best-effort)')
   }
 
-  // 被打斷的回答改走聊天室，內容不遺失
-  if (interrupted) {
+  // 被打斷的回答改走聊天室，內容不遺失；明確叫停（閉嘴/安靜）則不轉貼
+  if (interrupted && !isStopCommand) {
     await sendChatBestEffort(session, `（先讓大家討論～完整回覆放這裡）${interrupted}`)
   }
 }
