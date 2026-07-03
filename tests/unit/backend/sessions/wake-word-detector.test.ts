@@ -253,6 +253,29 @@ describe('handlePartialSegment — partial 快速喚醒', () => {
   })
 })
 
+describe('語音問題但嘴巴被佔用 → 改走聊天室', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('isSpeaking 時的語音喚醒 → 不 speak，答案走 sendChat（含 👂 確認）', async () => {
+    const session = makeSession({ isSpeaking: true })
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-busy',
+      text: '蜜塔，報名費是多少',
+      speaker: 'B',
+      start_time: 1,
+      end_time: 2,
+    })
+
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+    // 👂 確認 + 答案 = 至少兩次 sendChat
+    expect(mockBotProvider.sendChat.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(mockBotProvider.sendChat.mock.calls[0][1]).toContain('👂')
+    expect(mockBotProvider.sendChat.mock.calls[0][1]).toContain('B')
+  })
+})
+
 describe('parseIntent — 問答意圖分流', () => {
   it('factual / context / hybrid 關鍵字正確解析', () => {
     expect(parseIntent('factual')).toBe('factual')

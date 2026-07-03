@@ -17,13 +17,12 @@ function requireBotSession(session: MeetingSession): BotSession {
 }
 
 // 固定台詞（匯出供 session-manager 在 join 後 primeSpeech 預熱 TTS）。
-// 短句 = TTS/播放更快、也更像人（使用者提議的措辭）
-export const PENDING_VOICE_KB = '等等喔，我正在頭腦風暴！'
-export const PENDING_VOICE_TRANSCRIPT = '等等喔，我翻一下會議記錄！'
+export const PENDING_VOICE_KB = '好的，我收到了，正在查詢資料，請稍候。'
+export const PENDING_VOICE_TRANSCRIPT = '好的，我收到了，正在查閱會議記錄，請稍候。'
 export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
-export const PROGRESS_VOICE = '不好意思讓大家久等了，我還在查，馬上就好。'
-/** 查詢超過此時間就口頭回報進度（不然使用者會以為沒收到而重問）。 */
-const PROGRESS_NOTICE_MS = 12_000
+export const PROGRESS_VOICE = '等等喔，我正在頭腦風暴！'
+/** 說完「我收到了」後自己計時：查詢還沒回來就說進度句（不然使用者會以為沒收到而重問）。 */
+const PROGRESS_NOTICE_MS = 10_000
 
 /** 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。 */
 export async function sendChatBestEffort(session: MeetingSession, text: string): Promise<void> {
@@ -177,7 +176,10 @@ export async function handleTranscriptSegment(
         { meetingInstanceId: session.meetingInstanceId, question: question.slice(0, 60), speaker: segment.speaker },
         'wake pending window: follow-up segment taken as question',
       )
-      await dispatchQuestion(session, question, 'voice', { skipPendingPrompt: consumePartialAck(session, now) })
+      await dispatchQuestion(session, question, 'voice', {
+        skipPendingPrompt: consumePartialAck(session, now),
+        speaker: segment.speaker,
+      })
     }
     return
   }
@@ -208,7 +210,10 @@ export async function handleTranscriptSegment(
     { meetingInstanceId: session.meetingInstanceId, wakeWord: match[0], question: question.slice(0, 60), speaker: segment.speaker },
     'wake word matched (voice), dispatching question',
   )
-  await dispatchQuestion(session, question, 'voice', { skipPendingPrompt: consumePartialAck(session, now) })
+  await dispatchQuestion(session, question, 'voice', {
+    skipPendingPrompt: consumePartialAck(session, now),
+    speaker: segment.speaker,
+  })
 }
 
 /** partial 快速喚醒已說過開場白？（一次性消耗，窗內的 final 派發跳過開場白） */
@@ -399,22 +404,48 @@ export async function resolveAnswer(
   }
 }
 
+// ── 回答通道與優先權 ──────────────────────────────────────────────────────────
+// 1. 語音問 → 語音答（嘴巴說「我收到了」→ 答案；長答案唸重點+完整版補聊天室）
+//    ＋聊天室同步貼「👂 收到 XXX 的問題」（<1 秒的視覺確認；語音要 3-5 秒才聽得到）
+// 2. 聊天室問 → 聊天室答，全程不出聲（打字提問通常是不想打斷討論）
+// 3. 兩通道並行互不阻塞；「嘴巴」是獨占資源——語音回答進行中又有語音問題
+//    → 該題改走聊天室（不丟棄）
+// 4. 同一人同時用兩邊問同一題（2 秒內）→ debounce 視為同一題，先到的通道回答
+//    （聊天室沒有 STT 延遲通常先到）
+
 async function dispatchQuestion(
   session: MeetingSession,
   question: string,
   source: 'voice' | 'chat',
-  opts?: { skipPendingPrompt?: boolean },
+  opts?: { skipPendingPrompt?: boolean; speaker?: string },
 ): Promise<void> {
   const pendingVoice = session.difyDatasetId ? PENDING_VOICE_KB : PENDING_VOICE_TRANSCRIPT
   const pendingChat = session.difyDatasetId
     ? '收到你的問題，正在查詢資料中……'
     : '收到你的問題，正在查閱會議記錄……'
+  const ackChat = `👂 收到${opts?.speaker ? ` ${opts.speaker} ` : ''}的問題：「${question.slice(0, 40)}」，${
+    session.difyDatasetId ? '正在查詢資料中……' : '正在查閱會議記錄……'
+  }`
 
   if (source === 'voice') {
-    if (session.isSpeaking) return
-    // 聊天室即時確認：唯一 <1 秒的回饋通道（語音要等 STT 定稿+播放，聽到已 3-5 秒），
-    // 先讓使用者「看到」蜜塔有反應，避免以為沒收到而重問。
-    void sendChatBestEffort(session, `👂 ${pendingChat}`)
+    // 嘴巴被佔用（正在回答上一題）→ 這題不丟棄，改走聊天室
+    if (session.isSpeaking) {
+      logger.info(
+        { meetingInstanceId: session.meetingInstanceId, question: question.slice(0, 40) },
+        'dispatchQuestion voice: bot is speaking, routing this question to chat',
+      )
+      await sendChatBestEffort(session, ackChat)
+      try {
+        const answer = await resolveAnswer(session, question, 'chat')
+        await sendChatBestEffort(session, answer)
+      } catch (err) {
+        logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'voice→chat fallback failed')
+        await sendChatBestEffort(session, ERROR_VOICE)
+      }
+      return
+    }
+    // 聊天室即時確認（標明是誰的哪一題）：唯一 <1 秒的回饋通道
+    void sendChatBestEffort(session, ackChat)
     // partial 快速喚醒已先說過開場白 → 跳過，直接查詢
     const speakPending = !opts?.skipPendingPrompt
     const promptEstimatedMs = speakPending ? Math.max(3000, (pendingVoice.length / 4) * 1000 + 1500) : 0
