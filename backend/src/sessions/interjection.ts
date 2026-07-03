@@ -142,8 +142,13 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   if (!session || !session.botSession || !s) return
 
   const now = Date.now()
-  if (session.isSpeaking || now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS) {
-    armIcebreaker(meetingInstanceId) // 冷卻中：繼續監看下一段沉默
+  if (
+    session.isSpeaking ||
+    now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS ||
+    // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默
+    now - session.lastWakeAt < env.ICEBREAKER_SILENCE_MS
+  ) {
+    armIcebreaker(meetingInstanceId) // 繼續監看下一段沉默
     return
   }
 
@@ -245,9 +250,12 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
         '只有同時滿足以下條件才插話：',
         '1. 有人提出了明確的問題或資訊需求，且沒有指名要問某個人',
         '2. 這個問題看起來能靠會議資料或專案文件回答（事實型問題）',
-        '3. 對話中沒有人正在回答它',
+        '3. 對話中沒有人（包括蜜塔自己）已經回答過它',
         '不確定就不插話。閒聊、意見交流、寒暄一律不插話。',
-        '只回傳 JSON（不要 markdown）：{"interject": true/false, "question": "要幫忙回答的問題（interject 為 false 時給空字串）"}',
+        'question 欄位規則：必須是「對話中某位參與者實際說出的問題」的原樣或忠實濃縮。',
+        '絕對不可以填你想反問參與者的問題、不可自行發明或擴寫問題。',
+        '若對方的問題太模糊、你需要反問才能釐清 → 直接 interject 給 false。',
+        '只回傳 JSON（不要 markdown）：{"interject": true/false, "question": "（interject 為 false 時給空字串）"}',
       ].join('\n'),
       prompt: `最近的對話：\n\n${context}`,
     })

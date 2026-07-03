@@ -274,6 +274,8 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
 
   try {
     await botProvider.speak(requireBotSession(session), speech)
+    // 蜜塔的語音也算「有人在說話」：記進對話窗（重置破冰計時、讓決策層知道已回答）
+    recordConversation(session, { speaker: '蜜塔', text: speech, source: 'voice', fromBot: true, at: Date.now() })
     // 截斷過的長內容補完整版到聊天室
     if (speech !== text) await sendChatBestEffort(session, text)
     return true
@@ -500,6 +502,8 @@ async function dispatchQuestion(
       }, promptEstimatedMs + answerEstimatedMs)
 
       await botProvider.speak(botSession, answer)
+      // 蜜塔的語音回答記進對話窗（重置破冰計時、決策層可見已回答）
+      recordConversation(session, { speaker: '蜜塔', text: answer, source: 'voice', fromBot: true, at: Date.now() })
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, answerPreview: answer.slice(0, 60) },
         'dispatchQuestion voice: answer spoken',
@@ -551,6 +555,7 @@ async function answerFromTranscript(
       '兩類問題都要能答：',
       '1. 事實型（剛才提到什麼、時程是什麼）：根據逐字稿內容回答；逐字稿沒有就直說找不到。',
       '2. 意見型（你覺得這個提議如何、有什麼建議）：根據討論脈絡給出具體、可執行的看法或建議，不要推託說無法回答。',
+      '不要反問使用者。資訊不足時，直接說出你手上最相關的資訊，並用一句話註明還缺什麼。',
     ].join('\n'),
     prompt: `以下是近期的會議逐字稿片段：\n\n${context}\n\n請回答：${question}`,
     maxTokens: 512,
