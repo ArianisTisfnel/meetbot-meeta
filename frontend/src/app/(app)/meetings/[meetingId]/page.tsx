@@ -9,7 +9,6 @@ import { DeleteMeetingButton } from '@/components/meetings/delete-meeting-button
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
-import { MeetingDebugInfo } from '@/components/meetings/meeting-debug-info'
 import { Button } from '@/components/ui/button'
 import { WarningIcon } from '@/components/ui/icons'
 import { formatDate } from '@/lib/utils'
@@ -69,12 +68,12 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
         {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
           <div className="flex items-center gap-2">
             <ReinviteBotButton projectId={null} meetingId={meetingId} />
-            <DeleteMeetingButton projectId={null} meetingId={meetingId} redirectTo="/meetings" />
+            {meeting.canDelete && (
+              <DeleteMeetingButton projectId={null} meetingId={meetingId} redirectTo="/meetings" />
+            )}
           </div>
         )}
       </div>
-
-      <MeetingDebugInfo meeting={meeting} />
 
       {meeting.status === 'FAILED' && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/5 p-6">

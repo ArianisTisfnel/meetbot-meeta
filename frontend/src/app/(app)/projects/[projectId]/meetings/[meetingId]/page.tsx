@@ -10,7 +10,6 @@ import { DeleteMeetingButton } from '@/components/meetings/delete-meeting-button
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
-import { MeetingDebugInfo } from '@/components/meetings/meeting-debug-info'
 import { Button } from '@/components/ui/button'
 import { CopyIcon, WarningIcon } from '@/components/ui/icons'
 import { formatDate } from '@/lib/utils'
@@ -93,7 +92,7 @@ export default function MeetingDetailPage({ params }: Props) {
         {(meeting.status === 'FAILED' || meeting.status === 'ENDED') && (
           <div className="flex items-center gap-2">
             <ReinviteBotButton projectId={projectId} meetingId={meetingId} />
-            {permissions.canMeeting && (
+            {meeting.canDelete && (
               <DeleteMeetingButton
                 projectId={projectId}
                 meetingId={meetingId}
@@ -103,8 +102,6 @@ export default function MeetingDetailPage({ params }: Props) {
           </div>
         )}
       </div>
-
-      <MeetingDebugInfo meeting={meeting} />
 
       {/* Content by status */}
       {meeting.status === 'FAILED' && (
