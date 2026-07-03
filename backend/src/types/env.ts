@@ -29,11 +29,24 @@ const envSchema = z.object({
   // recallai_streaming（prioritize_accuracy 模式）的轉錄語言碼：
   // 'auto' = 自動偵測、可中英夾雜（推薦）；或指定如 'zh'（中文）、'en'。'multi' 非合法值。
   RECALL_TRANSCRIBE_LANGUAGE: z.string().default('auto'),
+  // 主要 bot provider：'recall'（預設，Vexa 被 reCAPTCHA 擋死後的決策）或 'vexa'。
+  // 另一個 provider 自動成為 failover secondary（未設定齊全時退化為單一 provider）。
+  BOT_PRIMARY_PROVIDER: z.enum(['vexa', 'recall']).default('recall'),
   // Vexa：等待 bot 真正被 admitted 進會議的逾時（毫秒）；逾時即視為「被擋在門外」並觸發 failover。
   BOT_ADMISSION_TIMEOUT_MS: z.coerce.number().default(30_000),
   // Recall：admission 逾時。Recall bot 從派出到進等候室本身就要約 30s（實測），
   // 故給較長的視窗，避免 failover 後 Recall 還沒進場就被判逾時。
   RECALL_ADMISSION_TIMEOUT_MS: z.coerce.number().default(90_000),
+  // ── 主動插話（interjection）─────────────────────────────────────────────────
+  // 蜜塔在「沒被叫名字」時也會判斷是否主動用聊天室補充（RAG 答得出的問題才插話）。
+  INTERJECTION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  // 判定「一輪話講完」的停頓門檻（ms）：最後一段語音後多久沒新內容才評估要不要插話。
+  INTERJECTION_TURN_SILENCE_MS: z.coerce.number().default(2_500),
+  // 兩次主動插話之間的最小間隔（ms），避免蜜塔變話癆。
+  INTERJECTION_COOLDOWN_MS: z.coerce.number().default(90_000),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),
   // 前端基底 URL，用於組出邀請接受連結。

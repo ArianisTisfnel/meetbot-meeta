@@ -70,3 +70,6 @@ frontend/.next/
 
 # 本機工具（ngrok 等，勿入版控）
 tools/
+
+# Backend runtime logs
+backend/logs/

@@ -125,6 +125,12 @@ export interface MeetingBotProvider {
   /** 在聊天室發訊息。Provider 不支援時可不實作（呼叫端需容錯）。 */
   sendChat?(session: BotSession, text: string): Promise<void>
 
+  /**
+   * 預熱固定台詞的語音合成（不播放）。Provider 內部 TTS 有冷啟成本時實作
+   * （Recall：join 後先合成並快取「我收到了」等常用句，縮短首次喚醒的回應延遲）。
+   */
+  primeSpeech?(session: BotSession, texts: string[]): Promise<void>
+
   /** Bot 離開會議、釋放資源。 */
   leave(session: BotSession): Promise<void>
 }

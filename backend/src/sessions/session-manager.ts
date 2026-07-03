@@ -3,7 +3,14 @@ import { logger } from '../middleware/logger.js'
 import { botProvider } from '../provider/index.js'
 import type { BotSession, LiveHandlers } from '../provider/types.js'
 import { activeSessions } from './session-store.js'
-import { handleTranscriptSegment, handleChatMessage } from './wake-word-detector.js'
+import {
+  handleTranscriptSegment,
+  handleChatMessage,
+  PENDING_VOICE_KB,
+  PENDING_VOICE_TRANSCRIPT,
+  ERROR_VOICE,
+} from './wake-word-detector.js'
+import { recordConversation, clearInterjection } from './interjection.js'
 import { generateSummaryAsync } from './summary.service.js'
 import type { MeetingSession } from '../types/session.js'
 
@@ -46,6 +53,8 @@ export async function startBotSession(params: {
     creatorVexaToken,
     isSpeaking: false,
     lastWakeAt: 0,
+    wakePendingUntil: 0,
+    wakePendingSpeaker: null,
     processedSegmentIds: params.initialProcessedIds ?? new Set(),
     botSession: null,
     difyConversationId: null,
@@ -67,6 +76,13 @@ export async function startBotSession(params: {
       }).catch((err) =>
         logger.error({ err, meetingInstanceId }, 'handleTranscriptSegment error'),
       )
+      recordConversation(s, {
+        speaker: seg.speaker ?? '',
+        text: seg.text,
+        source: 'voice',
+        fromBot: false, // bot 自己的語音已在 provider 層過濾
+        at: Date.now(),
+      })
     },
     onChat: (msg) => {
       const s = activeSessions.get(meetingInstanceId)
@@ -77,6 +93,13 @@ export async function startBotSession(params: {
         timestamp: msg.timestamp,
         is_from_bot: msg.isFromBot,
       }).catch((err) => logger.error({ err, meetingInstanceId }, 'handleChatMessage error'))
+      recordConversation(s, {
+        speaker: msg.sender,
+        text: msg.text,
+        source: 'chat',
+        fromBot: msg.isFromBot,
+        at: msg.timestamp || Date.now(),
+      })
     },
     onStatus: (ev) => {
       // admitted 由 join resolve 處理；此處只處理會議結束（非 mid-meeting failover）。
@@ -126,6 +149,12 @@ export async function startBotSession(params: {
         .sendChat(botSession, welcomeMessage(difyDatasetId))
         .catch((err) => logger.warn({ err, meetingInstanceId }, 'welcome chat failed (best-effort)'))
     }
+
+    // 預熱固定台詞的 TTS（fire-and-forget）：把「我收到了」等句的合成成本
+    // 移到 join 後閒置期，首次喚醒的回應延遲省 1–3 秒。
+    botSession.adapter
+      .primeSpeech?.(botSession, [PENDING_VOICE_KB, PENDING_VOICE_TRANSCRIPT, ERROR_VOICE])
+      ?.catch((err) => logger.warn({ err, meetingInstanceId }, 'primeSpeech failed (best-effort)'))
   } catch (err) {
     // 兩個 provider 都無法讓 bot 進會議。
     logger.warn({ err, meetingInstanceId }, 'startBotSession: all providers failed to admit bot')
@@ -146,6 +175,7 @@ export async function closeSession(meetingInstanceId: string): Promise<void> {
   if (!session) return
 
   activeSessions.delete(meetingInstanceId)
+  clearInterjection(meetingInstanceId)
 
   if (session.botSession) {
     await botProvider
@@ -167,6 +197,7 @@ export async function handleSessionClose(
 
   // 原子鎖：先從 Map 移除，防止雙重觸發。
   activeSessions.delete(meetingInstanceId)
+  clearInterjection(meetingInstanceId)
 
   const meetbotFinalStatus = reason === 'failed' ? 'FAILED' : 'ENDED'
 

@@ -377,8 +377,26 @@ export class RecallAdapter implements MeetingBotProvider {
     })
   }
 
+  async primeSpeech(_session: BotSession, texts: string[]): Promise<void> {
+    // 只合成進快取、不播放：把「我收到了」等固定台詞的 TTS 成本移到 join 後的閒置期，
+    // 首次喚醒的回應延遲可省 1–3 秒。
+    for (const text of texts) {
+      if (this.ttsCache.has(text)) continue
+      await this.synthesizeMp3(text).catch((err) =>
+        logger.warn({ err, text: text.slice(0, 20) }, 'RecallAdapter.primeSpeech: TTS warm failed'),
+      )
+    }
+  }
+
+  /** 固定台詞的 TTS 結果快取（開場白等重複句免重新合成）。有上限防無界成長。 */
+  private readonly ttsCache = new Map<string, string>()
+  private static readonly TTS_CACHE_MAX = 30
+
   /** text → mp3(base64)，使用 OpenAI TTS。未設定 OPENAI_API_KEY 時丟出明確錯誤。 */
   private async synthesizeMp3(text: string): Promise<string> {
+    const cached = this.ttsCache.get(text)
+    if (cached) return cached
+
     if (!env.OPENAI_API_KEY) {
       throw new Error(
         'RecallAdapter.speak: OPENAI_API_KEY 未設定，無法為 Recall bot 做 TTS（known limitation）',
@@ -397,7 +415,13 @@ export class RecallAdapter implements MeetingBotProvider {
       throw new Error(`RecallAdapter.speak: TTS failed ${res.status}: ${t}`)
     }
     const buf = Buffer.from(await res.arrayBuffer())
-    return buf.toString('base64')
+    const mp3 = buf.toString('base64')
+    if (this.ttsCache.size >= RecallAdapter.TTS_CACHE_MAX) {
+      const oldest = this.ttsCache.keys().next().value
+      if (oldest !== undefined) this.ttsCache.delete(oldest)
+    }
+    this.ttsCache.set(text, mp3)
+    return mp3
   }
 
   async sendChat(session: BotSession, text: string): Promise<void> {

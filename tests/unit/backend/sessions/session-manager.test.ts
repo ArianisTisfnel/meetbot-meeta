@@ -16,6 +16,14 @@ vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotP
 vi.mock('../../../../backend/src/sessions/wake-word-detector', () => ({
   handleTranscriptSegment: vi.fn(),
   handleChatMessage: vi.fn(),
+  PENDING_VOICE_KB: '好的，我收到了，正在查詢資料，請稍候。',
+  PENDING_VOICE_TRANSCRIPT: '好的，我收到了，正在查閱會議記錄，請稍候。',
+  ERROR_VOICE: '抱歉，查詢時發生錯誤，請稍後再試。',
+}))
+// interjection 直接 import 真 env（會 process.exit）與 Anthropic client → 整包 mock 掉
+vi.mock('../../../../backend/src/sessions/interjection', () => ({
+  recordConversation: vi.fn(),
+  clearInterjection: vi.fn(),
 }))
 vi.mock('../../../../backend/src/sessions/summary.service', () => ({ generateSummaryAsync }))
 
