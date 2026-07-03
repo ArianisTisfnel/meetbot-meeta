@@ -25,7 +25,11 @@ export async function completeText(params: {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: params.system }] },
         contents: [{ role: 'user', parts: [{ text: params.prompt }] }],
-        generationConfig: { maxOutputTokens: params.maxTokens },
+        generationConfig: {
+          maxOutputTokens: params.maxTokens,
+          // 2.5 系列預設會「思考」，會吃掉輸出額度導致空回覆 → 關閉（低延遲也更適合即時場景）
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       }),
     })
     if (!res.ok) {
