@@ -1,9 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk'
 import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { activeSessions } from './session-store.js'
 import { resolveAnswer, sendChatBestEffort } from './wake-word-detector.js'
 import { warmEouModel, isEndOfTurn } from '../lib/eou.js'
+import { completeText } from '../lib/llm.js'
 import type { MeetingSession } from '../types/session.js'
 
 // livekit 時機層啟用時，啟動階段就下載/載入模型（首場會議不用付冷啟成本）。
@@ -43,8 +43,6 @@ const WINDOW_MAX_ENTRIES = 60
 const DECISION_CONTEXT_ENTRIES = 12
 /** 喚醒詞問答進行中／剛結束時不插話的靜默期。 */
 const WAKE_GRACE_MS = 15_000
-
-const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
 
 interface InterjectionState {
   window: ConversationEntry[]
@@ -161,9 +159,8 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
       .map((e) => `[${e.fromBot ? '蜜塔(你)' : e.speaker || '參與者'}${e.source === 'chat' ? '·聊天室' : ''}] ${e.text}`)
       .join('\n')
 
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 200,
+    const raw = await completeText({
+      maxTokens: 200,
       system: [
         '你是會議 AI 助理「蜜塔」的插話決策器。根據最近的對話判斷蜜塔現在是否應該主動補充。',
         '只有同時滿足以下條件才插話：',
@@ -173,10 +170,9 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
         '不確定就不插話。閒聊、意見交流、寒暄一律不插話。',
         '只回傳 JSON（不要 markdown）：{"interject": true/false, "question": "要幫忙回答的問題（interject 為 false 時給空字串）"}',
       ].join('\n'),
-      messages: [{ role: 'user', content: `最近的對話：\n\n${context}` }],
+      prompt: `最近的對話：\n\n${context}`,
     })
 
-    const raw = message.content[0].type === 'text' ? message.content[0].text : ''
     let decision: { interject?: boolean; question?: string } = {}
     try {
       decision = JSON.parse(raw.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim())

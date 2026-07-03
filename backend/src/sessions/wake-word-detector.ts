@@ -1,10 +1,10 @@
-import Anthropic from '@anthropic-ai/sdk'
 import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { botProvider } from '../provider/index.js'
 import type { BotSession } from '../provider/types.js'
 import * as dify from '../lib/dify.js'
 import { toTraditional } from '../lib/zh.js'
+import { completeText } from '../lib/llm.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
 
 /** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
@@ -41,8 +41,6 @@ const WAKE_PENDING_MS = 8000
 const PARTIAL_ACK_WINDOW_MS = 12_000
 const MAX_PROCESSED_SEGMENT_IDS = 5000
 const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
-
-const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
 
 // ── Barge-in 讓路（參考 joinly 的互動模式）────────────────────────────────────
 //
@@ -370,22 +368,15 @@ async function answerFromTranscript(
     .map((seg) => `[${seg.speaker || '參與者'}]: ${seg.text}`)
     .join('\n')
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 512,
+  const text = await completeText({
     system: [
       '你是在線的 AI 會議助理蜜塔（Meeta），正在會議中即時回答。回答會以語音唸出，請口語、簡潔（100 字內）、繁體中文。',
       '兩類問題都要能答：',
       '1. 事實型（剛才提到什麼、時程是什麼）：根據逐字稿內容回答；逐字稿沒有就直說找不到。',
       '2. 意見型（你覺得這個提議如何、有什麼建議）：根據討論脈絡給出具體、可執行的看法或建議，不要推託說無法回答。',
     ].join('\n'),
-    messages: [
-      {
-        role: 'user',
-        content: `以下是近期的會議逐字稿片段：\n\n${context}\n\n請回答：${question}`,
-      },
-    ],
+    prompt: `以下是近期的會議逐字稿片段：\n\n${context}\n\n請回答：${question}`,
+    maxTokens: 512,
   })
-  const answer = message.content[0].type === 'text' ? message.content[0].text : '抱歉，無法取得回答。'
-  return { answer: toTraditional(answer) }
+  return { answer: toTraditional(text || '抱歉，無法取得回答。') }
 }

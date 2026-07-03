@@ -12,6 +12,9 @@ const envSchema = z.object({
   DIFY_MEETING_SUMMARY_WORKFLOW_API_KEY: z.string().min(1),
   DIFY_CHATFLOW_TIMEOUT_MS: z.coerce.number().default(45_000),
   ANTHROPIC_API_KEY: z.string().min(1),
+  // 設定後，插話決策/無知識庫問答改走 Gemini（AI Studio 免費額度）而非 Anthropic。
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
   VEXA_API_URL: z.string().url(),
   VEXA_WS_URL: z.string().url(),
   // ── Meeting Bot Provider failover ──────────────────────────────────────────
