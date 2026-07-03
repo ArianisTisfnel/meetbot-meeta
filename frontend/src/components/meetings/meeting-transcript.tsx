@@ -11,9 +11,15 @@ interface Props {
 
 /**
  * 會後完整逐字稿（可折疊）。
- * 內容為後端存進 Storage 的 Markdown（`**[mm:ss] speaker**: text` 逐行），
- * 這裡以等寬、保留換行的方式原樣呈現，不做複雜 Markdown 解析。
+ * 內容為後端存進 Storage 的純文字（`[mm:ss] speaker: text` 逐行），原樣呈現。
+ * stripLegacyMarkdown：清掉舊版檔案殘留的「# 會議逐字稿」標題與 ** 粗體標記。
  */
+function stripLegacyMarkdown(text: string): string {
+  return text
+    .replace(/^#\s*會議逐字稿\s*\n+/, '')
+    .replace(/\*\*/g, '')
+}
+
 export function MeetingTranscript({ projectId, meetingId, hasTranscript }: Props) {
   const [open, setOpen] = useState(false)
   const { data, isLoading, isError } = useMeetingTranscript(projectId, meetingId, open && hasTranscript)
@@ -43,7 +49,7 @@ export function MeetingTranscript({ projectId, meetingId, hasTranscript }: Props
           )}
           {data?.markdown && (
             <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed">
-              {data.markdown}
+              {stripLegacyMarkdown(data.markdown)}
             </pre>
           )}
         </div>

@@ -313,7 +313,12 @@ async function answerFromTranscript(
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 512,
-    system: '你是在線的 AI 會議助理蜜塔（Meeta）。請根據提供的會議逐字稿片段，簡潔回答問題。若逐字稿沒有相關資訊，請說明無法從當前會議內容找到答案。',
+    system: [
+      '你是在線的 AI 會議助理蜜塔（Meeta），正在會議中即時回答。回答會以語音唸出，請口語、簡潔（100 字內）、繁體中文。',
+      '兩類問題都要能答：',
+      '1. 事實型（剛才提到什麼、時程是什麼）：根據逐字稿內容回答；逐字稿沒有就直說找不到。',
+      '2. 意見型（你覺得這個提議如何、有什麼建議）：根據討論脈絡給出具體、可執行的看法或建議，不要推託說無法回答。',
+    ].join('\n'),
     messages: [
       {
         role: 'user',

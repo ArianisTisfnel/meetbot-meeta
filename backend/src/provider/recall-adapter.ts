@@ -104,15 +104,16 @@ export function dispatchRecallEvent(event: any): void {
   if (type === 'transcript.data') {
     const utter = data?.data
     const seg = normalizeRecallRealtimeUtterance(utter, data?.transcript?.id)
-    const speaker = utter?.participant?.name
+    const isBot = isBotParticipant(reg, utter?.participant)
     logger.info(
-      { botId, speaker, isBot: isBotParticipant(reg, utter?.participant), text: seg?.text?.slice(0, 60) ?? null },
+      { botId, speaker: utter?.participant?.name, isBot, text: seg?.text?.slice(0, 60) ?? null },
       'recall webhook: transcript.data',
     )
-    if (isBotParticipant(reg, utter?.participant)) return
     if (seg) {
+      // bot 自己的語音也要進逐字稿（會後要看得到蜜塔的回覆），
+      // 但不轉給 handlers（避免喚醒詞/插話自迴圈）。
       if (reg.segments.length < MAX_REALTIME_SEGMENTS) reg.segments.push(seg)
-      reg.handlers.onSegment?.(seg)
+      if (!isBot) reg.handlers.onSegment?.(seg)
     }
     return
   }

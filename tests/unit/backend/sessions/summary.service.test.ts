@@ -92,16 +92,17 @@ describe('formatTranscriptAsMarkdown', () => {
     ]
     const md = formatTranscriptAsMarkdown(segs)
 
-    expect(md).toContain('# 會議逐字稿')
-    expect(md).toContain('**[0:00] Alice**: 大家好')
-    expect(md).toContain('**[0:10] Bob**: 今天議程如下')
+    expect(md).not.toContain('#')
+    expect(md).not.toContain('**')
+    expect(md).toContain('[0:00] Alice: 大家好')
+    expect(md).toContain('[0:10] Bob: 今天議程如下')
   })
 
   it('speaker 為 null → fallback 顯示「參與者」', () => {
     const segs = [makeSeg(5, '我說的話', null)]
     const md = formatTranscriptAsMarkdown(segs)
 
-    expect(md).toContain('**[0:05] 參與者**: 我說的話')
+    expect(md).toContain('[0:05] 參與者: 我說的話')
   })
 })
 
@@ -199,7 +200,7 @@ describe('generateSummaryAsync', () => {
     )
     expect(vi.mocked(difyMod.uploadTranscriptFile)).toHaveBeenCalledWith(
       baseParams.meetingInstanceId,
-      expect.stringContaining('# 會議逐字稿'),
+      expect.stringContaining('] '),
     )
     expect(vi.mocked(difyMod.generateSummary)).toHaveBeenCalledWith(
       expect.objectContaining({ difyFileId: 'dify-file-id' }),

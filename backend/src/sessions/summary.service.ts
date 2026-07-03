@@ -20,13 +20,14 @@ export function formatSeconds(seconds: number): string {
     : `${m}:${String(s).padStart(2, '0')}`
 }
 
+/** 逐字稿轉純文字（無 markdown 標記；前端原樣顯示、Dify 當摘要輸入）。 */
 export function formatTranscriptAsMarkdown(segments: TranscriptSegment[]): string {
   const lines = segments.map((seg) => {
     const ts = formatSeconds(seg.startTime)
     const speaker = seg.speaker || '參與者'
-    return `**[${ts}] ${speaker}**: ${seg.text}`
+    return `[${ts}] ${speaker}: ${seg.text}`
   })
-  return `# 會議逐字稿\n\n${lines.join('\n\n')}`
+  return lines.join('\n\n')
 }
 
 export async function waitForTranscriptStable(

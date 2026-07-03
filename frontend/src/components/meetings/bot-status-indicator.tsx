@@ -36,13 +36,20 @@ const STATUS_CONFIG: Record<
 
 const FALLBACK = { dot: 'bg-muted-foreground/50', label: '未知狀態', color: 'text-muted-foreground', hint: '' }
 
+/** 供列表 row 等外層自行顯示提示時取用（此時請將 showHint 設為 false 避免雙重 tooltip）。 */
+export function statusHint(status: MeetingStatus): string {
+  return (STATUS_CONFIG[status] ?? FALLBACK).hint
+}
+
 interface Props {
   status: MeetingStatus
   /** 提供時，狀態文字變成可點擊的詳情頁入口 */
   href?: string
+  /** false = 不自帶 hover 提示（外層 row 已顯示同樣的提示）。 */
+  showHint?: boolean
 }
 
-export function BotStatusIndicator({ status, href }: Props) {
+export function BotStatusIndicator({ status, href, showHint = true }: Props) {
   const { dot, label, color, hint } = STATUS_CONFIG[status] ?? FALLBACK
   const cls = `inline-flex items-center gap-1.5 text-sm ${color} ${
     href
@@ -63,5 +70,5 @@ export function BotStatusIndicator({ status, href }: Props) {
     </span>
   )
 
-  return hint ? <HoverHint hint={hint}>{labelEl}</HoverHint> : labelEl
+  return hint && showHint ? <HoverHint hint={hint}>{labelEl}</HoverHint> : labelEl
 }
