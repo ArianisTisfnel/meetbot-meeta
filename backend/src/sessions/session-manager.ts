@@ -11,6 +11,7 @@ import {
   PENDING_VOICE_KB,
   PENDING_VOICE_TRANSCRIPT,
   ERROR_VOICE,
+  PROGRESS_VOICE,
 } from './wake-word-detector.js'
 import { recordConversation, clearInterjection, startIcebreaker } from './interjection.js'
 import { generateSummaryAsync } from './summary.service.js'
@@ -59,6 +60,7 @@ export async function startBotSession(params: {
     wakePendingSpeaker: null,
     partialAckAt: 0,
     currentSpeech: null,
+    speechStartedAt: 0,
     bargeEpoch: 0,
     chatLog: [],
     sessionStartedAt: 0,
@@ -74,8 +76,8 @@ export async function startBotSession(params: {
       const s = activeSessions.get(meetingInstanceId)
       if (!s || !s.botSession) return
       if (!seg.text?.trim() || !seg.segmentId) return
-      // 蜜塔說話中有人開口 → 讓路（barge-in）
-      handleBargeIn(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
+      // 蜜塔說話中有人開口 → 讓路（barge-in）；帶 startTime 供晚到事件判斷
+      handleBargeIn(s, { text: seg.text, speaker: seg.speaker ?? '', startTime: seg.startTime }).catch((err) =>
         logger.error({ err, meetingInstanceId }, 'handleBargeIn error'),
       )
       handleTranscriptSegment(s, {
@@ -99,8 +101,8 @@ export async function startBotSession(params: {
       const s = activeSessions.get(meetingInstanceId)
       if (!s || !s.botSession) return
       if (!seg.text?.trim()) return
-      // partial 比 final 早 1.5-3 秒 → 讓路反應最快
-      handleBargeIn(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
+      // partial 比 final 早 1.5-3 秒 → 讓路反應最快；帶 startTime 供晚到事件判斷
+      handleBargeIn(s, { text: seg.text, speaker: seg.speaker ?? '', startTime: seg.startTime }).catch((err) =>
         logger.error({ err, meetingInstanceId }, 'handleBargeIn error'),
       )
       handlePartialSegment(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
@@ -181,7 +183,7 @@ export async function startBotSession(params: {
     // 預熱固定台詞的 TTS（fire-and-forget）：把「我收到了」等句的合成成本
     // 移到 join 後閒置期，首次喚醒的回應延遲省 1–3 秒。
     botSession.adapter
-      .primeSpeech?.(botSession, [PENDING_VOICE_KB, PENDING_VOICE_TRANSCRIPT, ERROR_VOICE])
+      .primeSpeech?.(botSession, [PENDING_VOICE_KB, PENDING_VOICE_TRANSCRIPT, ERROR_VOICE, PROGRESS_VOICE])
       ?.catch((err) => logger.warn({ err, meetingInstanceId }, 'primeSpeech failed (best-effort)'))
 
     // 沉默破冰：進場即開始監看（開場沒人講話也會觸發）

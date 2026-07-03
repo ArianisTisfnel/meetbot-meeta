@@ -63,6 +63,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     wakePendingSpeaker: null,
     partialAckAt: 0,
     currentSpeech: null,
+    speechStartedAt: 0,
     bargeEpoch: 0,
     chatLog: [],
     sessionStartedAt: 0,
@@ -285,6 +286,21 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
       expect.anything(),
       expect.stringContaining('這是被打斷的答案'),
     )
+  })
+
+  it('STT 晚到事件：開口時間早於蜜塔開始說話 → 不算打斷', async () => {
+    const base = Date.now() - 100_000
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      sessionStartedAt: base,       // 會議 base 開始
+      speechStartedAt: base + 60_000, // 蜜塔在第 60 秒開口
+    })
+    // 使用者在第 50 秒開口（蜜塔還沒說話），事件晚到
+    await handleBargeIn(session, { text: '我想知道供應鏈狀況', speaker: 'A', startTime: 50 })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
   })
 
   it('明確停止指令（閉嘴）→ 即使很短也停止，且不轉貼被打斷內容', async () => {

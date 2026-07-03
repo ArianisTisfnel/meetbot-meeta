@@ -21,6 +21,7 @@ vi.mock('../../../../backend/src/sessions/wake-word-detector', () => ({
   PENDING_VOICE_KB: '好的，我收到了，正在查詢資料，請稍候。',
   PENDING_VOICE_TRANSCRIPT: '好的，我收到了，正在查閱會議記錄，請稍候。',
   ERROR_VOICE: '抱歉，查詢時發生錯誤，請稍後再試。',
+  PROGRESS_VOICE: '不好意思讓大家久等了，我還在查，馬上就好。',
 }))
 // interjection 直接 import 真 env（會 process.exit）與 Anthropic client → 整包 mock 掉
 vi.mock('../../../../backend/src/sessions/interjection', () => ({

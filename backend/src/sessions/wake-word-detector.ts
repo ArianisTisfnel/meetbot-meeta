@@ -20,6 +20,9 @@ function requireBotSession(session: MeetingSession): BotSession {
 export const PENDING_VOICE_KB = '好的，我收到了，正在查詢資料，請稍候。'
 export const PENDING_VOICE_TRANSCRIPT = '好的，我收到了，正在查閱會議記錄，請稍候。'
 export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
+export const PROGRESS_VOICE = '不好意思讓大家久等了，我還在查，馬上就好。'
+/** 查詢超過此時間就口頭回報進度（不然使用者會以為沒收到而重問）。 */
+const PROGRESS_NOTICE_MS = 12_000
 
 /** 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。 */
 export async function sendChatBestEffort(session: MeetingSession, text: string): Promise<void> {
@@ -59,12 +62,26 @@ const STOP_COMMAND_REGEX = /^(閉嘴|安靜|住嘴|停|停止|別說了|不用�
 
 export async function handleBargeIn(
   session: MeetingSession,
-  speech: { text: string; speaker: string },
+  speech: { text: string; speaker: string; startTime?: number },
 ): Promise<void> {
   if (!session.isSpeaking) return
   const trimmed = speech.text.trim()
   const isStopCommand = STOP_COMMAND_REGEX.test(trimmed)
   if (!isStopCommand && trimmed.length < BARGE_IN_MIN_CHARS) return
+
+  // STT 事件晚到防護：用「說話者實際開口的時間」判斷，不是事件到達時間。
+  // 開口時間早於蜜塔開始說話 → 對方是在安靜期講的（例如等答案等太久重問一次），
+  // 不是打斷。明確停止指令不受此限。
+  if (!isStopCommand && speech.startTime !== undefined && session.sessionStartedAt > 0 && session.speechStartedAt > 0) {
+    const spokeAt = session.sessionStartedAt + speech.startTime * 1000
+    if (spokeAt < session.speechStartedAt) {
+      logger.info(
+        { meetingInstanceId: session.meetingInstanceId, text: trimmed.slice(0, 30) },
+        'barge-in skipped: utterance started before bot speech (late STT event)',
+      )
+      return
+    }
+  }
 
   // 先翻旗標再做 I/O：重複 partial 不會重入
   session.isSpeaking = false
@@ -242,6 +259,7 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
 
   const estimatedMs = Math.max(3000, (speech.length / 4) * 1000 + 1500)
   session.isSpeaking = true
+  session.speechStartedAt = Date.now()
   session.currentSpeech = speech
   setTimeout(() => {
     session.isSpeaking = false
@@ -398,7 +416,15 @@ async function dispatchQuestion(
     const promptEstimatedMs = speakPending ? Math.max(3000, (pendingVoice.length / 4) * 1000 + 1500) : 0
     const epochAtStart = session.bargeEpoch // 查詢期間被 barge-in 打斷 → 答案改走聊天室
     session.isSpeaking = true
+    session.speechStartedAt = Date.now()
     const lockTimer = setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + 10_000)
+
+    // 查詢太久（Dify 常要 15-20 秒）→ 口頭回報進度，避免使用者以為沒收到而重問
+    const progressTimer = setTimeout(() => {
+      botProvider
+        .speak(requireBotSession(session), PROGRESS_VOICE)
+        .catch(() => sendChatBestEffort(session, PROGRESS_VOICE))
+    }, PROGRESS_NOTICE_MS)
 
     try {
       const botSession = requireBotSession(session)
@@ -408,6 +434,7 @@ async function dispatchQuestion(
       }
 
       const rawAnswer = await resolveAnswer(session, question, 'voice')
+      clearTimeout(progressTimer)
 
       // 開場白／查詢期間有人開口（barge-in）→ 不再出聲，完整答案貼聊天室
       if (session.bargeEpoch !== epochAtStart) {
@@ -444,6 +471,7 @@ async function dispatchQuestion(
       )
     } catch (err) {
       clearTimeout(lockTimer)
+      clearTimeout(progressTimer)
       session.isSpeaking = false
       session.currentSpeech = null
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion voice failed')
