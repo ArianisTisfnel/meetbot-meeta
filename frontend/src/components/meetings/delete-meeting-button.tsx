@@ -2,6 +2,7 @@
 import { useRouter } from 'next/navigation'
 import { useDeleteMeeting } from '@/hooks/use-meeting'
 import { Button } from '@/components/ui/button'
+import { TrashIcon } from '@/components/ui/icons'
 import { toast } from 'sonner'
 
 interface Props {
@@ -37,10 +38,11 @@ export function DeleteMeetingButton({ projectId, meetingId, compact, redirectTo 
       disabled={del.isPending}
       className={
         compact
-          ? 'h-7 px-2 text-xs text-destructive hover:text-destructive'
-          : 'text-destructive hover:text-destructive'
+          ? 'h-7 gap-1 px-2 text-xs text-destructive hover:text-destructive'
+          : 'gap-1.5 text-destructive hover:text-destructive'
       }
     >
+      <TrashIcon className={compact ? 'size-3.5' : 'size-4'} />
       {del.isPending ? '刪除中…' : '刪除'}
     </Button>
   )
