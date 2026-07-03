@@ -5,6 +5,7 @@ import type { BotSession } from '../provider/types.js'
 import * as dify from '../lib/dify.js'
 import { toTraditional } from '../lib/zh.js'
 import { completeText } from '../lib/llm.js'
+import { recordConversation } from './interjection.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
 
 /** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
@@ -26,6 +27,8 @@ export async function sendChatBestEffort(session: MeetingSession, text: string):
     await botProvider.sendChat?.(requireBotSession(session), text)
     // 蜜塔自己的聊天回覆也記進 chatLog（webhook 會過濾 bot 訊息，只能在送出端記錄）
     session.chatLog?.push({ speaker: '蜜塔', text, at: Date.now() })
+    // 也記進插話引擎的對話窗：決策層才知道「這個問題已經有人（蜜塔）回答過了」
+    recordConversation(session, { speaker: '蜜塔', text, source: 'chat', fromBot: true, at: Date.now() })
   } catch (err) {
     logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'sendChat failed (best-effort)')
   }
@@ -66,6 +69,9 @@ export async function handleBargeIn(
   // 先翻旗標再做 I/O：重複 partial 不會重入
   session.isSpeaking = false
   session.bargeEpoch++
+  // 讓路後進入喚醒靜默期：打斷者的話多半是「剛問過的問題」的延續，
+  // 沒有這行插話引擎會把它當新問題再答一次（實測 2026-07-04 發生過重複回答）
+  session.lastWakeAt = Date.now()
   const interrupted = session.currentSpeech
   session.currentSpeech = null
 

@@ -279,6 +279,8 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
     expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
     expect(session.isSpeaking).toBe(false)
     expect(session.bargeEpoch).toBe(1)
+    // 讓路後進入喚醒靜默期：抑制插話引擎把打斷者的話當新問題重複回答
+    expect(session.lastWakeAt).toBeGreaterThan(0)
     expect(mockBotProvider.sendChat).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining('這是被打斷的答案'),
