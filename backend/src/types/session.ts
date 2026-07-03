@@ -50,6 +50,10 @@ export interface MeetingSession {
    * 0 = 無待銜接的確認。
    */
   partialAckAt: number
+  /** 正在用語音唸的內容（barge-in 被打斷時改貼聊天室用）。null = 沒在唸。 */
+  currentSpeech: string | null
+  /** barge-in 世代計數：每次被打斷 +1。語音派發流程據此偵測「查詢期間被打斷 → 答案改走聊天室」。 */
+  bargeEpoch: number
   processedSegmentIds: Set<string>
   /** 由 provider 抽象層建立的 bot session（admitted 後才有值）。取代舊的 wsConnection。 */
   botSession: BotSession | null

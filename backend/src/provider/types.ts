@@ -137,6 +137,9 @@ export interface MeetingBotProvider {
    */
   primeSpeech?(session: BotSession, texts: string[]): Promise<void>
 
+  /** 立即停止正在播放的語音（barge-in 讓路用）。Provider 不支援時可不實作。 */
+  stopSpeaking?(session: BotSession): Promise<void>
+
   /** Bot 離開會議、釋放資源。 */
   leave(session: BotSession): Promise<void>
 }

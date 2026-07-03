@@ -7,6 +7,7 @@ import {
   handleTranscriptSegment,
   handlePartialSegment,
   handleChatMessage,
+  handleBargeIn,
   PENDING_VOICE_KB,
   PENDING_VOICE_TRANSCRIPT,
   ERROR_VOICE,
@@ -57,6 +58,8 @@ export async function startBotSession(params: {
     wakePendingUntil: 0,
     wakePendingSpeaker: null,
     partialAckAt: 0,
+    currentSpeech: null,
+    bargeEpoch: 0,
     processedSegmentIds: params.initialProcessedIds ?? new Set(),
     botSession: null,
     difyConversationId: null,
@@ -69,6 +72,10 @@ export async function startBotSession(params: {
       const s = activeSessions.get(meetingInstanceId)
       if (!s || !s.botSession) return
       if (!seg.text?.trim() || !seg.segmentId) return
+      // 蜜塔說話中有人開口 → 讓路（barge-in）
+      handleBargeIn(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
+        logger.error({ err, meetingInstanceId }, 'handleBargeIn error'),
+      )
       handleTranscriptSegment(s, {
         segment_id: seg.segmentId,
         text: seg.text,
@@ -90,6 +97,10 @@ export async function startBotSession(params: {
       const s = activeSessions.get(meetingInstanceId)
       if (!s || !s.botSession) return
       if (!seg.text?.trim()) return
+      // partial 比 final 早 1.5-3 秒 → 讓路反應最快
+      handleBargeIn(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
+        logger.error({ err, meetingInstanceId }, 'handleBargeIn error'),
+      )
       handlePartialSegment(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
         logger.error({ err, meetingInstanceId }, 'handlePartialSegment error'),
       )

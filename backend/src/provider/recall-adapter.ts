@@ -437,6 +437,12 @@ export class RecallAdapter implements MeetingBotProvider {
     return mp3
   }
 
+  async stopSpeaking(session: BotSession): Promise<void> {
+    const state = getState(session)
+    // 停止正在播放的 output audio（barge-in 讓路）。
+    await recallFetch<void>('DELETE', `/api/v1/bot/${state.botId}/output_audio/`)
+  }
+
   async sendChat(session: BotSession, text: string): Promise<void> {
     const state = getState(session)
     // best-effort：部分平台不支援，失敗時由呼叫端容錯。

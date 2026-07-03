@@ -81,6 +81,10 @@ export class FailoverProvider implements MeetingBotProvider {
     await session.adapter.primeSpeech?.(session, texts)
   }
 
+  async stopSpeaking(session: BotSession): Promise<void> {
+    await session.adapter.stopSpeaking?.(session)
+  }
+
   leave(session: BotSession): Promise<void> {
     return session.adapter.leave(session)
   }

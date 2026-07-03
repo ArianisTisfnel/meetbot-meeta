@@ -4,6 +4,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest'
 const mockBotProvider = vi.hoisted(() => ({
   speak: vi.fn().mockResolvedValue(undefined),
   sendChat: vi.fn().mockResolvedValue(undefined),
+  stopSpeaking: vi.fn().mockResolvedValue(undefined),
   getTranscript: vi.fn().mockResolvedValue([]),
 }))
 
@@ -33,6 +34,7 @@ import {
   handleTranscriptSegment,
   handlePartialSegment,
   handleChatMessage,
+  handleBargeIn,
 } from '../../../../backend/src/sessions/wake-word-detector'
 import type { MeetingSession } from '../../../../backend/src/types/session'
 import type { BotSession } from '../../../../backend/src/provider/types'
@@ -59,6 +61,8 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     wakePendingUntil: 0,
     wakePendingSpeaker: null,
     partialAckAt: 0,
+    currentSpeech: null,
+    bargeEpoch: 0,
     processedSegmentIds: new Set<string>(),
     botSession: fakeBotSession,
     difyConversationId: null,
@@ -242,6 +246,50 @@ describe('handlePartialSegment — partial 快速喚醒', () => {
     const session = makeSession({ isSpeaking: true })
     await handlePartialSegment(session, { text: '蜜塔請問', speaker: 'A' })
     expect(mockBotProvider.speak).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleBargeIn — 說話中被打斷讓路', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('蜜塔說話中有人講話 → 停止語音、被打斷的回答貼聊天室、isSpeaking 解除', async () => {
+    const session = makeSession({ isSpeaking: true, currentSpeech: '這是被打斷的答案' })
+    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.isSpeaking).toBe(false)
+    expect(session.bargeEpoch).toBe(1)
+    expect(mockBotProvider.sendChat).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('這是被打斷的答案'),
+    )
+  })
+
+  it('短附和（嗯嗯）→ 不觸發讓路', async () => {
+    const session = makeSession({ isSpeaking: true, currentSpeech: '答案' })
+    await handleBargeIn(session, { text: '嗯嗯', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
+  })
+
+  it('蜜塔沒在說話 → 不動作', async () => {
+    const session = makeSession({ isSpeaking: false })
+    await handleBargeIn(session, { text: '這是一般發言內容', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.bargeEpoch).toBe(0)
+  })
+
+  it('重複打斷訊號 → 只讓路一次（isSpeaking 已翻false）', async () => {
+    const session = makeSession({ isSpeaking: true, currentSpeech: '答案' })
+    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'A' })
+    await handleBargeIn(session, { text: '等一下我有意見喔', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.bargeEpoch).toBe(1)
   })
 })
 

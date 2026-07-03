@@ -44,6 +44,44 @@ const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 
 const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
 
+// ── Barge-in 讓路（參考 joinly 的互動模式）────────────────────────────────────
+//
+// 蜜塔說話到一半有人開口 → 立刻停止語音讓路；被打斷的回答改貼聊天室（內容不遺失）。
+// 由 session-manager 的 onSegment / onPartialSegment 呼叫（partial 先到 → 讓路最快）。
+
+/** 短於此長度的內容視為附和（嗯、好的），不觸發讓路。 */
+const BARGE_IN_MIN_CHARS = 4
+
+export async function handleBargeIn(
+  session: MeetingSession,
+  speech: { text: string; speaker: string },
+): Promise<void> {
+  if (!session.isSpeaking) return
+  if (speech.text.trim().length < BARGE_IN_MIN_CHARS) return
+
+  // 先翻旗標再做 I/O：重複 partial 不會重入
+  session.isSpeaking = false
+  session.bargeEpoch++
+  const interrupted = session.currentSpeech
+  session.currentSpeech = null
+
+  logger.info(
+    { meetingInstanceId: session.meetingInstanceId, speaker: speech.speaker, text: speech.text.slice(0, 40) },
+    'barge-in: human speech while bot speaking, yielding',
+  )
+
+  try {
+    await botProvider.stopSpeaking?.(requireBotSession(session))
+  } catch (err) {
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'barge-in: stopSpeaking failed (best-effort)')
+  }
+
+  // 被打斷的回答改走聊天室，內容不遺失
+  if (interrupted) {
+    await sendChatBestEffort(session, `（先讓大家討論～完整回覆放這裡）${interrupted}`)
+  }
+}
+
 // ── 語音輸入（partial：快速喚醒確認）──────────────────────────────────────────
 //
 // partial 片段在講到一半就會到（比定稿早 1.5–3 秒），但內容不穩定，
@@ -246,14 +284,31 @@ async function dispatchQuestion(
     // partial 快速喚醒已先說過開場白 → 跳過，直接查詢
     const speakPending = !opts?.skipPendingPrompt
     const promptEstimatedMs = speakPending ? Math.max(3000, (pendingVoice.length / 4) * 1000 + 1500) : 0
+    const epochAtStart = session.bargeEpoch // 查詢期間被 barge-in 打斷 → 答案改走聊天室
     session.isSpeaking = true
     const lockTimer = setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + 10_000)
 
     try {
       const botSession = requireBotSession(session)
-      if (speakPending) await botProvider.speak(botSession, pendingVoice)
+      if (speakPending) {
+        session.currentSpeech = pendingVoice
+        await botProvider.speak(botSession, pendingVoice)
+      }
 
       const rawAnswer = await resolveAnswer(session, question, 'voice')
+
+      // 開場白／查詢期間有人開口（barge-in）→ 不再出聲，完整答案貼聊天室
+      if (session.bargeEpoch !== epochAtStart) {
+        clearTimeout(lockTimer)
+        session.isSpeaking = false
+        session.currentSpeech = null
+        await sendChatBestEffort(session, rawAnswer)
+        logger.info(
+          { meetingInstanceId: session.meetingInstanceId },
+          'dispatchQuestion voice: interrupted during query, answer delivered via chat',
+        )
+        return
+      }
 
       let answer = rawAnswer
       if (rawAnswer.length > 100) {
@@ -264,7 +319,11 @@ async function dispatchQuestion(
 
       clearTimeout(lockTimer)
       const answerEstimatedMs = Math.max(3000, (answer.length / 4) * 1000 + 1500)
-      setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + answerEstimatedMs)
+      session.currentSpeech = answer
+      setTimeout(() => {
+        session.isSpeaking = false
+        session.currentSpeech = null
+      }, promptEstimatedMs + answerEstimatedMs)
 
       await botProvider.speak(botSession, answer)
       logger.info(
@@ -274,6 +333,7 @@ async function dispatchQuestion(
     } catch (err) {
       clearTimeout(lockTimer)
       session.isSpeaking = false
+      session.currentSpeech = null
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion voice failed')
       // 靜默失敗會讓使用者以為蜜塔沒反應 → 盡力口頭回報（失敗則退回聊天室）。
       try {

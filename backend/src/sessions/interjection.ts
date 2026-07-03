@@ -194,9 +194,18 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
       { meetingInstanceId, question: decision.question.slice(0, 60) },
       'interjection: decision = interject, resolving answer',
     )
-    s.lastInterjectionAt = Date.now()
 
+    const lastAtBeforeAnswer = s.window[s.window.length - 1]?.at
     const answer = await resolveAnswer(session, decision.question, 'chat')
+
+    // 送出前最後一刻：查詢期間有人開口 → 讓路，放棄本次插話（不消耗冷卻）
+    const nowLast = s.window[s.window.length - 1]
+    if (nowLast && nowLast.at !== lastAtBeforeAnswer && !nowLast.fromBot) {
+      logger.info({ meetingInstanceId }, 'interjection: someone spoke during answer resolution, yielding')
+      return
+    }
+
+    s.lastInterjectionAt = Date.now()
     await sendChatBestEffort(session, `💡 ${answer}`)
 
     s.window.push({ speaker: '蜜塔', text: answer, source: 'chat', fromBot: true, at: Date.now() })
