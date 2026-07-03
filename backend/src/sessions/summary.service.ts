@@ -20,6 +20,37 @@ export function formatSeconds(seconds: number): string {
     : `${m}:${String(s).padStart(2, '0')}`
 }
 
+export interface ChatLogEntry {
+  speaker: string
+  text: string
+  /** epoch ms */
+  at: number
+}
+
+/**
+ * 聊天室訊息併入語音 segments：epoch ms 以 sessionStartedAt 為錨點換算成
+ * 會議相對秒數，speaker 加「（聊天室）」標註，與語音依時間排序。
+ * 錨點缺失（0）時聊天訊息一律排 0 秒（仍保留內容，只是順序不精確）。
+ */
+export function mergeChatIntoSegments(
+  segments: TranscriptSegment[],
+  chatLog: ChatLogEntry[],
+  sessionStartedAt: number,
+): TranscriptSegment[] {
+  const chatSegments: TranscriptSegment[] = chatLog.map((m) => {
+    const startTime = sessionStartedAt > 0 ? Math.max(0, (m.at - sessionStartedAt) / 1000) : 0
+    return {
+      segmentId: null,
+      text: m.text,
+      speaker: `${m.speaker}（聊天室）`,
+      startTime,
+      endTime: startTime,
+      language: null,
+    }
+  })
+  return [...segments, ...chatSegments].sort((a, b) => a.startTime - b.startTime)
+}
+
 /** 逐字稿轉純文字（無 markdown 標記；前端原樣顯示、Dify 當摘要輸入）。 */
 export function formatTranscriptAsMarkdown(segments: TranscriptSegment[]): string {
   const lines = segments.map((seg) => {
@@ -69,6 +100,10 @@ export async function generateSummaryAsync(params: {
   difyDatasetId: string | null
   /** 會議結束時仍在記憶體的 bot session；有則用 provider 抽象層取逐字稿（provider-agnostic）。 */
   session?: BotSession
+  /** 聊天室訊息（含蜜塔回覆），併入逐字稿。 */
+  chatLog?: ChatLogEntry[]
+  /** 聊天訊息時間換算錨點（bot admitted 的 epoch ms）。 */
+  sessionStartedAt?: number
 }): Promise<void> {
   try {
     // 正常結束路徑：用 provider 抽象層取逐字稿（涵蓋 Vexa / Recall）。
@@ -82,7 +117,10 @@ export async function generateSummaryAsync(params: {
 
     const segments = await waitForTranscriptStable(fetchSegments)
 
-    if (!segments.length) {
+    // 聊天室訊息（含蜜塔的插話/回覆）按時間併入——純打字的會議也因此有逐字稿與摘要
+    const merged = mergeChatIntoSegments(segments, params.chatLog ?? [], params.sessionStartedAt ?? 0)
+
+    if (!merged.length) {
       logger.info({ meetingInstanceId: params.meetingInstanceId }, 'no transcript, skipping summary')
       await prisma.meetingInstance.update({
         where: { id: params.meetingInstanceId },
@@ -91,7 +129,7 @@ export async function generateSummaryAsync(params: {
       return
     }
 
-    const transcriptMd = formatTranscriptAsMarkdown(segments)
+    const transcriptMd = formatTranscriptAsMarkdown(merged)
 
     const storagePath = `transcripts/${params.meetingInstanceId}/transcript.md`
     try {

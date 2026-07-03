@@ -60,6 +60,8 @@ export async function startBotSession(params: {
     partialAckAt: 0,
     currentSpeech: null,
     bargeEpoch: 0,
+    chatLog: [],
+    sessionStartedAt: 0,
     processedSegmentIds: params.initialProcessedIds ?? new Set(),
     botSession: null,
     difyConversationId: null,
@@ -121,6 +123,10 @@ export async function startBotSession(params: {
         fromBot: msg.isFromBot,
         at: msg.timestamp || Date.now(),
       })
+      // 聊天訊息記進 chatLog，會後併入逐字稿（蜜塔自己的回覆在 sendChatBestEffort 記錄）
+      if (!msg.isFromBot) {
+        s.chatLog.push({ speaker: msg.sender, text: msg.text, at: msg.timestamp || Date.now() })
+      }
     },
     onStatus: (ev) => {
       // admitted 由 join resolve 處理；此處只處理會議結束（非 mid-meeting failover）。
@@ -146,6 +152,7 @@ export async function startBotSession(params: {
       return
     }
     still.botSession = botSession
+    still.sessionStartedAt = Date.now()
 
     // Vexa 用數字 meeting id；Recall 用字串 bot id（不寫進 Vexa 專用欄位）。
     const vexaMeetingId =
@@ -236,6 +243,8 @@ export async function handleSessionClose(
       creatorVexaToken: session.creatorVexaToken,
       difyDatasetId: session.difyDatasetId,
       session: session.botSession ?? undefined,
+      chatLog: session.chatLog,
+      sessionStartedAt: session.sessionStartedAt,
     })
   }
 

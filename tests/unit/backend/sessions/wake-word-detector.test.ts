@@ -63,6 +63,8 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     partialAckAt: 0,
     currentSpeech: null,
     bargeEpoch: 0,
+    chatLog: [],
+    sessionStartedAt: 0,
     processedSegmentIds: new Set<string>(),
     botSession: fakeBotSession,
     difyConversationId: null,

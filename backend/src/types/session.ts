@@ -52,6 +52,10 @@ export interface MeetingSession {
   partialAckAt: number
   /** 正在用語音唸的內容（barge-in 被打斷時改貼聊天室用）。null = 沒在唸。 */
   currentSpeech: string | null
+  /** 聊天室訊息紀錄（含蜜塔自己的回覆），會後併入逐字稿。at = epoch ms。 */
+  chatLog: Array<{ speaker: string; text: string; at: number }>
+  /** bot admitted 時間（epoch ms）：聊天訊息換算會議相對秒數的錨點。0 = 未 admitted。 */
+  sessionStartedAt: number
   /** barge-in 世代計數：每次被打斷 +1。語音派發流程據此偵測「查詢期間被打斷 → 答案改走聊天室」。 */
   bargeEpoch: number
   processedSegmentIds: Set<string>

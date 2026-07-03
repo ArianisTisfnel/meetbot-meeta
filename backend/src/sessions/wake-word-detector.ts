@@ -24,6 +24,8 @@ export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
 export async function sendChatBestEffort(session: MeetingSession, text: string): Promise<void> {
   try {
     await botProvider.sendChat?.(requireBotSession(session), text)
+    // 蜜塔自己的聊天回覆也記進 chatLog（webhook 會過濾 bot 訊息，只能在送出端記錄）
+    session.chatLog?.push({ speaker: '蜜塔', text, at: Date.now() })
   } catch (err) {
     logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'sendChat failed (best-effort)')
   }

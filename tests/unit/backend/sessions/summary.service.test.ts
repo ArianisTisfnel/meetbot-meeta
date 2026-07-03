@@ -106,6 +106,31 @@ describe('formatTranscriptAsMarkdown', () => {
   })
 })
 
+describe('mergeChatIntoSegments', () => {
+  it('聊天訊息換算相對秒數、標註（聊天室）、與語音依時間排序', async () => {
+    const { mergeChatIntoSegments } = await import('../../../../backend/src/sessions/summary.service')
+    const startedAt = 1_000_000
+    const segs = [makeSeg(10, '語音第一句', 'Alice'), makeSeg(40, '語音第二句', 'Bob')]
+    const chat = [
+      { speaker: 'Wendy', text: '打字的問題', at: startedAt + 20_000 },
+      { speaker: '蜜塔', text: '💡 打字的回答', at: startedAt + 25_000 },
+    ]
+
+    const merged = mergeChatIntoSegments(segs, chat, startedAt)
+
+    expect(merged.map((s) => s.text)).toEqual(['語音第一句', '打字的問題', '💡 打字的回答', '語音第二句'])
+    expect(merged[1].speaker).toBe('Wendy（聊天室）')
+    expect(merged[1].startTime).toBe(20)
+  })
+
+  it('無錨點（sessionStartedAt=0）→ 聊天訊息仍保留（排 0 秒）', async () => {
+    const { mergeChatIntoSegments } = await import('../../../../backend/src/sessions/summary.service')
+    const merged = mergeChatIntoSegments([], [{ speaker: 'W', text: 'hi', at: 123 }], 0)
+    expect(merged).toHaveLength(1)
+    expect(merged[0].startTime).toBe(0)
+  })
+})
+
 // ── Case 7 & 8: waitForTranscriptStable ──────────────────────────────────────
 
 describe('waitForTranscriptStable', () => {
