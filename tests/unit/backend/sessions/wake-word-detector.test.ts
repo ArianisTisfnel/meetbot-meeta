@@ -29,7 +29,11 @@ vi.mock('@anthropic-ai/sdk', () => ({
   })),
 }))
 
-import { handleTranscriptSegment, handleChatMessage } from '../../../../backend/src/sessions/wake-word-detector'
+import {
+  handleTranscriptSegment,
+  handlePartialSegment,
+  handleChatMessage,
+} from '../../../../backend/src/sessions/wake-word-detector'
 import type { MeetingSession } from '../../../../backend/src/types/session'
 import type { BotSession } from '../../../../backend/src/provider/types'
 
@@ -52,6 +56,9 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     creatorVexaToken: 'tok-123',
     isSpeaking: false,
     lastWakeAt: 0,
+    wakePendingUntil: 0,
+    wakePendingSpeaker: null,
+    partialAckAt: 0,
     processedSegmentIds: new Set<string>(),
     botSession: fakeBotSession,
     difyConversationId: null,
@@ -190,6 +197,50 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
       start_time: 1,
       end_time: 2,
     })
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+  })
+})
+
+describe('handlePartialSegment — partial 快速喚醒', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('partial 含喚醒詞 → 立即說開場白；同句重複 partial 在抑制期內只 ack 一次', async () => {
+    const session = makeSession()
+    await handlePartialSegment(session, { text: '蜜塔可以', speaker: 'A' })
+    expect(mockBotProvider.speak).toHaveBeenCalledTimes(1)
+
+    await handlePartialSegment(session, { text: '蜜塔可以告訴我', speaker: 'A' })
+    expect(mockBotProvider.speak).toHaveBeenCalledTimes(1)
+  })
+
+  it('partial 無喚醒詞 → 不動作', async () => {
+    const session = makeSession()
+    await handlePartialSegment(session, { text: '今天天氣不錯', speaker: 'A' })
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+  })
+
+  it('partial ack 後 final 派發 → 跳過開場白（ack + 答案共 2 次 speak）', async () => {
+    const session = makeSession()
+    await handlePartialSegment(session, { text: '蜜塔請問', speaker: 'A' })
+    expect(mockBotProvider.speak).toHaveBeenCalledTimes(1) // 開場白（提早）
+
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-final',
+      text: '蜜塔請問今天的議程是什麼',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 3,
+    })
+    // final 跳過開場白、只說答案 → 總共 2 次（未跳過會是 3 次）
+    expect(mockBotProvider.speak).toHaveBeenCalledTimes(2)
+    expect(session.partialAckAt).toBe(0) // 一次性消耗
+  })
+
+  it('bot 正在說話（isSpeaking）→ 不 ack', async () => {
+    const session = makeSession({ isSpeaking: true })
+    await handlePartialSegment(session, { text: '蜜塔請問', speaker: 'A' })
     expect(mockBotProvider.speak).not.toHaveBeenCalled()
   })
 })

@@ -117,6 +117,16 @@ export function dispatchRecallEvent(event: any): void {
     return
   }
 
+  if (type === 'transcript.partial_data') {
+    // 未定稿片段：只轉給 onPartialSegment（喚醒快速偵測），不累積進 segments。
+    // 同一句會重複推送且內容變動，量大 → 不逐則記 info log。
+    const utter = data?.data
+    if (isBotParticipant(reg, utter?.participant)) return
+    const seg = normalizeRecallRealtimeUtterance(utter, data?.transcript?.id)
+    if (seg) reg.handlers.onPartialSegment?.(seg)
+    return
+  }
+
   if (type === 'participant_events.chat_message') {
     const d = data?.data
     const participant = d?.participant
@@ -215,7 +225,9 @@ export class RecallAdapter implements MeetingBotProvider {
             {
               type: 'webhook',
               url: `${env.RECALL_WEBHOOK_URL}/webhooks/recall?token=${env.RECALL_WEBHOOK_TOKEN}`,
-              events: ['transcript.data', 'participant_events.chat_message'],
+              // partial_data：未定稿片段，講到一半就推送 → 喚醒詞快速偵測用
+              //（定稿的 data 要等句子講完＋endpointing，慢 1.5–3 秒）。
+              events: ['transcript.data', 'transcript.partial_data', 'participant_events.chat_message'],
             },
           ],
         }

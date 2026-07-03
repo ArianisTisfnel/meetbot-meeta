@@ -59,6 +59,12 @@ export interface BotOptions {
 /** Live stream 推送事件的回呼。全部 optional，呼叫端只訂閱需要的。 */
 export interface LiveHandlers {
   onSegment?: (seg: TranscriptSegment) => void
+  /**
+   * 未定稿的即時片段（Recall transcript.partial_data；utterance 講到一半就會到，
+   * 同一句會重複推送、內容持續變動）。**只可用於喚醒詞快速偵測**，
+   * 不可當逐字稿內容累積或取問題文本（不穩定）。
+   */
+  onPartialSegment?: (seg: TranscriptSegment) => void
   onStatus?: (ev: BotStatusEvent) => void
   onChat?: (msg: ChatMessageEvent) => void
 }

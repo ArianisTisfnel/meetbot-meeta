@@ -34,10 +34,49 @@ const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達]|小幫手|[Mm]e{1,2}
 const DEBOUNCE_MS = 2000
 /** 喚醒待命窗長度：只叫名字沒問題後，等後續段落接問題的時間。 */
 const WAKE_PENDING_MS = 8000
+/**
+ * partial 快速喚醒的銜接窗：partial ack 後多久內到達的 final 段落
+ * 視為同一次喚醒（跳過開場白）。同時也是 partial 重複 ack 的抑制期。
+ */
+const PARTIAL_ACK_WINDOW_MS = 12_000
 const MAX_PROCESSED_SEGMENT_IDS = 5000
 const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 
 const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
+
+// ── 語音輸入（partial：快速喚醒確認）──────────────────────────────────────────
+//
+// partial 片段在講到一半就會到（比定稿早 1.5–3 秒），但內容不穩定，
+// 只拿來做一件事：偵測到喚醒詞就先說開場確認（TTS 已預熱 → 體感觸發 ~1 秒）。
+// 問題內容一律等定稿段落（handleTranscriptSegment），據 partialAckAt 跳過開場白。
+
+export async function handlePartialSegment(
+  session: MeetingSession,
+  partial: { text: string; speaker: string },
+): Promise<void> {
+  if (!partial.text || !WAKE_WORD_REGEX.test(partial.text)) return
+
+  const now = Date.now()
+  if (session.isSpeaking) return
+  // 剛派發過問題（final 已處理）→ 不重複 ack
+  if (now - session.lastWakeAt < DEBOUNCE_MS) return
+  // 同一句的 partial 會重複推送 → 抑制期內只 ack 一次
+  if (now - session.partialAckAt < PARTIAL_ACK_WINDOW_MS) return
+  session.partialAckAt = now
+
+  const pendingVoice = session.difyDatasetId ? PENDING_VOICE_KB : PENDING_VOICE_TRANSCRIPT
+  logger.info(
+    { meetingInstanceId: session.meetingInstanceId, speaker: partial.speaker, text: partial.text.slice(0, 40) },
+    'partial wake detected, speaking pending prompt early',
+  )
+  try {
+    await botProvider.speak(requireBotSession(session), pendingVoice)
+  } catch (err) {
+    // ack 失敗不致命：清掉時間戳，讓 final 派發時照常說開場白
+    session.partialAckAt = 0
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'partial wake ack speak failed')
+  }
+}
 
 // ── 語音輸入 ───────────────────────────────────────────────────────────────────
 
@@ -72,7 +111,7 @@ export async function handleTranscriptSegment(
         { meetingInstanceId: session.meetingInstanceId, question: question.slice(0, 60), speaker: segment.speaker },
         'wake pending window: follow-up segment taken as question',
       )
-      await dispatchQuestion(session, question, 'voice')
+      await dispatchQuestion(session, question, 'voice', { skipPendingPrompt: consumePartialAck(session, now) })
     }
     return
   }
@@ -103,7 +142,14 @@ export async function handleTranscriptSegment(
     { meetingInstanceId: session.meetingInstanceId, wakeWord: match[0], question: question.slice(0, 60), speaker: segment.speaker },
     'wake word matched (voice), dispatching question',
   )
-  await dispatchQuestion(session, question, 'voice')
+  await dispatchQuestion(session, question, 'voice', { skipPendingPrompt: consumePartialAck(session, now) })
+}
+
+/** partial 快速喚醒已說過開場白？（一次性消耗，窗內的 final 派發跳過開場白） */
+function consumePartialAck(session: MeetingSession, now: number): boolean {
+  const acked = session.partialAckAt > 0 && now - session.partialAckAt < PARTIAL_ACK_WINDOW_MS
+  session.partialAckAt = 0
+  return acked
 }
 
 // ── 聊天室輸入 ─────────────────────────────────────────────────────────────────
@@ -188,6 +234,7 @@ async function dispatchQuestion(
   session: MeetingSession,
   question: string,
   source: 'voice' | 'chat',
+  opts?: { skipPendingPrompt?: boolean },
 ): Promise<void> {
   const pendingVoice = session.difyDatasetId ? PENDING_VOICE_KB : PENDING_VOICE_TRANSCRIPT
   const pendingChat = session.difyDatasetId
@@ -196,13 +243,15 @@ async function dispatchQuestion(
 
   if (source === 'voice') {
     if (session.isSpeaking) return
-    const promptEstimatedMs = Math.max(3000, (pendingVoice.length / 4) * 1000 + 1500)
+    // partial 快速喚醒已先說過開場白 → 跳過，直接查詢
+    const speakPending = !opts?.skipPendingPrompt
+    const promptEstimatedMs = speakPending ? Math.max(3000, (pendingVoice.length / 4) * 1000 + 1500) : 0
     session.isSpeaking = true
     const lockTimer = setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + 10_000)
 
     try {
       const botSession = requireBotSession(session)
-      await botProvider.speak(botSession, pendingVoice)
+      if (speakPending) await botProvider.speak(botSession, pendingVoice)
 
       const rawAnswer = await resolveAnswer(session, question, 'voice')
 

@@ -5,6 +5,7 @@ import type { BotSession, LiveHandlers } from '../provider/types.js'
 import { activeSessions } from './session-store.js'
 import {
   handleTranscriptSegment,
+  handlePartialSegment,
   handleChatMessage,
   PENDING_VOICE_KB,
   PENDING_VOICE_TRANSCRIPT,
@@ -55,6 +56,7 @@ export async function startBotSession(params: {
     lastWakeAt: 0,
     wakePendingUntil: 0,
     wakePendingSpeaker: null,
+    partialAckAt: 0,
     processedSegmentIds: params.initialProcessedIds ?? new Set(),
     botSession: null,
     difyConversationId: null,
@@ -83,6 +85,14 @@ export async function startBotSession(params: {
         fromBot: false, // bot 自己的語音已在 provider 層過濾
         at: Date.now(),
       })
+    },
+    onPartialSegment: (seg) => {
+      const s = activeSessions.get(meetingInstanceId)
+      if (!s || !s.botSession) return
+      if (!seg.text?.trim()) return
+      handlePartialSegment(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
+        logger.error({ err, meetingInstanceId }, 'handlePartialSegment error'),
+      )
     },
     onChat: (msg) => {
       const s = activeSessions.get(meetingInstanceId)

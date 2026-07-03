@@ -44,6 +44,12 @@ export interface MeetingSession {
   wakePendingUntil: number
   /** 開喚醒待命窗的說話者（null = 未知，任何人皆可接問題）。 */
   wakePendingSpeaker: string | null
+  /**
+   * partial 快速喚醒的確認時間戳（epoch ms）：partial 片段偵測到喚醒詞時
+   * 先說開場確認（「我收到了」），final 段落到達派發問題時據此跳過開場白。
+   * 0 = 無待銜接的確認。
+   */
+  partialAckAt: number
   processedSegmentIds: Set<string>
   /** 由 provider 抽象層建立的 bot session（admitted 後才有值）。取代舊的 wsConnection。 */
   botSession: BotSession | null

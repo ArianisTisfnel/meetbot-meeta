@@ -15,6 +15,7 @@ vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
 vi.mock('../../../../backend/src/sessions/wake-word-detector', () => ({
   handleTranscriptSegment: vi.fn(),
+  handlePartialSegment: vi.fn(),
   handleChatMessage: vi.fn(),
   PENDING_VOICE_KB: '好的，我收到了，正在查詢資料，請稍候。',
   PENDING_VOICE_TRANSCRIPT: '好的，我收到了，正在查閱會議記錄，請稍候。',
