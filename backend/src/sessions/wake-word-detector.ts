@@ -4,6 +4,7 @@ import { logger } from '../middleware/logger.js'
 import { botProvider } from '../provider/index.js'
 import type { BotSession } from '../provider/types.js'
 import * as dify from '../lib/dify.js'
+import { toTraditional } from '../lib/zh.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
 
 /** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
@@ -14,8 +15,13 @@ function requireBotSession(session: MeetingSession): BotSession {
   return session.botSession
 }
 
+// 固定台詞（匯出供 session-manager 在 join 後 primeSpeech 預熱 TTS）。
+export const PENDING_VOICE_KB = '好的，我收到了，正在查詢資料，請稍候。'
+export const PENDING_VOICE_TRANSCRIPT = '好的，我收到了，正在查閱會議記錄，請稍候。'
+export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
+
 /** 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。 */
-async function sendChatBestEffort(session: MeetingSession, text: string): Promise<void> {
+export async function sendChatBestEffort(session: MeetingSession, text: string): Promise<void> {
   try {
     await botProvider.sendChat?.(requireBotSession(session), text)
   } catch (err) {
@@ -23,8 +29,11 @@ async function sendChatBestEffort(session: MeetingSession, text: string): Promis
   }
 }
 
-const WAKE_WORD_REGEX = /[蜜密祕秘迷][塔搭]|小幫手|[Mm]eeta|[Mm]ita/
+// 字元集涵蓋 STT 常見誤轉：實測 recallai_streaming 會把「蜜塔」轉成「米塔」等。
+const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
 const DEBOUNCE_MS = 2000
+/** 喚醒待命窗長度：只叫名字沒問題後，等後續段落接問題的時間。 */
+const WAKE_PENDING_MS = 8000
 const MAX_PROCESSED_SEGMENT_IDS = 5000
 const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 
@@ -44,19 +53,56 @@ export async function handleTranscriptSegment(
   }
   session.processedSegmentIds.add(segment.segment_id)
 
-  const match = WAKE_WORD_REGEX.exec(segment.text)
-  if (!match) return
-
   const now = Date.now()
+  const match = WAKE_WORD_REGEX.exec(segment.text)
+
+  if (!match) {
+    // 喚醒待命窗：前一段只叫了名字，這段（同說話者）直接視為問題。
+    if (
+      session.wakePendingUntil > 0 &&
+      now <= session.wakePendingUntil &&
+      (!session.wakePendingSpeaker || session.wakePendingSpeaker === segment.speaker)
+    ) {
+      const question = segment.text.trim()
+      if (!question) return
+      session.wakePendingUntil = 0
+      session.wakePendingSpeaker = null
+      session.lastWakeAt = now
+      logger.info(
+        { meetingInstanceId: session.meetingInstanceId, question: question.slice(0, 60), speaker: segment.speaker },
+        'wake pending window: follow-up segment taken as question',
+      )
+      await dispatchQuestion(session, question, 'voice')
+    }
+    return
+  }
+
   if (now - session.lastWakeAt < DEBOUNCE_MS) return
-  session.lastWakeAt = now
 
   const question = segment.text
     .slice(match.index + match[0].length)
     .replace(/^[\s，。！？、…]+/, '')
     .trim()
-  if (!question) return
 
+  // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
+  //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
+  if (!question) {
+    session.wakePendingUntil = now + WAKE_PENDING_MS
+    session.wakePendingSpeaker = segment.speaker || null
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, wakeWord: match[0], speaker: segment.speaker },
+      'wake word matched without question, opening pending window',
+    )
+    return
+  }
+
+  session.lastWakeAt = now
+  session.wakePendingUntil = 0
+  session.wakePendingSpeaker = null
+  logger.info(
+    { meetingInstanceId: session.meetingInstanceId, wakeWord: match[0], question: question.slice(0, 60), speaker: segment.speaker },
+    'wake word matched (voice), dispatching question',
+  )
   await dispatchQuestion(session, question, 'voice')
 }
 
@@ -73,7 +119,6 @@ export async function handleChatMessage(
 
   const now = Date.now()
   if (now - session.lastWakeAt < DEBOUNCE_MS) return
-  session.lastWakeAt = now
 
   const question = chatMsg.text
     .slice(match.index + match[0].length)
@@ -81,12 +126,14 @@ export async function handleChatMessage(
     .trim()
   if (!question) return
 
+  // debounce 在確認有問題內容後才消耗，避免空喚醒吃掉緊接著的真問題。
+  session.lastWakeAt = now
   await dispatchQuestion(session, question, 'chat')
 }
 
 // ── 問答路由 ───────────────────────────────────────────────────────────────────
 
-async function resolveAnswer(
+export async function resolveAnswer(
   session: MeetingSession,
   question: string,
   mode: 'voice' | 'chat',
@@ -142,9 +189,7 @@ async function dispatchQuestion(
   question: string,
   source: 'voice' | 'chat',
 ): Promise<void> {
-  const pendingVoice = session.difyDatasetId
-    ? '好的，我收到了，正在查詢資料，請稍候。'
-    : '好的，我收到了，正在查閱會議記錄，請稍候。'
+  const pendingVoice = session.difyDatasetId ? PENDING_VOICE_KB : PENDING_VOICE_TRANSCRIPT
   const pendingChat = session.difyDatasetId
     ? '收到你的問題，正在查詢資料中……'
     : '收到你的問題，正在查閱會議記錄……'
@@ -173,10 +218,20 @@ async function dispatchQuestion(
       setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + answerEstimatedMs)
 
       await botProvider.speak(botSession, answer)
+      logger.info(
+        { meetingInstanceId: session.meetingInstanceId, answerPreview: answer.slice(0, 60) },
+        'dispatchQuestion voice: answer spoken',
+      )
     } catch (err) {
       clearTimeout(lockTimer)
       session.isSpeaking = false
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion voice failed')
+      // 靜默失敗會讓使用者以為蜜塔沒反應 → 盡力口頭回報（失敗則退回聊天室）。
+      try {
+        await botProvider.speak(requireBotSession(session), ERROR_VOICE)
+      } catch {
+        await sendChatBestEffort(session, ERROR_VOICE)
+      }
     }
   } else {
     await sendChatBestEffort(session, pendingChat)
@@ -218,5 +273,5 @@ async function answerFromTranscript(
     ],
   })
   const answer = message.content[0].type === 'text' ? message.content[0].text : '抱歉，無法取得回答。'
-  return { answer }
+  return { answer: toTraditional(answer) }
 }

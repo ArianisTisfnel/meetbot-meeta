@@ -36,6 +36,14 @@ export interface MeetingSession {
   creatorVexaToken: string
   isSpeaking: boolean
   lastWakeAt: number
+  /**
+   * 喚醒待命窗（epoch ms）：說話者只叫了名字（「蜜塔」）沒接問題時開窗，
+   * 窗內同說話者的下一段語音直接視為問題。0 = 無待命。
+   * 解決 STT 把「叫名字 →（停頓）→ 問問題」切成兩個 utterance 的情境。
+   */
+  wakePendingUntil: number
+  /** 開喚醒待命窗的說話者（null = 未知，任何人皆可接問題）。 */
+  wakePendingSpeaker: string | null
   processedSegmentIds: Set<string>
   /** 由 provider 抽象層建立的 bot session（admitted 後才有值）。取代舊的 wsConnection。 */
   botSession: BotSession | null

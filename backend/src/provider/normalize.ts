@@ -5,6 +5,7 @@
  * 這是整個 failover 任務最容易出 bug 的地方，務必維持純函式並以測試覆蓋。
  */
 import type { TranscriptSegment } from './types.js'
+import { toTraditional } from '../lib/zh.js'
 
 /**
  * Vexa WS 推送的 segment → 統一 schema。
@@ -78,7 +79,8 @@ export function normalizeRecallRealtimeUtterance(
   transcriptId?: string,
 ): TranscriptSegment | null {
   const words: any[] = data?.words ?? []
-  const text = (data?.text ?? joinRecallWords(words)).trim()
+  // recallai_streaming 只有通用 zh（無 zh-TW），輸出常混簡體 → 統一轉繁體（台灣用語）。
+  const text = toTraditional((data?.text ?? joinRecallWords(words)).trim())
   if (!text) return null
 
   const startTime = firstNum([words[0]?.start_timestamp?.relative, words[0]?.start_time, data?.start_time]) ?? 0
@@ -110,7 +112,7 @@ export function normalizeRecallTranscript(raw: any[]): TranscriptSegment[] {
 
   raw.forEach((entry, idx) => {
     const words: any[] = entry?.words ?? []
-    const text = (entry?.text ?? joinRecallWords(words)).trim()
+    const text = toTraditional((entry?.text ?? joinRecallWords(words)).trim())
     if (!text) return
 
     const startTime =

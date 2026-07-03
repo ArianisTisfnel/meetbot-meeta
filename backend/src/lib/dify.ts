@@ -1,4 +1,5 @@
 import { env } from '../types/env.js'
+import { toTraditional } from './zh.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
 
@@ -182,7 +183,8 @@ export async function askQuestion(params: {
   }
 
   const data = (await res.json()) as { answer?: string; conversation_id?: string }
-  const answer = data.answer ?? '抱歉，無法取得回答。'
+  // LLM 輸出偶爾夾簡體 → 統一轉繁體（會直接顯示在會議聊天室 / TTS 念出）。
+  const answer = toTraditional(data.answer ?? '抱歉，無法取得回答。')
 
   if (answer === DIFY_NO_RESULT_SENTINEL) {
     // 靜默失效偵測：RAG 可能因 DIFY_DATASET_API_KEY 未設定而失效
@@ -288,14 +290,17 @@ export async function generateSummary(params: {
     raw = raw.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim()
     const parsed = JSON.parse(raw)
     return {
-      summary: parsed.summary ?? '',
-      actionItems: parsed.action_items ?? [],
-      keyTopics: parsed.key_topics ?? [],
-      decisions: parsed.decisions ?? [],
+      summary: toTraditional(parsed.summary ?? ''),
+      actionItems: (parsed.action_items ?? []).map((it: { task?: string; owner?: string }) => ({
+        task: toTraditional(it.task ?? ''),
+        owner: toTraditional(it.owner ?? ''),
+      })),
+      keyTopics: (parsed.key_topics ?? []).map((t: string) => toTraditional(t)),
+      decisions: (parsed.decisions ?? []).map((d: string) => toTraditional(d)),
     }
   } catch {
     return {
-      summary: data.data?.outputs?.result_json ?? '',
+      summary: toTraditional(data.data?.outputs?.result_json ?? ''),
       actionItems: [],
       keyTopics: [],
       decisions: [],
