@@ -60,6 +60,14 @@ const envSchema = z.object({
   INTERJECTION_EOU_THRESHOLD: z.coerce.number().default(0.1),
   // 兩次主動插話之間的最小間隔（ms），避免蜜塔變話癆。
   INTERJECTION_COOLDOWN_MS: z.coerce.number().default(90_000),
+  // ── 沉默破冰（icebreaker）───────────────────────────────────────────────────
+  // 全場沉默超過門檻，蜜塔主動開口（開場=罐頭引導；會議中=總結+拋問題）。
+  ICEBREAKER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  ICEBREAKER_SILENCE_MS: z.coerce.number().default(40_000),
+  ICEBREAKER_COOLDOWN_MS: z.coerce.number().default(300_000),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),
   // 前端基底 URL，用於組出邀請接受連結。

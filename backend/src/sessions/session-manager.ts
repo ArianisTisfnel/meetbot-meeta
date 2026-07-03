@@ -12,7 +12,7 @@ import {
   PENDING_VOICE_TRANSCRIPT,
   ERROR_VOICE,
 } from './wake-word-detector.js'
-import { recordConversation, clearInterjection } from './interjection.js'
+import { recordConversation, clearInterjection, startIcebreaker } from './interjection.js'
 import { generateSummaryAsync } from './summary.service.js'
 import type { MeetingSession } from '../types/session.js'
 
@@ -183,6 +183,9 @@ export async function startBotSession(params: {
     botSession.adapter
       .primeSpeech?.(botSession, [PENDING_VOICE_KB, PENDING_VOICE_TRANSCRIPT, ERROR_VOICE])
       ?.catch((err) => logger.warn({ err, meetingInstanceId }, 'primeSpeech failed (best-effort)'))
+
+    // 沉默破冰：進場即開始監看（開場沒人講話也會觸發）
+    startIcebreaker(still)
   } catch (err) {
     // 兩個 provider 都無法讓 bot 進會議。
     logger.warn({ err, meetingInstanceId }, 'startBotSession: all providers failed to admit bot')

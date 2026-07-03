@@ -1,7 +1,7 @@
 import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { activeSessions } from './session-store.js'
-import { resolveAnswer, sendChatBestEffort } from './wake-word-detector.js'
+import { resolveAnswer, sendChatBestEffort, speakProactive } from './wake-word-detector.js'
 import { warmEouModel, isEndOfTurn } from '../lib/eou.js'
 import { completeText } from '../lib/llm.js'
 import type { MeetingSession } from '../types/session.js'
@@ -49,6 +49,9 @@ interface InterjectionState {
   lastInterjectionAt: number
   timer: ReturnType<typeof setTimeout> | null
   evaluating: boolean
+  /** 沉默破冰計時器：全場靜默超過 ICEBREAKER_SILENCE_MS 觸發。 */
+  idleTimer: ReturnType<typeof setTimeout> | null
+  lastIcebreakerAt: number
 }
 
 const states = new Map<string, InterjectionState>()
@@ -56,7 +59,7 @@ const states = new Map<string, InterjectionState>()
 function getOrCreateState(meetingInstanceId: string): InterjectionState {
   let s = states.get(meetingInstanceId)
   if (!s) {
-    s = { window: [], lastInterjectionAt: 0, timer: null, evaluating: false }
+    s = { window: [], lastInterjectionAt: 0, timer: null, evaluating: false, idleTimer: null, lastIcebreakerAt: 0 }
     states.set(meetingInstanceId, s)
   }
   return s
@@ -66,6 +69,7 @@ function getOrCreateState(meetingInstanceId: string): InterjectionState {
 export function clearInterjection(meetingInstanceId: string): void {
   const s = states.get(meetingInstanceId)
   if (s?.timer) clearTimeout(s.timer)
+  if (s?.idleTimer) clearTimeout(s.idleTimer)
   states.delete(meetingInstanceId)
 }
 
@@ -74,12 +78,16 @@ export function clearInterjection(meetingInstanceId: string): void {
  * 累積 rolling window 並重排「turn 結束」計時器。
  */
 export function recordConversation(session: MeetingSession, entry: ConversationEntry): void {
-  if (!env.INTERJECTION_ENABLED) return
+  if (!env.INTERJECTION_ENABLED && !env.ICEBREAKER_ENABLED) return
 
   const s = getOrCreateState(session.meetingInstanceId)
   s.window.push(entry)
   if (s.window.length > WINDOW_MAX_ENTRIES) s.window.splice(0, s.window.length - WINDOW_MAX_ENTRIES)
 
+  // 任何活動（含蜜塔自己）都重置沉默計時
+  armIcebreaker(session.meetingInstanceId)
+
+  if (!env.INTERJECTION_ENABLED) return
   if (s.timer) clearTimeout(s.timer)
   // bot 自己的訊息不該觸發「有人講完話」的評估
   if (entry.fromBot) return
@@ -100,6 +108,77 @@ export function recordConversation(session: MeetingSession, entry: ConversationE
       )
     }, env.INTERJECTION_TURN_SILENCE_MS)
   }
+}
+
+// ── 沉默破冰 ──────────────────────────────────────────────────────────────────
+//
+// 全場沉默超過 ICEBREAKER_SILENCE_MS → 蜜塔主動開口（語音，失敗退聊天室）：
+//   開場沉默（幾乎沒人講過話）→ 罐頭引導（免 LLM、快又穩）
+//   會議中沉默 → LLM 依對話窗總結進度＋拋出推進討論的問題
+
+/** bot admitted 後啟動沉默計時（session-manager 呼叫）；之後每筆活動自動重置。 */
+export function startIcebreaker(session: MeetingSession): void {
+  if (!env.ICEBREAKER_ENABLED) return
+  getOrCreateState(session.meetingInstanceId)
+  armIcebreaker(session.meetingInstanceId)
+}
+
+function armIcebreaker(meetingInstanceId: string): void {
+  if (!env.ICEBREAKER_ENABLED) return
+  const s = states.get(meetingInstanceId)
+  if (!s) return
+  if (s.idleTimer) clearTimeout(s.idleTimer)
+  s.idleTimer = setTimeout(() => {
+    s.idleTimer = null
+    fireIcebreaker(meetingInstanceId).catch((err) =>
+      logger.error({ err, meetingInstanceId }, 'icebreaker error'),
+    )
+  }, env.ICEBREAKER_SILENCE_MS)
+}
+
+async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
+  const session = activeSessions.get(meetingInstanceId)
+  const s = states.get(meetingInstanceId)
+  if (!session || !session.botSession || !s) return
+
+  const now = Date.now()
+  if (session.isSpeaking || now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS) {
+    armIcebreaker(meetingInstanceId) // 冷卻中：繼續監看下一段沉默
+    return
+  }
+
+  const humanEntries = s.window.filter((e) => !e.fromBot)
+  let text: string
+  if (humanEntries.length < 2) {
+    // 開場沉默：罐頭引導
+    text = session.difyDatasetId
+      ? '大家好像還沒開始討論～需要暖身的話，可以直接問我專案資料的問題，例如重要日期或規則，我都查得到喔。'
+      : '大家好像還沒開始討論～有需要我幫忙的地方，隨時叫「蜜塔」就可以了。'
+  } else {
+    // 會議中沉默：總結＋拋問題
+    try {
+      const context = s.window
+        .slice(-DECISION_CONTEXT_ENTRIES)
+        .map((e) => `[${e.fromBot ? '蜜塔(你)' : e.speaker || '參與者'}] ${e.text}`)
+        .join('\n')
+      text = await completeText({
+        system:
+          '你是會議 AI 助理蜜塔。現場已沉默一段時間，請用一到兩句話總結目前討論到哪，再拋出一個能推進討論的具體問題。口語、繁體中文、60 字內。',
+        prompt: `最近的對話：\n\n${context}`,
+        maxTokens: 200,
+      })
+      if (!text.trim()) return
+    } catch (err) {
+      logger.warn({ err, meetingInstanceId }, 'icebreaker: LLM failed, skipping')
+      armIcebreaker(meetingInstanceId)
+      return
+    }
+  }
+
+  s.lastIcebreakerAt = Date.now()
+  logger.info({ meetingInstanceId, text: text.slice(0, 60) }, 'icebreaker: breaking silence via voice')
+  await speakProactive(session, text)
+  armIcebreaker(meetingInstanceId)
 }
 
 /** livekit 時機層第一段：EOU 模型判斷「講完了嗎」；沒講完/不可用 → 排 fallback 評估。 */
@@ -194,15 +273,19 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
     const lastAtBeforeAnswer = s.window[s.window.length - 1]?.at
     const answer = await resolveAnswer(session, decision.question, 'chat')
 
-    // 送出前最後一刻：查詢期間有人開口 → 讓路，放棄本次插話（不消耗冷卻）
-    const nowLast = s.window[s.window.length - 1]
-    if (nowLast && nowLast.at !== lastAtBeforeAnswer && !nowLast.fromBot) {
-      logger.info({ meetingInstanceId }, 'interjection: someone spoke during answer resolution, yielding')
-      return
-    }
-
     s.lastInterjectionAt = Date.now()
-    await sendChatBestEffort(session, `💡 ${answer}`)
+
+    // 投遞方式看現場：查詢期間有人開口/蜜塔正在說話 → 聊天室（不打擾）；
+    // 仍然沉默 → 語音說出來（沉默中丟訊息沒人會看）。
+    const nowLast = s.window[s.window.length - 1]
+    const someoneSpoke = Boolean(nowLast && nowLast.at !== lastAtBeforeAnswer && !nowLast.fromBot)
+    if (someoneSpoke || session.isSpeaking) {
+      logger.info({ meetingInstanceId }, 'interjection: delivering via chat (people talking)')
+      await sendChatBestEffort(session, `💡 ${answer}`)
+    } else {
+      logger.info({ meetingInstanceId }, 'interjection: room still silent, delivering via voice')
+      await speakProactive(session, `我補充一下：${answer}`)
+    }
 
     s.window.push({ speaker: '蜜塔', text: answer, source: 'chat', fromBot: true, at: Date.now() })
     logger.info({ meetingInstanceId, answerPreview: answer.slice(0, 60) }, 'interjection: answer sent to chat')

@@ -26,6 +26,7 @@ vi.mock('../../../../backend/src/sessions/wake-word-detector', () => ({
 vi.mock('../../../../backend/src/sessions/interjection', () => ({
   recordConversation: vi.fn(),
   clearInterjection: vi.fn(),
+  startIcebreaker: vi.fn(),
 }))
 vi.mock('../../../../backend/src/sessions/summary.service', () => ({ generateSummaryAsync }))
 

@@ -35,6 +35,7 @@ import {
   handlePartialSegment,
   handleChatMessage,
   handleBargeIn,
+  parseIntent,
 } from '../../../../backend/src/sessions/wake-word-detector'
 import type { MeetingSession } from '../../../../backend/src/types/session'
 import type { BotSession } from '../../../../backend/src/provider/types'
@@ -248,6 +249,21 @@ describe('handlePartialSegment — partial 快速喚醒', () => {
     const session = makeSession({ isSpeaking: true })
     await handlePartialSegment(session, { text: '蜜塔請問', speaker: 'A' })
     expect(mockBotProvider.speak).not.toHaveBeenCalled()
+  })
+})
+
+describe('parseIntent — 問答意圖分流', () => {
+  it('factual / context / hybrid 關鍵字正確解析', () => {
+    expect(parseIntent('factual')).toBe('factual')
+    expect(parseIntent('context')).toBe('context')
+    expect(parseIntent('hybrid')).toBe('hybrid')
+    expect(parseIntent('這是意見型問題')).toBe('context')
+    expect(parseIntent('混合')).toBe('hybrid')
+  })
+
+  it('未知輸出 → 回退 factual（保持原 RAG 行為）', () => {
+    expect(parseIntent('Claude 回答')).toBe('factual')
+    expect(parseIntent('')).toBe('factual')
   })
 })
 

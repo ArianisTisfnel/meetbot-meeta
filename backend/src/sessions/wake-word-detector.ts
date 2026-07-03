@@ -219,6 +219,80 @@ export async function handleChatMessage(
   await dispatchQuestion(session, question, 'chat')
 }
 
+// ── 主動語音（插話/破冰用）────────────────────────────────────────────────────
+//
+// 與喚醒回答共用 isSpeaking/currentSpeech/barge-in 機制；超過 100 字自動截斷
+// （語音唸太長很煩），語音失敗退回聊天室。
+
+export async function speakProactive(session: MeetingSession, text: string): Promise<boolean> {
+  if (session.isSpeaking) return false
+
+  let speech = text
+  if (speech.length > 100) {
+    const truncated = speech.slice(0, 100)
+    const lastPunct = truncated.search(/[。！？…][^。！？…]*$/)
+    speech = (lastPunct > 0 ? truncated.slice(0, lastPunct + 1) : truncated) + '……詳細內容我放在聊天室。'
+  }
+
+  const estimatedMs = Math.max(3000, (speech.length / 4) * 1000 + 1500)
+  session.isSpeaking = true
+  session.currentSpeech = speech
+  setTimeout(() => {
+    session.isSpeaking = false
+    session.currentSpeech = null
+  }, estimatedMs)
+
+  try {
+    await botProvider.speak(requireBotSession(session), speech)
+    // 截斷過的長內容補完整版到聊天室
+    if (speech !== text) await sendChatBestEffort(session, text)
+    return true
+  } catch (err) {
+    session.isSpeaking = false
+    session.currentSpeech = null
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'speakProactive failed, falling back to chat')
+    await sendChatBestEffort(session, text)
+    return true
+  }
+}
+
+// ── 意圖分流（Dify RAG 前）────────────────────────────────────────────────────
+//
+// 「你覺得這方案如何」直接丟 Dify RAG 會答「資料沒提到」→ 先用便宜的 LLM 三分類：
+//   factual：查文件就能答（報名日期）→ Dify RAG（原路）
+//   context：意見/脈絡型（你覺得如何）→ LLM＋近期逐字稿
+//   hybrid ：兩者都要（依簡章看我們時程合理嗎）→ 先 Dify 檢索、再與脈絡合成
+// 分類失敗一律回退 factual（保持原行為）。
+
+export type QuestionIntent = 'factual' | 'context' | 'hybrid'
+
+/** 把分類器輸出解析成意圖（寬鬆比對；未知回 factual）。純函式，可測。 */
+export function parseIntent(raw: string): QuestionIntent {
+  const t = raw.toLowerCase()
+  if (t.includes('hybrid') || t.includes('混合')) return 'hybrid'
+  if (t.includes('context') || t.includes('意見') || t.includes('脈絡')) return 'context'
+  return 'factual'
+}
+
+async function classifyIntent(question: string): Promise<QuestionIntent> {
+  try {
+    const raw = await completeText({
+      system: [
+        '你是會議助理的問題分類器。把問題分成三類，只回傳一個詞：',
+        'factual = 查專案文件/資料就能回答的事實型問題（日期、金額、規則、名額）',
+        'context = 需要對話脈絡或主觀判斷的問題（你覺得如何、有什麼建議、剛才誰說了什麼）',
+        'hybrid = 同時需要文件資料與對話脈絡（依照文件看我們的討論/規劃合理嗎）',
+      ].join('\n'),
+      prompt: `問題：${question}`,
+      maxTokens: 10,
+    })
+    return parseIntent(raw)
+  } catch (err) {
+    logger.warn({ err }, 'classifyIntent failed, falling back to factual')
+    return 'factual'
+  }
+}
+
 // ── 問答路由 ───────────────────────────────────────────────────────────────────
 
 export async function resolveAnswer(
@@ -235,11 +309,19 @@ export async function resolveAnswer(
     return answer
   }
 
+  // 意圖分流：意見/脈絡型不走 RAG（會答「資料沒提到」）
+  const intent = await classifyIntent(question)
   logger.info(
-    { meetingInstanceId: session.meetingInstanceId, route: 'dify', datasetId: session.difyDatasetId, mode },
-    'resolveAnswer: dispatching question to Dify RAG',
+    { meetingInstanceId: session.meetingInstanceId, intent, mode, question: question.slice(0, 40) },
+    'resolveAnswer: intent classified',
   )
 
+  if (intent === 'context') {
+    const { answer } = await answerFromTranscript(session, question)
+    return answer
+  }
+
+  // factual / hybrid 都先做 Dify 檢索
   if (session.lastQuestionAt > 0 && Date.now() - session.lastQuestionAt > CONVERSATION_IDLE_RESET_MS) {
     logger.info({ meetingInstanceId: session.meetingInstanceId }, 'Dify conversation reset: idle timeout')
     session.difyConversationId = null
@@ -254,21 +336,41 @@ export async function resolveAnswer(
       conversationId,
     })
 
+  let factAnswer: string
   try {
     const { answer, conversationId } = await callDify(session.difyConversationId)
     session.difyConversationId = conversationId || session.difyConversationId
     session.lastQuestionAt = Date.now()
-    return answer
+    factAnswer = answer
   } catch (err) {
-    if (session.difyConversationId) {
-      logger.warn({ meetingInstanceId: session.meetingInstanceId }, 'Dify error, resetting conversation and retrying')
-      session.difyConversationId = null
-      const { answer, conversationId } = await callDify(null)
-      session.difyConversationId = conversationId
-      session.lastQuestionAt = Date.now()
-      return answer
-    }
-    throw err
+    if (!session.difyConversationId) throw err
+    logger.warn({ meetingInstanceId: session.meetingInstanceId }, 'Dify error, resetting conversation and retrying')
+    session.difyConversationId = null
+    const { answer, conversationId } = await callDify(null)
+    session.difyConversationId = conversationId
+    session.lastQuestionAt = Date.now()
+    factAnswer = answer
+  }
+
+  if (intent !== 'hybrid') return factAnswer
+
+  // hybrid：把檢索到的事實與近期對話脈絡合成（合成失敗退回純檢索答案）
+  try {
+    const segments = await botProvider.getTranscript(requireBotSession(session))
+    const context = segments
+      .slice(-30)
+      .map((seg) => `[${seg.speaker || '參與者'}]: ${seg.text}`)
+      .join('\n')
+    const composed = await completeText({
+      system:
+        '你是在線的 AI 會議助理蜜塔（Meeta）。根據「資料查詢結果」與「會議近期對話」綜合回答問題，口語、簡潔（100 字內）、繁體中文。',
+      prompt: `資料查詢結果：\n${factAnswer}\n\n會議近期對話：\n${context}\n\n請回答：${question}`,
+      maxTokens: 512,
+    })
+    return toTraditional(composed || factAnswer)
+  } catch (err) {
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'hybrid compose failed, using fact answer')
+    return factAnswer
   }
 }
 
