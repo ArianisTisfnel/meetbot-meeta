@@ -73,3 +73,6 @@ tools/
 
 # Backend runtime logs
 backend/logs/
+
+# EOU turn-detector model files (downloaded on first run)
+backend/models/

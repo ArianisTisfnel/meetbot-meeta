@@ -3,18 +3,24 @@ import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { activeSessions } from './session-store.js'
 import { resolveAnswer, sendChatBestEffort } from './wake-word-detector.js'
+import { warmEouModel, isEndOfTurn } from '../lib/eou.js'
 import type { MeetingSession } from '../types/session.js'
+
+// livekit 時機層啟用時，啟動階段就下載/載入模型（首場會議不用付冷啟成本）。
+if (env.INTERJECTION_ENABLED && env.INTERJECTION_TURN_DETECTOR === 'livekit') {
+  warmEouModel()
+}
 
 /**
  * 主動插話引擎（interjection）— 讓蜜塔在沒被叫名字時也能「參與聊天」。
  *
  * 三層架構（各層可獨立替換）：
- *   ① 時機層（TurnDetector）：判斷「這一輪話講完了」。
- *      v1 = SilenceTurnDetector（最後一段內容後 N ms 無新內容）。
- *      預留掛載點：之後可換成 LiveKit turn-detector（開源 ONNX 文字模型，
- *      livekit/turn-detector，支援中文）——以對話窗算 end-of-utterance 機率，
- *      動態決定等待時間（高機率 → 縮短等待；低機率 → 拉長），實作新的
- *      TurnDetector 換掉預設即可，其餘層不動。
+ *   ① 時機層：判斷「這一輪話講完了」。由 INTERJECTION_TURN_DETECTOR 選擇——
+ *      - 'silence'：最後一段內容後 INTERJECTION_TURN_SILENCE_MS 無新內容即評估
+ *      - 'livekit'：兩段式。先等 INTERJECTION_EOU_CHECK_MS（短），用 LiveKit
+ *        turn-detector 模型（lib/eou.ts）判斷語意上「講完了嗎」：講完 → 立即評估
+ *        （比死等快）；沒講完/模型不可用 → 退回在 SILENCE_MS 時無條件評估
+ *        （長停頓覆蓋語意判斷，模型永遠只是增強不是依賴）。
  *   ② 決策層：Claude Haiku 以 rolling window 判斷「該不該插話、要回答什麼問題」。
  *      硬性防護（cooldown / 喚醒流程進行中 / bot 剛說過話）在呼叫模型前先擋掉。
  *   ③ 執行層：走既有 resolveAnswer（Dify RAG / 逐字稿 QA）取得答案，
@@ -31,20 +37,6 @@ export interface ConversationEntry {
   fromBot: boolean
   at: number
 }
-
-/** 時機層介面：回傳「最後一段內容後等多久沒新內容，就視為一輪結束」。 */
-export interface TurnDetector {
-  silenceThresholdMs(window: ConversationEntry[]): number
-}
-
-/** v1：固定停頓門檻。之後可換 LiveKit EOU 模型動態調整。 */
-class SilenceTurnDetector implements TurnDetector {
-  silenceThresholdMs(): number {
-    return env.INTERJECTION_TURN_SILENCE_MS
-  }
-}
-
-const turnDetector: TurnDetector = new SilenceTurnDetector()
 
 const WINDOW_MAX_ENTRIES = 60
 /** 決策模型一次看的對話則數。 */
@@ -94,12 +86,57 @@ export function recordConversation(session: MeetingSession, entry: ConversationE
   // bot 自己的訊息不該觸發「有人講完話」的評估
   if (entry.fromBot) return
 
-  s.timer = setTimeout(() => {
-    s.timer = null
-    evaluateTurn(session.meetingInstanceId).catch((err) =>
-      logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'interjection: evaluateTurn error'),
+  if (env.INTERJECTION_TURN_DETECTOR === 'livekit') {
+    // 兩段式：短暫靜默後先問 EOU 模型，講完就提早評估
+    s.timer = setTimeout(() => {
+      s.timer = null
+      checkEndOfTurn(session.meetingInstanceId).catch((err) =>
+        logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'interjection: checkEndOfTurn error'),
+      )
+    }, env.INTERJECTION_EOU_CHECK_MS)
+  } else {
+    s.timer = setTimeout(() => {
+      s.timer = null
+      evaluateTurn(session.meetingInstanceId).catch((err) =>
+        logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'interjection: evaluateTurn error'),
+      )
+    }, env.INTERJECTION_TURN_SILENCE_MS)
+  }
+}
+
+/** livekit 時機層第一段：EOU 模型判斷「講完了嗎」；沒講完/不可用 → 排 fallback 評估。 */
+async function checkEndOfTurn(meetingInstanceId: string): Promise<void> {
+  const s = states.get(meetingInstanceId)
+  if (!s || !s.window.length) return
+
+  // 記住進入推論時的最後一則；推論期間有新內容 → 本次作廢（新內容自己的計時鏈會接手）
+  const lastAt = s.window[s.window.length - 1].at
+
+  const turns = s.window.slice(-DECISION_CONTEXT_ENTRIES).map((e) => ({
+    role: (e.fromBot ? 'assistant' : 'user') as 'assistant' | 'user',
+    content: e.text,
+  }))
+  const ended = await isEndOfTurn(turns, env.INTERJECTION_EOU_LANGUAGE, env.INTERJECTION_EOU_THRESHOLD)
+
+  const s2 = states.get(meetingInstanceId)
+  if (!s2 || !s2.window.length) return
+  if (s2.window[s2.window.length - 1].at !== lastAt) return // 期間有新內容
+
+  if (ended === true) {
+    logger.info({ meetingInstanceId }, 'interjection: EOU model says turn ended, evaluating early')
+    await evaluateTurn(meetingInstanceId)
+    return
+  }
+
+  // 沒講完（或模型不可用）→ fallback：補滿剩餘靜默時間後無條件評估
+  const remaining = Math.max(500, env.INTERJECTION_TURN_SILENCE_MS - env.INTERJECTION_EOU_CHECK_MS)
+  if (s2.timer) clearTimeout(s2.timer)
+  s2.timer = setTimeout(() => {
+    s2.timer = null
+    evaluateTurn(meetingInstanceId).catch((err) =>
+      logger.error({ err, meetingInstanceId }, 'interjection: fallback evaluateTurn error'),
     )
-  }, turnDetector.silenceThresholdMs(s.window))
+  }, remaining)
 }
 
 /** ② 決策層＋③ 執行層。 */

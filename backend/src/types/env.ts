@@ -45,6 +45,16 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   // 判定「一輪話講完」的停頓門檻（ms）：最後一段語音後多久沒新內容才評估要不要插話。
   INTERJECTION_TURN_SILENCE_MS: z.coerce.number().default(2_500),
+  // 時機層：'silence'（純停頓計時）或 'livekit'（LiveKit turn-detector 模型語意判斷，
+  // 講完就提早評估；模型不可用時自動退回停頓計時）。首次啟用會下載 ~150MB 模型。
+  INTERJECTION_TURN_DETECTOR: z.enum(['silence', 'livekit']).default('silence'),
+  // livekit 模式：短暫靜默多久後先問 EOU 模型（ms）。
+  INTERJECTION_EOU_CHECK_MS: z.coerce.number().default(1_000),
+  // EOU 閾值查表用語言碼（languages.json）。
+  INTERJECTION_EOU_LANGUAGE: z.string().default('zh'),
+  // EOU 閾值（覆蓋 languages.json）。官方 zh=0.0066 偏寬鬆（語音助理調校）；
+  // 插話場景實測講完 ≥0.68、沒講完 ≤0.008 → 預設 0.1 保守值。
+  INTERJECTION_EOU_THRESHOLD: z.coerce.number().default(0.1),
   // 兩次主動插話之間的最小間隔（ms），避免蜜塔變話癆。
   INTERJECTION_COOLDOWN_MS: z.coerce.number().default(90_000),
   APP_PORT: z.coerce.number().default(4000),
