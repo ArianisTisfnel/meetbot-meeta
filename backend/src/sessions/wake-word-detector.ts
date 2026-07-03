@@ -17,8 +17,9 @@ function requireBotSession(session: MeetingSession): BotSession {
 }
 
 // 固定台詞（匯出供 session-manager 在 join 後 primeSpeech 預熱 TTS）。
-export const PENDING_VOICE_KB = '好的，我收到了，正在查詢資料，請稍候。'
-export const PENDING_VOICE_TRANSCRIPT = '好的，我收到了，正在查閱會議記錄，請稍候。'
+// 短句 = TTS/播放更快、也更像人（使用者提議的措辭）
+export const PENDING_VOICE_KB = '等等喔，我正在頭腦風暴！'
+export const PENDING_VOICE_TRANSCRIPT = '等等喔，我翻一下會議記錄！'
 export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
 export const PROGRESS_VOICE = '不好意思讓大家久等了，我還在查，馬上就好。'
 /** 查詢超過此時間就口頭回報進度（不然使用者會以為沒收到而重問）。 */
@@ -411,6 +412,9 @@ async function dispatchQuestion(
 
   if (source === 'voice') {
     if (session.isSpeaking) return
+    // 聊天室即時確認：唯一 <1 秒的回饋通道（語音要等 STT 定稿+播放，聽到已 3-5 秒），
+    // 先讓使用者「看到」蜜塔有反應，避免以為沒收到而重問。
+    void sendChatBestEffort(session, `👂 ${pendingChat}`)
     // partial 快速喚醒已先說過開場白 → 跳過，直接查詢
     const speakPending = !opts?.skipPendingPrompt
     const promptEstimatedMs = speakPending ? Math.max(3000, (pendingVoice.length / 4) * 1000 + 1500) : 0

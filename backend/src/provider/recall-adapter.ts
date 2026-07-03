@@ -58,6 +58,8 @@ interface RealtimeRegistration {
   botName: string
   /** 與 session.state.segments 同一個 array reference：webhook 累積、getTranscript 回退讀取。 */
   segments: TranscriptSegment[]
+  /** 診斷用：此 bot 是否收過 partial（prioritize_accuracy 模式實測幾乎不發 partial）。 */
+  sawPartial?: boolean
 }
 
 const realtimeRegistry = new Map<string, RealtimeRegistration>()
@@ -120,7 +122,11 @@ export function dispatchRecallEvent(event: any): void {
 
   if (type === 'transcript.partial_data') {
     // 未定稿片段：只轉給 onPartialSegment（喚醒快速偵測），不累積進 segments。
-    // 同一句會重複推送且內容變動，量大 → 不逐則記 info log。
+    // 同一句會重複推送且內容變動，量大 → 不逐則記 info log；只記第一次（診斷用）。
+    if (!reg.sawPartial) {
+      reg.sawPartial = true
+      logger.info({ botId }, 'recall webhook: first transcript.partial_data received for this bot')
+    }
     const utter = data?.data
     if (isBotParticipant(reg, utter?.participant)) return
     const seg = normalizeRecallRealtimeUtterance(utter, data?.transcript?.id)
