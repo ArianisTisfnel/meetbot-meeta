@@ -94,6 +94,9 @@ model Material {
   difyBatch            String?        @map("dify_batch")
   indexingStatus       IndexingStatus @default(PENDING) @map("indexing_status")
   indexingError        String?        @map("indexing_error")
+  /// 內容摘要卡：索引完成後由 LLM 產生（50~120 字主題摘要），供意圖分類器判斷
+  /// 問題是否落在知識庫範圍。null = 尚未產卡（poller 會補）；'' = 已嘗試但無內容。
+  contentCard          String?        @map("content_card")
   uploadedByVexaUserId Int            @map("uploaded_by_vexa_user_id")
   uploadedAt           DateTime       @default(now()) @map("uploaded_at")
   updatedAt            DateTime       @updatedAt @map("updated_at")

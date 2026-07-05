@@ -147,6 +147,22 @@ export async function deleteDocument(datasetId: string, documentId: string): Pro
   await request<void>('DELETE', `/datasets/${datasetId}/documents/${documentId}`)
 }
 
+/**
+ * 取文件已切好的 chunk 內容（前 limit 段）。
+ * 用於內容摘要卡：重用 Dify 的文字抽取結果，後端不必自己解析 PDF。
+ */
+export async function getDocumentSegments(
+  datasetId: string,
+  documentId: string,
+  limit = 5,
+): Promise<string[]> {
+  const data = await request<{ data: Array<{ content?: string }> }>(
+    'GET',
+    `/datasets/${datasetId}/documents/${documentId}/segments?page=1&limit=${limit}`,
+  )
+  return (data.data ?? []).map((seg) => seg.content ?? '').filter((c) => c.trim())
+}
+
 // ── RAG Q&A（Dify Chatflow）─────────────────────────────────────────────────
 
 const DIFY_NO_RESULT_SENTINEL = '抱歉 沒有檢索到相關資訊'

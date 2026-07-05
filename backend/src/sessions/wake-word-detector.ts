@@ -320,8 +320,8 @@ async function classifyIntent(question: string, kbContentCard: string | null): P
         // 內容卡：讓分類器知道知識庫實際有什麼，別把查不到的事實題硬分成 factual
         ...(kbContentCard
           ? [
-              `知識庫目前的文件：${kbContentCard}。`,
-              'factual/hybrid 只給「這些文件看起來能涵蓋」的問題；與文件主題無關的事實題，分 context（讓助理靠對話脈絡回答）。',
+              `知識庫目前的文件與內容摘要：\n${kbContentCard}`,
+              'factual/hybrid 只給「上述文件能涵蓋」的問題；與文件內容無關的事實題，分 context（讓助理靠對話脈絡回答）。',
             ]
           : []),
         '範例：「今年銷售多少」→ factual；「hello 蜜塔」→ chitchat；「你覺得剛剛的提案如何」→ context',

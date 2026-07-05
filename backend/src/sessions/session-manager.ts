@@ -29,22 +29,32 @@ function welcomeMessage(difyDatasetId: string | null): string {
 
 // ── 知識庫內容卡 ──────────────────────────────────────────────────────────────
 //
-// v0：把專案內「已索引完成」的文件名稱串成清單，掛在 session 上。
-// 意圖分類器（classifyIntent）靠這份清單判斷問題是否與知識庫相關，
-// 避免「今年銷售多少」在知識庫根本沒有銷售資料時仍被分成 factual。
-// 未來 v1 可升級為 LLM 產生的文件摘要卡（欄位共用）。
+// 把專案內「已索引完成」文件的摘要卡（indexing-poller 產生的 contentCard）
+// 組成清單掛在 session 上。意圖分類器（classifyIntent）靠它判斷問題是否
+// 與知識庫相關，避免「今年銷售多少」在知識庫沒有銷售資料時仍被分成 factual。
+// 摘要卡還沒產出來時（poller 尚未跑到）退回只列文件名稱。
+
+/** 注入分類器 prompt 的內容卡總長上限（字元）。 */
+const KB_CARD_MAX_CHARS = 2000
 
 async function loadKbContentCard(session: MeetingSession, difyDatasetId: string): Promise<void> {
   try {
     const materials = await prisma.material.findMany({
       where: { project: { difyDatasetId }, indexingStatus: 'COMPLETED', deletedAt: null },
-      select: { displayName: true },
+      select: { displayName: true, contentCard: true },
       orderBy: { uploadedAt: 'desc' },
       take: 30,
     })
-    session.kbContentCard = materials.length ? materials.map((m) => m.displayName).join('、') : null
+    const lines = materials.map((m) =>
+      m.contentCard ? `【${m.displayName}】${m.contentCard}` : `【${m.displayName}】`,
+    )
+    session.kbContentCard = lines.length ? lines.join('\n').slice(0, KB_CARD_MAX_CHARS) : null
     logger.info(
-      { meetingInstanceId: session.meetingInstanceId, docCount: materials.length },
+      {
+        meetingInstanceId: session.meetingInstanceId,
+        docCount: materials.length,
+        withCard: materials.filter((m) => m.contentCard).length,
+      },
       'kb content card loaded',
     )
   } catch (err) {

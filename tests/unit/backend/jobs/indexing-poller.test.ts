@@ -5,7 +5,10 @@ import { mockDify } from '../../../mocks/dify.mock'
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('../../../../backend/src/lib/dify', () => mockDify)
 
-import { pollOnce } from '../../../../backend/src/jobs/indexing-poller'
+const mockCompleteText = vi.hoisted(() => vi.fn())
+vi.mock('../../../../backend/src/lib/llm', () => ({ completeText: mockCompleteText }))
+
+import { pollOnce, generateMissingCards } from '../../../../backend/src/jobs/indexing-poller'
 
 const MOCK_PROJECT = { difyDatasetId: 'dataset-abc' }
 
@@ -73,5 +76,57 @@ describe('indexing-poller: pollOnce', () => {
         }),
       }),
     )
+  })
+})
+
+describe('indexing-poller: generateMissingCards — 內容摘要卡', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  const cardlessMaterial = {
+    id: 'mat-1',
+    displayName: '2025銷售報表',
+    difyDocumentId: 'doc-1',
+    contentCard: null,
+    project: MOCK_PROJECT,
+  }
+
+  it('COMPLETED 且無卡 → 抓 segments、LLM 產卡、存回 contentCard', async () => {
+    mockPrisma.material.findMany.mockResolvedValueOnce([cardlessMaterial])
+    mockDify.getDocumentSegments.mockResolvedValueOnce(['Q1 銷售 100 萬', 'Q2 銷售 200 萬'])
+    mockCompleteText.mockResolvedValueOnce('本文件包含各季銷售數據與年度目標。')
+    mockPrisma.material.update.mockResolvedValueOnce({})
+
+    await generateMissingCards()
+
+    expect(mockDify.getDocumentSegments).toHaveBeenCalledWith('dataset-abc', 'doc-1', 5)
+    expect(mockPrisma.material.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'mat-1' },
+        data: { contentCard: '本文件包含各季銷售數據與年度目標。' },
+      }),
+    )
+  })
+
+  it('segments 為空（抽不出文字）→ 存 \'\' sentinel，不呼叫 LLM、不再重試', async () => {
+    mockPrisma.material.findMany.mockResolvedValueOnce([cardlessMaterial])
+    mockDify.getDocumentSegments.mockResolvedValueOnce([])
+    mockPrisma.material.update.mockResolvedValueOnce({})
+
+    await generateMissingCards()
+
+    expect(mockCompleteText).not.toHaveBeenCalled()
+    expect(mockPrisma.material.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { contentCard: '' } }),
+    )
+  })
+
+  it('LLM 失敗 → 不更新（保持 null 下輪重試）、不 throw', async () => {
+    mockPrisma.material.findMany.mockResolvedValueOnce([cardlessMaterial])
+    mockDify.getDocumentSegments.mockResolvedValueOnce(['內容'])
+    mockCompleteText.mockRejectedValueOnce(new Error('LLM down'))
+
+    await expect(generateMissingCards()).resolves.toBeUndefined()
+
+    expect(mockPrisma.material.update).not.toHaveBeenCalled()
   })
 })
