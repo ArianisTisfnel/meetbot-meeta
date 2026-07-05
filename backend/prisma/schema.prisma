@@ -6,6 +6,9 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // CLI（db execute / migrate / db pull）走 session pooler(5432)：
+  // transaction pooler(6543) 跑 DDL 會被 pgbouncer 斷線（P1017）
+  directUrl = env("DIRECT_URL")
   schemas  = ["app"]
 }
 
