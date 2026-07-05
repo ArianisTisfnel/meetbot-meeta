@@ -151,6 +151,11 @@ export async function deleteDocument(datasetId: string, documentId: string): Pro
 
 const DIFY_NO_RESULT_SENTINEL = '抱歉 沒有檢索到相關資訊'
 
+/** Chatflow 檢索不到資料時回的罐頭句（與 Dify 平台上的設定字串一致）。 */
+export function isNoResultAnswer(answer: string): boolean {
+  return answer.trim() === DIFY_NO_RESULT_SENTINEL
+}
+
 export async function askQuestion(params: {
   datasetId: string
   question: string

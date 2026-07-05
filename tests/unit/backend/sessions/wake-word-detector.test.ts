@@ -11,6 +11,7 @@ const mockBotProvider = vi.hoisted(() => ({
 vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
 vi.mock('../../../../backend/src/lib/dify', () => ({
   askQuestion: vi.fn().mockResolvedValue({ answer: '測試回答', conversationId: 'conv-1' }),
+  isNoResultAnswer: vi.fn((answer: string) => answer.trim() === '抱歉 沒有檢索到相關資訊'),
 }))
 vi.mock('../../../../backend/src/types/env', () => ({
   env: {
@@ -277,10 +278,13 @@ describe('語音問題但嘴巴被佔用 → 改走聊天室', () => {
 })
 
 describe('parseIntent — 問答意圖分流', () => {
-  it('factual / context / hybrid 關鍵字正確解析', () => {
+  it('chitchat / factual / context / hybrid 關鍵字正確解析', () => {
+    expect(parseIntent('chitchat')).toBe('chitchat')
     expect(parseIntent('factual')).toBe('factual')
     expect(parseIntent('context')).toBe('context')
     expect(parseIntent('hybrid')).toBe('hybrid')
+    expect(parseIntent('這是閒聊')).toBe('chitchat')
+    expect(parseIntent('寒暄')).toBe('chitchat')
     expect(parseIntent('這是意見型問題')).toBe('context')
     expect(parseIntent('混合')).toBe('hybrid')
   })

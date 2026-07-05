@@ -290,17 +290,19 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
 
 // ── 意圖分流（Dify RAG 前）────────────────────────────────────────────────────
 //
-// 「你覺得這方案如何」直接丟 Dify RAG 會答「資料沒提到」→ 先用便宜的 LLM 三分類：
-//   factual：查文件就能答（報名日期）→ Dify RAG（原路）
-//   context：意見/脈絡型（你覺得如何）→ LLM＋近期逐字稿
-//   hybrid ：兩者都要（依簡章看我們時程合理嗎）→ 先 Dify 檢索、再與脈絡合成
+// 「你覺得這方案如何」直接丟 Dify RAG 會答「資料沒提到」→ 先用便宜的 LLM 四分類：
+//   chitchat：寒暄/閒聊（你好嗎、謝謝）→ LLM 直答，完全不碰 Dify 與逐字稿
+//   factual ：查文件就能答（報名日期）→ Dify RAG（原路）
+//   context ：意見/脈絡型（你覺得如何）→ LLM＋近期逐字稿
+//   hybrid  ：兩者都要（依簡章看我們時程合理嗎）→ 先 Dify 檢索、再與脈絡合成
 // 分類失敗一律回退 factual（保持原行為）。
 
-export type QuestionIntent = 'factual' | 'context' | 'hybrid'
+export type QuestionIntent = 'chitchat' | 'factual' | 'context' | 'hybrid'
 
 /** 把分類器輸出解析成意圖（寬鬆比對；未知回 factual）。純函式，可測。 */
 export function parseIntent(raw: string): QuestionIntent {
   const t = raw.toLowerCase()
+  if (t.includes('chitchat') || t.includes('閒聊') || t.includes('寒暄')) return 'chitchat'
   if (t.includes('hybrid') || t.includes('混合')) return 'hybrid'
   if (t.includes('context') || t.includes('意見') || t.includes('脈絡')) return 'context'
   return 'factual'
@@ -310,10 +312,12 @@ async function classifyIntent(question: string): Promise<QuestionIntent> {
   try {
     const raw = await completeText({
       system: [
-        '你是會議助理的問題分類器。把問題分成三類，只回傳一個詞：',
+        '你是會議助理的問題分類器。把問題分成四類，只回傳一個詞：',
+        'chitchat = 與專案資料和會議討論都無關的寒暄、打招呼、道謝、玩笑（你好嗎、在嗎、how are you、謝謝你、你是誰）',
         'factual = 查專案文件/資料就能回答的事實型問題（日期、金額、規則、名額）',
         'context = 需要對話脈絡或主觀判斷的問題（你覺得如何、有什麼建議、剛才誰說了什麼）',
         'hybrid = 同時需要文件資料與對話脈絡（依照文件看我們的討論/規劃合理嗎）',
+        '範例：「今年銷售多少」→ factual；「hello 蜜塔」→ chitchat；「你覺得剛剛的提案如何」→ context',
       ].join('\n'),
       prompt: `問題：${question}`,
       maxTokens: 10,
@@ -347,6 +351,10 @@ export async function resolveAnswer(
     { meetingInstanceId: session.meetingInstanceId, intent, mode, question: question.slice(0, 40) },
     'resolveAnswer: intent classified',
   )
+
+  if (intent === 'chitchat') {
+    return answerChitchat(question)
+  }
 
   if (intent === 'context') {
     const { answer } = await answerFromTranscript(session, question)
@@ -382,6 +390,22 @@ export async function resolveAnswer(
     session.difyConversationId = conversationId
     session.lastQuestionAt = Date.now()
     factAnswer = answer
+  }
+
+  // 檢索不到（Dify 回 no-result 罐頭句）→ 不照念給使用者，退回逐字稿+LLM 直答。
+  // 這也是分類器誤判（閒聊被判成 factual）時的最後防線。
+  if (dify.isNoResultAnswer(factAnswer)) {
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, intent },
+      'resolveAnswer: RAG no-result, falling back to transcript answer',
+    )
+    try {
+      const { answer } = await answerFromTranscript(session, question)
+      return answer
+    } catch (err) {
+      logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'no-result fallback failed, using RAG answer')
+      return factAnswer
+    }
   }
 
   if (intent !== 'hybrid') return factAnswer
@@ -531,6 +555,25 @@ async function dispatchQuestion(
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion chat failed')
       await sendChatBestEffort(session, '抱歉，查詢時發生錯誤，請稍後再試。')
     }
+  }
+}
+
+// ── 閒聊直答（不碰 Dify、不碰逐字稿）──────────────────────────────────────────
+
+const CHITCHAT_FALLBACK = '我在喔！有什麼需要幫忙的，隨時叫我～'
+
+async function answerChitchat(question: string): Promise<string> {
+  try {
+    const text = await completeText({
+      system:
+        '你是在線的 AI 會議助理蜜塔（Meeta）。有人跟你寒暄或閒聊，請用一到兩句話友善回應，口語、繁體中文、40 字內。不要查資料、不要反問。',
+      prompt: question,
+      maxTokens: 100,
+    })
+    return toTraditional(text.trim() || CHITCHAT_FALLBACK)
+  } catch (err) {
+    logger.warn({ err }, 'answerChitchat failed, using canned reply')
+    return CHITCHAT_FALLBACK
   }
 }
 
