@@ -27,6 +27,34 @@ function welcomeMessage(difyDatasetId: string | null): string {
     : '嗨大家好！我是蜜塔（Meeta），你們今天的會議小幫手 🎉\n\n你可以用語音或聊天室呼叫我：\n  語音：說「蜜塔」或「小幫手」，再接上你的問題\n  聊天室：輸入「蜜塔」或「小幫手」，再接上你的問題\n\n我會根據本次會議的逐字稿記錄來回答問題，例如：\n「蜜塔，剛才提到的時程安排是什麼？」\n\n有問題就找我！'
 }
 
+// ── 知識庫內容卡 ──────────────────────────────────────────────────────────────
+//
+// v0：把專案內「已索引完成」的文件名稱串成清單，掛在 session 上。
+// 意圖分類器（classifyIntent）靠這份清單判斷問題是否與知識庫相關，
+// 避免「今年銷售多少」在知識庫根本沒有銷售資料時仍被分成 factual。
+// 未來 v1 可升級為 LLM 產生的文件摘要卡（欄位共用）。
+
+async function loadKbContentCard(session: MeetingSession, difyDatasetId: string): Promise<void> {
+  try {
+    const materials = await prisma.material.findMany({
+      where: { project: { difyDatasetId }, indexingStatus: 'COMPLETED', deletedAt: null },
+      select: { displayName: true },
+      orderBy: { uploadedAt: 'desc' },
+      take: 30,
+    })
+    session.kbContentCard = materials.length ? materials.map((m) => m.displayName).join('、') : null
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, docCount: materials.length },
+      'kb content card loaded',
+    )
+  } catch (err) {
+    logger.warn(
+      { err, meetingInstanceId: session.meetingInstanceId },
+      'kb content card load failed (non-fatal, classifier runs without it)',
+    )
+  }
+}
+
 // ── startBotSession ─────────────────────────────────────────────────────────
 //
 // 取代舊的 createSession：透過 provider 抽象層派 bot（含 Vexa→Recall failover），
@@ -68,8 +96,12 @@ export async function startBotSession(params: {
     botSession: null,
     difyConversationId: null,
     lastQuestionAt: 0,
+    kbContentCard: null,
   }
   activeSessions.set(meetingInstanceId, session)
+
+  // 內容卡 v0：背景載入知識庫文件名稱清單供意圖分類器參考（失敗不影響開會）
+  if (difyDatasetId) void loadKbContentCard(session, difyDatasetId)
 
   const handlers: LiveHandlers = {
     onSegment: (seg) => {

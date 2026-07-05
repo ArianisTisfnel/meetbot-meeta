@@ -69,4 +69,9 @@ export interface MeetingSession {
   botSession: BotSession | null
   difyConversationId: string | null
   lastQuestionAt: number
+  /**
+   * 知識庫內容卡（v0 = 已索引完成文件的名稱清單）：讓意圖分類器知道知識庫裡有什麼，
+   * 才能判斷問題是否真的查得到（session 啟動時載入一次；null = 無知識庫或載入失敗）。
+   */
+  kbContentCard: string | null
 }

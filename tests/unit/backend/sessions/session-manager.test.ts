@@ -66,6 +66,7 @@ function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     botSession: fakeBotSession(),
     difyConversationId: null,
     lastQuestionAt: 0,
+    kbContentCard: null,
     ...overrides,
   }
   activeSessions.set(session.meetingInstanceId, session)
