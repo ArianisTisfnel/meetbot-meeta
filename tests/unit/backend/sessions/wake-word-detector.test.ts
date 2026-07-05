@@ -11,7 +11,6 @@ const mockBotProvider = vi.hoisted(() => ({
 vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
 vi.mock('../../../../backend/src/lib/dify', () => ({
   askQuestion: vi.fn().mockResolvedValue({ answer: '測試回答', conversationId: 'conv-1' }),
-  isNoResultAnswer: vi.fn((answer: string) => answer.trim() === '抱歉 沒有檢索到相關資訊'),
 }))
 vi.mock('../../../../backend/src/types/env', () => ({
   env: {
@@ -72,6 +71,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     botSession: fakeBotSession,
     difyConversationId: null,
     lastQuestionAt: 0,
+    kbContentCard: null,
     ...overrides,
   }
 }

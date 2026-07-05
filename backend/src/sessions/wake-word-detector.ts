@@ -308,7 +308,7 @@ export function parseIntent(raw: string): QuestionIntent {
   return 'factual'
 }
 
-async function classifyIntent(question: string): Promise<QuestionIntent> {
+async function classifyIntent(question: string, kbContentCard: string | null): Promise<QuestionIntent> {
   try {
     const raw = await completeText({
       system: [
@@ -317,6 +317,13 @@ async function classifyIntent(question: string): Promise<QuestionIntent> {
         'factual = 查專案文件/資料就能回答的事實型問題（日期、金額、規則、名額）',
         'context = 需要對話脈絡或主觀判斷的問題（你覺得如何、有什麼建議、剛才誰說了什麼）',
         'hybrid = 同時需要文件資料與對話脈絡（依照文件看我們的討論/規劃合理嗎）',
+        // 內容卡：讓分類器知道知識庫實際有什麼，別把查不到的事實題硬分成 factual
+        ...(kbContentCard
+          ? [
+              `知識庫目前的文件：${kbContentCard}。`,
+              'factual/hybrid 只給「這些文件看起來能涵蓋」的問題；與文件主題無關的事實題，分 context（讓助理靠對話脈絡回答）。',
+            ]
+          : []),
         '範例：「今年銷售多少」→ factual；「hello 蜜塔」→ chitchat；「你覺得剛剛的提案如何」→ context',
       ].join('\n'),
       prompt: `問題：${question}`,
@@ -346,7 +353,7 @@ export async function resolveAnswer(
   }
 
   // 意圖分流：意見/脈絡型不走 RAG（會答「資料沒提到」）
-  const intent = await classifyIntent(question)
+  const intent = await classifyIntent(question, session.kbContentCard)
   logger.info(
     { meetingInstanceId: session.meetingInstanceId, intent, mode, question: question.slice(0, 40) },
     'resolveAnswer: intent classified',
@@ -390,22 +397,6 @@ export async function resolveAnswer(
     session.difyConversationId = conversationId
     session.lastQuestionAt = Date.now()
     factAnswer = answer
-  }
-
-  // 檢索不到（Dify 回 no-result 罐頭句）→ 不照念給使用者，退回逐字稿+LLM 直答。
-  // 這也是分類器誤判（閒聊被判成 factual）時的最後防線。
-  if (dify.isNoResultAnswer(factAnswer)) {
-    logger.info(
-      { meetingInstanceId: session.meetingInstanceId, intent },
-      'resolveAnswer: RAG no-result, falling back to transcript answer',
-    )
-    try {
-      const { answer } = await answerFromTranscript(session, question)
-      return answer
-    } catch (err) {
-      logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'no-result fallback failed, using RAG answer')
-      return factAnswer
-    }
   }
 
   if (intent !== 'hybrid') return factAnswer
