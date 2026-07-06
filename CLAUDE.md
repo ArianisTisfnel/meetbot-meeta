@@ -80,14 +80,14 @@ meetbot/
 ## 常用指令
 
 ```bash
-# 後端啟動
-cd backend && npx tsx src/index.ts
+# 後端啟動（必須用 npm run dev：script 帶 --env-file .env，裸跑 npx tsx 不會載入環境變數）
+cd backend && npm run dev
 
 # 執行單元測試（從專案根目錄）
 npx vitest run
 
-# Prisma migration
-npx prisma migrate dev
+# DB schema 同步（本專案是 db push 工作流，無 migrations 目錄；需 .env 有 DIRECT_URL）
+npx prisma db push
 
 # DB pull（同步 Vexa public schema）
 npx prisma db pull   # ⚠️ 執行後務必 diff，只保留 User/Meeting/Transcription
@@ -124,6 +124,7 @@ npx prisma db pull   # ⚠️ 執行後務必 diff，只保留 User/Meeting/Tran
 | 後端架構（Session/WS/摘要） | `docs/06-後端架構.md` |
 | 系統現況/路線圖/可測清單/使用的開源 | `docs/13-系統現況與路線圖.md` |
 | 環境變數（.env）設定、速查與除錯 | `docs/13-Recall-Failover-開發設定.md`（第七節起） |
+| 拉新 code 後的部署步驟（依序照做） | `docs/14-部署步驟.md` |
 
 ### 🔒 凍結快照（歷史紀錄，勿當現況）
 
