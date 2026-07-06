@@ -72,10 +72,33 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Prisma client ready." -ForegroundColor Green
 }
 
-# 5. Start backend + frontend together (Ctrl+C stops both)
+# 5. Start ngrok tunnel for Recall realtime webhook.
+# Recall POSTs realtime transcript/chat to RECALL_WEBHOOK_URL, forwarded to local backend(4000).
+# The domain is read from each developer's backend\.env (authtoken is stored in ngrok config).
+Write-Host "Starting ngrok tunnel (Recall webhook)..." -ForegroundColor Cyan
+$ngrokExe = "$rootDir\tools\ngrok.exe"
+$webhookUrl = $null
+$envFile = "$rootDir\backend\.env"
+if (Test-Path $envFile) {
+    $line = Select-String -Path $envFile -Pattern '^\s*RECALL_WEBHOOK_URL=' | Select-Object -First 1
+    if ($line) { $webhookUrl = ($line.Line -replace '^\s*RECALL_WEBHOOK_URL=', '').Trim().Trim('"') }
+}
+if (-not (Test-Path $ngrokExe)) {
+    Write-Host "Note: tools\ngrok.exe not found -> skipping ngrok (Recall realtime voice/chat will not work; everything else is fine)." -ForegroundColor Yellow
+} elseif (-not $webhookUrl) {
+    Write-Host "Note: RECALL_WEBHOOK_URL not set in backend\.env -> skipping ngrok (Recall realtime will not work)." -ForegroundColor Yellow
+} elseif (Get-Process ngrok -ErrorAction SilentlyContinue) {
+    Write-Host "ngrok already running." -ForegroundColor Green
+} else {
+    Start-Process -FilePath $ngrokExe -ArgumentList 'http', "--url=$webhookUrl", '4000' -WindowStyle Minimized
+    Write-Host "ngrok started -> $webhookUrl" -ForegroundColor Green
+}
+
+# 6. Start backend + frontend together (Ctrl+C stops both)
 Write-Host ""
 Write-Host "Starting backend (port 4000) and frontend (port 3000)..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop all services." -ForegroundColor Gray
+Write-Host "(ngrok runs in a separate minimized window; to stop it: Stop-Process -Name ngrok)" -ForegroundColor Gray
 Write-Host ""
 Set-Location $rootDir
 npm start

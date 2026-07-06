@@ -1,6 +1,7 @@
 'use client'
 import { useBotReinvite } from '@/hooks/use-meeting'
 import { Button } from '@/components/ui/button'
+import { RefreshIcon } from '@/components/ui/icons'
 import { toast } from 'sonner'
 
 interface Props {
@@ -35,9 +36,10 @@ export function ReinviteBotButton({
       size={compact ? 'sm' : undefined}
       onClick={handleReinvite}
       disabled={reinvite.isPending}
-      className={compact ? 'h-7 px-2 text-xs' : undefined}
+      className={compact ? 'h-7 gap-1 px-2 text-xs' : 'gap-1.5'}
     >
-      {reinvite.isPending ? '邀請中…' : compact ? '🔄 重邀' : `🔄 ${label}`}
+      <RefreshIcon className={compact ? 'size-3.5' : 'size-4'} />
+      {reinvite.isPending ? '邀請中…' : compact ? '重邀' : label}
     </Button>
   )
 }

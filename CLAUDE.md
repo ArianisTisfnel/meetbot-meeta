@@ -122,6 +122,8 @@ npx prisma db pull   # ⚠️ 執行後務必 diff，只保留 User/Meeting/Tran
 | API 端點與錯誤碼 | `docs/04-API設計.md` |
 | 前端路由與 Hook 設計 | `docs/05-前端架構.md` |
 | 後端架構（Session/WS/摘要） | `docs/06-後端架構.md` |
+| 系統現況/路線圖/可測清單/使用的開源 | `docs/13-系統現況與路線圖.md` |
+| 環境變數（.env）設定、速查與除錯 | `docs/13-Recall-Failover-開發設定.md`（第七節起） |
 
 ### 🔒 凍結快照（歷史紀錄，勿當現況）
 

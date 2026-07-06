@@ -67,3 +67,12 @@ docs/*.zip/
 
 # Next.js build
 frontend/.next/
+
+# 本機工具（ngrok 等，勿入版控）
+tools/
+
+# Backend runtime logs
+backend/logs/
+
+# EOU turn-detector model files (downloaded on first run)
+backend/models/

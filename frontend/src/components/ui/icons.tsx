@@ -174,6 +174,15 @@ export function PanelLeftIcon(p: IconProps) {
   )
 }
 
+export function RefreshIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.7-4" />
+      <path d="M13.5 2.5V6h-3.5" />
+    </Svg>
+  )
+}
+
 export function LogoutIcon(p: IconProps) {
   return (
     <Svg {...p}>

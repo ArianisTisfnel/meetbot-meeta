@@ -1,4 +1,5 @@
 import { env } from '../types/env.js'
+import { toTraditional } from './zh.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
 
@@ -34,14 +35,21 @@ export async function deleteDataset(datasetId: string): Promise<void> {
 }
 
 export type ChunkingOptions = {
+  parentMode?: 'paragraph' | 'full-doc'
   parentSeparator?: string
   parentMaxTokens?: number
+  parentOverlap?: number
   childSeparator?: string
   childMaxTokens?: number
   childOverlap?: number
   docLanguage?: string
 }
 
+/**
+ * 產生 parent-child（hierarchical）chunking 的 process_rule。
+ * 注意：要真正啟用 parent-child，必須在 data 同時帶 `doc_form: 'hierarchical_model'`（見 uploadDocument）；
+ * 只設 process_rule.mode='hierarchical' 而少了 doc_form，Dify 會退回 general（text_model）。
+ */
 function buildProcessRule(opts: ChunkingOptions = {}) {
   return {
     mode: 'hierarchical',
@@ -50,17 +58,18 @@ function buildProcessRule(opts: ChunkingOptions = {}) {
         { id: 'remove_extra_spaces', enabled: true },
         { id: 'remove_urls_emails', enabled: false },
       ],
+      parent_mode: opts.parentMode ?? 'paragraph',
       segmentation: {
-        separator: opts.parentSeparator ?? '\n',
+        separator: opts.parentSeparator ?? '\n\n',
         max_tokens: opts.parentMaxTokens ?? 1500,
+        chunk_overlap: opts.parentOverlap ?? 150,
       },
       subchunk_segmentation: {
-        separator: opts.childSeparator ?? '。',
+        separator: opts.childSeparator ?? '\n',
         max_tokens: opts.childMaxTokens ?? 500,
         chunk_overlap: opts.childOverlap ?? 75,
       },
     },
-    doc_language: opts.docLanguage ?? 'Chinese',
   }
 }
 
@@ -77,6 +86,9 @@ export async function uploadDocument(
     'data',
     JSON.stringify({
       indexing_technique: 'high_quality',
+      // 關鍵：doc_form=hierarchical_model 才會用 parent-child；缺這個會被當成 general。
+      doc_form: 'hierarchical_model',
+      doc_language: chunking.docLanguage ?? 'Chinese',
       process_rule: buildProcessRule(chunking),
     }),
   )
@@ -135,6 +147,22 @@ export async function deleteDocument(datasetId: string, documentId: string): Pro
   await request<void>('DELETE', `/datasets/${datasetId}/documents/${documentId}`)
 }
 
+/**
+ * 取文件已切好的 chunk 內容（前 limit 段）。
+ * 用於內容摘要卡：重用 Dify 的文字抽取結果，後端不必自己解析 PDF。
+ */
+export async function getDocumentSegments(
+  datasetId: string,
+  documentId: string,
+  limit = 5,
+): Promise<string[]> {
+  const data = await request<{ data: Array<{ content?: string }> }>(
+    'GET',
+    `/datasets/${datasetId}/documents/${documentId}/segments?page=1&limit=${limit}`,
+  )
+  return (data.data ?? []).map((seg) => seg.content ?? '').filter((c) => c.trim())
+}
+
 // ── RAG Q&A（Dify Chatflow）─────────────────────────────────────────────────
 
 const DIFY_NO_RESULT_SENTINEL = '抱歉 沒有檢索到相關資訊'
@@ -146,6 +174,7 @@ export async function askQuestion(params: {
   userId: string
   conversationId?: string | null
 }): Promise<{ answer: string; conversationId: string }> {
+  const startedAt = Date.now()
   const res = await fetch(`${env.DIFY_API_BASE}/chat-messages`, {
     method: 'POST',
     headers: {
@@ -171,7 +200,8 @@ export async function askQuestion(params: {
   }
 
   const data = (await res.json()) as { answer?: string; conversation_id?: string }
-  const answer = data.answer ?? '抱歉，無法取得回答。'
+  // LLM 輸出偶爾夾簡體 → 統一轉繁體（會直接顯示在會議聊天室 / TTS 念出）。
+  const answer = toTraditional(data.answer ?? '抱歉，無法取得回答。')
 
   if (answer === DIFY_NO_RESULT_SENTINEL) {
     // 靜默失效偵測：RAG 可能因 DIFY_DATASET_API_KEY 未設定而失效
@@ -186,6 +216,7 @@ export async function askQuestion(params: {
         userId: params.userId,
         conversationId: data.conversation_id ?? '',
         answerLength: answer.length,
+        difyMs: Date.now() - startedAt,
       },
       'Dify Chatflow answered (RAG hit)',
     )
@@ -277,14 +308,17 @@ export async function generateSummary(params: {
     raw = raw.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim()
     const parsed = JSON.parse(raw)
     return {
-      summary: parsed.summary ?? '',
-      actionItems: parsed.action_items ?? [],
-      keyTopics: parsed.key_topics ?? [],
-      decisions: parsed.decisions ?? [],
+      summary: toTraditional(parsed.summary ?? ''),
+      actionItems: (parsed.action_items ?? []).map((it: { task?: string; owner?: string }) => ({
+        task: toTraditional(it.task ?? ''),
+        owner: toTraditional(it.owner ?? ''),
+      })),
+      keyTopics: (parsed.key_topics ?? []).map((t: string) => toTraditional(t)),
+      decisions: (parsed.decisions ?? []).map((d: string) => toTraditional(d)),
     }
   } catch {
     return {
-      summary: data.data?.outputs?.result_json ?? '',
+      summary: toTraditional(data.data?.outputs?.result_json ?? ''),
       actionItems: [],
       keyTopics: [],
       decisions: [],

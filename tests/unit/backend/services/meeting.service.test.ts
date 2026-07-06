@@ -5,7 +5,8 @@ import { mockVexa } from '../../../mocks/vexa.mock'
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('../../../../backend/src/lib/vexa', () => mockVexa)
 vi.mock('../../../../backend/src/sessions/session-manager', () => ({
-  createSession: vi.fn().mockResolvedValue(undefined),
+  startBotSession: vi.fn().mockResolvedValue(undefined),
+  closeSession: vi.fn().mockResolvedValue(undefined),
   handleSessionClose: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -94,27 +95,20 @@ describe('createMeeting', () => {
     expect(mockPrisma.meetingInstance.create).not.toHaveBeenCalled()
   })
 
-  it('Vexa 403 並發競態 → 刪除 PENDING record → 409 BOT_CONCURRENT_LIMIT', async () => {
-    mockVexa.inviteBot.mockRejectedValue(new mockVexa.VexaConcurrentLimitError())
-
-    await expect(createMeeting(BASE_PARAMS)).rejects.toMatchObject({
-      code: 'BOT_CONCURRENT_LIMIT',
-      statusCode: 409,
-    })
-
-    expect(mockPrisma.meetingInstance.create).toHaveBeenCalled()
-    expect(mockPrisma.meetingInstance.delete).toHaveBeenCalledWith({
-      where: { id: MOCK_MEETING.id },
-    })
-  })
-
-  it('Vexa 其他錯誤 → 保留 PENDING record，不刪除', async () => {
-    mockVexa.inviteBot.mockRejectedValue(new Error('network error'))
-
+  it('通過前置檢查 → 建立 PENDING、回傳 PENDING、並在背景觸發 startBotSession（派 bot/failover 不阻塞回應）', async () => {
     const result = await createMeeting(BASE_PARAMS)
 
     expect(result.status).toBe('PENDING')
-    expect(mockPrisma.meetingInstance.delete).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.create).toHaveBeenCalled()
+    // 派 bot（含 Vexa→Recall failover）改由背景的 startBotSession 處理。
+    expect(sessionManagerMock.startBotSession).toHaveBeenCalledTimes(1)
+    expect(sessionManagerMock.startBotSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        meetingInstanceId: MOCK_MEETING.id,
+        googleMeetUrl: BASE_PARAMS.googleMeetUrl,
+        creatorVexaToken: BASE_PARAMS.vexaToken,
+      }),
+    )
   })
 })
 

@@ -43,15 +43,6 @@ function LoginForm() {
 
   return (
     <main className="w-full max-w-sm">
-      {/* 仿 Meet 字幕的小提示，連結 landing 的逐字稿語彙 */}
-      <p
-        className="mb-rise mx-auto mb-8 flex w-fit items-center gap-2 rounded-full bg-hive px-4 py-2 text-xs text-hive-fg"
-        style={{ '--d': '0.1s' } as React.CSSProperties}
-      >
-        <span className="font-mono text-hive-faint">10:02</span>
-        蜜塔已加入會議
-      </p>
-
       <div
         className="mb-rise rounded-2xl border border-line bg-paper p-8 shadow-sm"
         style={{ '--d': '0.2s' } as React.CSSProperties}

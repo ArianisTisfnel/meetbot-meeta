@@ -37,6 +37,21 @@ export async function upsertFile(path: string, buffer: Buffer, mimeType: string)
   }
 }
 
+/** 下載 Storage 檔案為文字；404（檔案不存在）回傳 null，其餘錯誤丟出。 */
+export async function downloadTextFile(path: string): Promise<string | null> {
+  const res = await fetch(`${BASE}/${env.SUPABASE_STORAGE_BUCKET}/${path}`, {
+    method: 'GET',
+    headers: headers(),
+  })
+
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new AppError('EXTERNAL_SERVICE_ERROR', 503, `Supabase download error ${res.status}: ${text}`)
+  }
+  return res.text()
+}
+
 export async function deleteFile(path: string): Promise<void> {
   const res = await fetch(`${BASE}/${env.SUPABASE_STORAGE_BUCKET}`, {
     method: 'DELETE',

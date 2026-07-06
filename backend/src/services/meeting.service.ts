@@ -1,12 +1,9 @@
 import { prisma } from '../lib/prisma.js'
-import * as vexaClient from '../lib/vexa.js'
-import { VexaConcurrentLimitError, parseGoogleMeetUrl } from '../lib/vexa.js'
+import { parseGoogleMeetUrl } from '../lib/vexa.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
-import { createSession, closeSession, handleSessionClose } from '../sessions/session-manager.js'
+import { startBotSession, closeSession, handleSessionClose } from '../sessions/session-manager.js'
 import { recordActivity } from './activity.service.js'
-
-const PLATFORM = 'google_meet'
 
 const BOT_REQUIRED_SCOPES = ['bot', 'browser', 'tx']
 
@@ -153,46 +150,16 @@ export async function createMeeting(params: {
     })
   }
 
-  // ④ 邀請 Vexa Bot
-  let vexaMeetingId: number
-  try {
-    const result = await vexaClient.inviteBot({ googleMeetUrl, vexaToken })
-    vexaMeetingId = result.vexaMeetingId
-  } catch (err) {
-    if (err instanceof VexaConcurrentLimitError) {
-      // 並發競態：刪除剛建立的 PENDING record，回傳 409
-      await prisma.meetingInstance.delete({ where: { id: meeting.id } })
-      throw new AppError('BOT_CONCURRENT_LIMIT', 409, `您目前已有進行中的 Bot，無法再建立`, {
-        maxConcurrentBots,
-        activeBotCount,
-      })
-    }
-    // 其他錯誤（網路/逾時）：保留 PENDING，UI 顯示重試
-    logger.warn({ err, meetingId: meeting.id }, 'inviteBot failed, keeping PENDING')
-    return formatMeetingResponse(meeting, vexaUserId, projectName)
-  }
-
-  // ⑤ 建立 WS Session
-  try {
-    await createSession(meeting.id, {
-      vexaMeetingId,
-      platform: PLATFORM,
-      nativeMeetingId,
-      difyDatasetId,
-      creatorVexaToken: vexaToken,
-    })
-    // 成功：更新 DB 中的 Vexa IDs（狀態維持 PENDING，等 WS active 事件後才轉 ACTIVE）
-    await prisma.meetingInstance.update({
-      where: { id: meeting.id },
-      data: { vexaMeetingId, vexaNativeMeetingId: nativeMeetingId, creatorApiTokenId: vexaApiTokenId },
-    })
-  } catch (err) {
-    // WS 連線失敗：撤銷 Bot，保留 PENDING
-    logger.warn({ err, meetingId: meeting.id }, 'createSession failed, removing bot')
-    await vexaClient.removeBot(PLATFORM, nativeMeetingId, vexaToken).catch((e) =>
-      logger.warn({ e }, 'removeBot after createSession failure also failed'),
-    )
-  }
+  // ④ 透過 provider 抽象層派 bot（含 Vexa→Recall failover）。
+  //    背景執行、不阻塞此回應：bot 被 admitted → DB 轉 ACTIVE；兩個 provider 都進不去 → DB 轉 FAILED。
+  //    狀態維持 PENDING 直到背景流程有結果（沿用既有「PENDING→ACTIVE」輪詢 UX）。
+  void startBotSession({
+    meetingInstanceId: meeting.id,
+    googleMeetUrl,
+    nativeMeetingId,
+    difyDatasetId,
+    creatorVexaToken: vexaToken,
+  })
 
   return formatMeetingResponse(meeting, vexaUserId, projectName)
 }
@@ -230,25 +197,7 @@ export async function leaveMeeting(meetingInstanceId: string): Promise<{
     throw new AppError('INVALID_REQUEST', 400, '只有進行中的會議才能讓 Bot 離開')
   }
 
-  // 取得邀請者 token（可能已過期）
-  const tokenRows = await prisma.$queryRaw<Array<{ token: string }>>`
-    SELECT token FROM public.api_tokens
-    WHERE id = ${meeting.creatorApiTokenId}
-      AND (expires_at IS NULL OR expires_at > NOW())
-    LIMIT 1
-  `
-
-  if (!tokenRows.length) {
-    logger.warn({ meetingInstanceId }, 'leaveMeeting: creator token expired, skipping DELETE /bots')
-  } else {
-    try {
-      await vexaClient.removeBot(PLATFORM, meeting.vexaNativeMeetingId!, tokenRows[0].token)
-    } catch (err) {
-      logger.warn({ err, meetingInstanceId }, 'leaveMeeting: removeBot failed, continuing')
-    }
-  }
-
-  // handleSessionClose 原子鎖更新 DB
+  // handleSessionClose 原子鎖更新 DB，並透過 provider 抽象層讓 bot 離開（含撤除）。
   await handleSessionClose(meetingInstanceId)
 
   return {
@@ -278,27 +227,10 @@ export async function cancelMeeting(meetingInstanceId: string): Promise<{
     throw new AppError('INVALID_REQUEST', 400, '只有等待中（蜜塔加入中）的會議才能取消')
   }
 
-  // 關閉可能存在的 WS session（closeSession 先從 Map 移除再關閉，避免自動重連）
+  // 關閉可能存在的 session（closeSession 先從 Map 移除再透過 provider 讓 bot 離開，避免重連/遺留）
   await closeSession(meetingInstanceId).catch((err) =>
     logger.warn({ err, meetingInstanceId }, 'cancelMeeting: closeSession failed, continuing'),
   )
-
-  // 若已派出 Vexa bot，嘗試撤除（best effort）
-  if (meeting.vexaNativeMeetingId) {
-    const tokenRows = await prisma.$queryRaw<Array<{ token: string }>>`
-      SELECT token FROM public.api_tokens
-      WHERE id = ${meeting.creatorApiTokenId}
-        AND (expires_at IS NULL OR expires_at > NOW())
-      LIMIT 1
-    `
-    if (tokenRows.length) {
-      try {
-        await vexaClient.removeBot(PLATFORM, meeting.vexaNativeMeetingId, tokenRows[0].token)
-      } catch (err) {
-        logger.warn({ err, meetingInstanceId }, 'cancelMeeting: removeBot failed, continuing')
-      }
-    }
-  }
 
   const updated = await prisma.meetingInstance.update({
     where: { id: meetingInstanceId },
@@ -306,6 +238,67 @@ export async function cancelMeeting(meetingInstanceId: string): Promise<{
   })
 
   return { id: meetingInstanceId, status: updated.status, endedAt: updated.endedAt! }
+}
+
+// ── Delete meeting ───────────────────────────────────────────────────────────
+
+/**
+ * 刪除一筆會議記錄（硬刪除）。
+ * 授權：專案會議僅「專案擁有者」可刪；全局（無專案）會議僅建立者本人可刪。
+ * 安全限制：ACTIVE / PENDING（蜜塔仍在或加入中）不可刪，須先結束或取消。
+ * 清理：best-effort 刪除 Storage 內的逐字稿檔；會議 row 為硬刪除。
+ * 歷史：專案會議刪除記入專案活動（MEETING_DELETE）。
+ */
+export async function deleteMeeting(
+  meetingId: string,
+  vexaUserId: number,
+  projectId?: string,
+): Promise<void> {
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: projectId ? { id: meetingId, projectId } : { id: meetingId },
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      transcriptStoragePath: true,
+      projectId: true,
+      createdByVexaUserId: true,
+    },
+  })
+  if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+
+  // 授權：專案會議僅擁有者可刪；全局會議僅建立者本人可刪（以 DB 的 projectId 為準）。
+  if (meeting.projectId) {
+    const project = await getProjectWithAccess(meeting.projectId, vexaUserId)
+    if (project.ownerVexaUserId !== vexaUserId) {
+      throw new AppError('PERMISSION_DENIED', 403, '只有專案擁有者可刪除此會議')
+    }
+  } else if (meeting.createdByVexaUserId !== vexaUserId) {
+    throw new AppError('PERMISSION_DENIED', 403, '只有建立者可刪除此會議')
+  }
+
+  if (meeting.status === 'ACTIVE' || meeting.status === 'PENDING') {
+    throw new AppError('INVALID_REQUEST', 400, '進行中或加入中的會議無法刪除，請先結束或取消')
+  }
+
+  // best-effort 清掉 Storage 逐字稿檔（失敗不擋刪除）
+  if (meeting.transcriptStoragePath) {
+    const { deleteFile } = await import('../lib/supabase.js')
+    await deleteFile(meeting.transcriptStoragePath).catch((err: unknown) =>
+      logger.warn({ err, meetingId }, 'deleteMeeting: failed to delete transcript storage file'),
+    )
+  }
+
+  await prisma.meetingInstance.delete({ where: { id: meetingId } })
+
+  if (meeting.projectId) {
+    await recordActivity({
+      projectId: meeting.projectId,
+      actorVexaUserId: vexaUserId,
+      action: 'MEETING_DELETE',
+      targetLabel: meeting.name,
+    })
+  }
 }
 
 // ── Re-invite bot ──────────────────────────────────────────────────────────────
@@ -391,42 +384,14 @@ export async function reinviteBot(params: {
     },
   })
 
-  // 邀請 Vexa Bot
-  let vexaMeetingId: number
-  try {
-    const result = await vexaClient.inviteBot({ googleMeetUrl: meeting.googleMeetUrl, vexaToken })
-    vexaMeetingId = result.vexaMeetingId
-  } catch (err) {
-    if (err instanceof VexaConcurrentLimitError) {
-      throw new AppError('BOT_CONCURRENT_LIMIT', 409, '您目前已有進行中的 Bot，無法再邀請', {
-        maxConcurrentBots,
-        activeBotCount,
-      })
-    }
-    // 其他錯誤：保留 PENDING，UI 顯示可重試
-    logger.warn({ err, meetingInstanceId }, 'reinviteBot: inviteBot failed, keeping PENDING')
-    return { id: meetingInstanceId, status: 'PENDING' }
-  }
-
-  // 建立 WS Session
-  try {
-    await createSession(meetingInstanceId, {
-      vexaMeetingId,
-      platform: PLATFORM,
-      nativeMeetingId,
-      difyDatasetId: meeting.project?.difyDatasetId ?? null,
-      creatorVexaToken: vexaToken,
-    })
-    await prisma.meetingInstance.update({
-      where: { id: meetingInstanceId },
-      data: { vexaMeetingId, vexaNativeMeetingId: nativeMeetingId },
-    })
-  } catch (err) {
-    logger.warn({ err, meetingInstanceId }, 'reinviteBot: createSession failed, removing bot')
-    await vexaClient.removeBot(PLATFORM, nativeMeetingId, vexaToken).catch((e) =>
-      logger.warn({ e }, 'reinviteBot: removeBot after createSession failure also failed'),
-    )
-  }
+  // 透過 provider 抽象層派 bot（含 Vexa→Recall failover），背景等待 admitted。
+  void startBotSession({
+    meetingInstanceId,
+    googleMeetUrl: meeting.googleMeetUrl,
+    nativeMeetingId,
+    difyDatasetId: meeting.project?.difyDatasetId ?? null,
+    creatorVexaToken: vexaToken,
+  })
 
   return { id: meetingInstanceId, status: 'PENDING' }
 }
@@ -480,7 +445,7 @@ export async function listMeetings(vexaUserId: number, params: ListMeetingsParam
       orderBy: { createdAt: order },
       skip: (page - 1) * perPage,
       take: perPage,
-      include: { project: { select: { name: true } } },
+      include: { project: { select: { name: true, ownerVexaUserId: true } } },
     }),
     prisma.meetingInstance.count({ where }),
   ])
@@ -495,6 +460,10 @@ export async function listMeetings(vexaUserId: number, params: ListMeetingsParam
       projectName: m.project?.name ?? null,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      // 刪除權：專案會議看擁有者、全局會議看建立者
+      canDelete: m.projectId
+        ? m.project?.ownerVexaUserId === vexaUserId
+        : m.createdByVexaUserId === vexaUserId,
       createdAt: m.createdAt,
     })),
     total,
@@ -531,6 +500,8 @@ export async function listProjectMeetings(
     prisma.meetingInstance.count({ where }),
   ])
 
+  const canDelete = project.ownerVexaUserId === vexaUserId
+
   return {
     items: items.map((m) => ({
       id: m.id,
@@ -539,6 +510,7 @@ export async function listProjectMeetings(
       status: m.status,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      canDelete,
       createdAt: m.createdAt,
     })),
     total,
@@ -582,6 +554,13 @@ export async function getMeeting(meetingId: string, vexaUserId: number) {
     endedAt: meeting.endedAt ?? null,
     summary: meeting.summary ?? null,
     actionItems: meeting.actionItems ?? null,
+    keyTopics: meeting.keyTopics ?? null,
+    decisions: meeting.decisions ?? null,
+    hasTranscript: Boolean(meeting.transcriptStoragePath),
+    // 刪除權：專案會議看擁有者、全局會議看建立者
+    canDelete: meeting.projectId
+      ? meeting.project?.ownerVexaUserId === vexaUserId
+      : meeting.createdByVexaUserId === vexaUserId,
     createdAt: meeting.createdAt,
     updatedAt: meeting.updatedAt,
   }
@@ -615,9 +594,30 @@ export async function getProjectMeeting(
     endedAt: meeting.endedAt ?? null,
     summary: meeting.summary ?? null,
     actionItems: meeting.actionItems ?? null,
+    keyTopics: meeting.keyTopics ?? null,
+    decisions: meeting.decisions ?? null,
+    hasTranscript: Boolean(meeting.transcriptStoragePath),
+    // 專案會議：刪除權看是否為專案擁有者
+    canDelete: project.ownerVexaUserId === vexaUserId,
     createdAt: meeting.createdAt,
     updatedAt: meeting.updatedAt,
   }
+}
+
+/**
+ * 取得會後完整逐字稿的 Markdown（provider-agnostic）。
+ * 來源為摘要階段存進 Supabase Storage 的 transcript.md——這是 Recall 會議結束後
+ * 唯一可靠的逐字稿來源（session 已離開記憶體、Recall bot id 未持久化，無法即時重抓）。
+ * 權限與 getMeeting / getProjectMeeting 一致（呼叫端先做存取檢查）。
+ */
+export async function getMeetingTranscriptMarkdown(meetingId: string): Promise<string | null> {
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: { id: meetingId },
+    select: { transcriptStoragePath: true },
+  })
+  if (!meeting?.transcriptStoragePath) return null
+  const { downloadTextFile } = await import('../lib/supabase.js')
+  return downloadTextFile(meeting.transcriptStoragePath)
 }
 
 export async function updateMeetingName(
