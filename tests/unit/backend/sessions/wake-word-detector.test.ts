@@ -11,6 +11,7 @@ const mockBotProvider = vi.hoisted(() => ({
 vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
 vi.mock('../../../../backend/src/lib/dify', () => ({
   askQuestion: vi.fn().mockResolvedValue({ answer: '測試回答', conversationId: 'conv-1' }),
+  DIFY_NO_RESULT_SENTINEL: '抱歉 沒有檢索到相關資訊',
 }))
 vi.mock('../../../../backend/src/types/env', () => ({
   env: {

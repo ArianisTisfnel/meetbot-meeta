@@ -4,6 +4,14 @@ import { activeSessions } from './session-store.js'
 import { resolveAnswer, sendChatBestEffort, speakProactive } from './wake-word-detector.js'
 import { warmEouModel, isEndOfTurn } from '../lib/eou.js'
 import { completeText } from '../lib/llm.js'
+import { DIFY_NO_RESULT_SENTINEL } from '../lib/dify.js'
+import {
+  formatConversation,
+  ICEBREAKER_OPENING_NO_KB,
+  ICEBREAKER_OPENING_WITH_KB,
+  ICEBREAKER_SUMMARY_SYSTEM,
+  INTERJECTION_DECISION_SYSTEM,
+} from './interjection-prompts.js'
 import type { MeetingSession } from '../types/session.js'
 
 // livekit 時機層啟用時，啟動階段就下載/載入模型（首場會議不用付冷啟成本）。
@@ -156,23 +164,21 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   let text: string
   if (humanEntries.length < 2) {
     // 開場沉默：罐頭引導
-    text = session.difyDatasetId
-      ? '大家好像還沒開始討論～需要暖身的話，可以直接問我專案資料的問題，例如重要日期或規則，我都查得到喔。'
-      : '大家好像還沒開始討論～有需要我幫忙的地方，隨時叫「蜜塔」就可以了。'
+    text = session.difyDatasetId ? ICEBREAKER_OPENING_WITH_KB : ICEBREAKER_OPENING_NO_KB
   } else {
     // 會議中沉默：總結＋拋問題
     try {
-      const context = s.window
-        .slice(-DECISION_CONTEXT_ENTRIES)
-        .map((e) => `[${e.fromBot ? '蜜塔(你)' : e.speaker || '參與者'}] ${e.text}`)
-        .join('\n')
+      const context = formatConversation(s.window.slice(-DECISION_CONTEXT_ENTRIES), { chatMarker: false })
       text = await completeText({
-        system:
-          '你是會議 AI 助理蜜塔。現場已沉默一段時間，請用一到兩句話總結目前討論到哪，再拋出一個能推進討論的具體問題。口語、繁體中文、60 字內。',
+        system: ICEBREAKER_SUMMARY_SYSTEM,
         prompt: `最近的對話：\n\n${context}`,
         maxTokens: 200,
       })
-      if (!text.trim()) return
+      if (!text.trim()) {
+        // 空文案：本輪不出聲，但監看不能斷——否則要等到下一筆活動才會復活
+        armIcebreaker(meetingInstanceId)
+        return
+      }
     } catch (err) {
       logger.warn({ err, meetingInstanceId }, 'icebreaker: LLM failed, skipping')
       armIcebreaker(meetingInstanceId)
@@ -239,24 +245,11 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   s.evaluating = true
   try {
     const recent = s.window.slice(-DECISION_CONTEXT_ENTRIES)
-    const context = recent
-      .map((e) => `[${e.fromBot ? '蜜塔(你)' : e.speaker || '參與者'}${e.source === 'chat' ? '·聊天室' : ''}] ${e.text}`)
-      .join('\n')
+    const context = formatConversation(recent, { chatMarker: true })
 
     const raw = await completeText({
       maxTokens: 200,
-      system: [
-        '你是會議 AI 助理「蜜塔」的插話決策器。根據最近的對話判斷蜜塔現在是否應該主動補充。',
-        '只有同時滿足以下條件才插話：',
-        '1. 有人提出了明確的問題或資訊需求，且沒有指名要問某個人',
-        '2. 這個問題看起來能靠會議資料或專案文件回答（事實型問題）',
-        '3. 對話中沒有人（包括蜜塔自己）已經回答過它',
-        '不確定就不插話。閒聊、意見交流、寒暄一律不插話。',
-        'question 欄位規則：必須是「對話中某位參與者實際說出的問題」的原樣或忠實濃縮。',
-        '絕對不可以填你想反問參與者的問題、不可自行發明或擴寫問題。',
-        '若對方的問題太模糊、你需要反問才能釐清 → 直接 interject 給 false。',
-        '只回傳 JSON（不要 markdown）：{"interject": true/false, "question": "（interject 為 false 時給空字串）"}',
-      ].join('\n'),
+      system: INTERJECTION_DECISION_SYSTEM,
       prompt: `最近的對話：\n\n${context}`,
     })
 
@@ -282,6 +275,17 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
     const answer = await resolveAnswer(session, decision.question, 'chat')
 
     s.lastInterjectionAt = Date.now()
+
+    // 檢索沒中（Dify 哨兵句）或空答案 → 沒東西可補充，安靜放棄本次插話。
+    // 冷卻照計：同一個答不出的問題若反覆觸發決策＋檢索，只是浪費 quota。
+    // （喚醒詞問答不在此列——使用者點名問就必須回應，哨兵句照常唸出。）
+    if (!answer.trim() || answer === DIFY_NO_RESULT_SENTINEL) {
+      logger.info(
+        { meetingInstanceId, question: decision.question.slice(0, 40) },
+        'interjection: no retrievable answer (sentinel/empty), skipping delivery',
+      )
+      return
+    }
 
     // 投遞方式看現場：查詢期間有人開口/蜜塔正在說話 → 聊天室（不打擾）；
     // 仍然沉默 → 語音說出來（沉默中丟訊息沒人會看）。
