@@ -59,6 +59,11 @@ export interface MeetingSession {
    */
   speechStartedAt: number
   /**
+   * 目前這段語音「預估唸完」的時刻（epoch ms）。speak() 送出即返回、再 POST 會蓋台，
+   * 下一段語音（答案）開口前要等到此刻之後。0 = 沒有在播的語音。
+   */
+  speechEndsAt: number
+  /**
    * 聊天室訊息紀錄（含蜜塔自己的回覆），會後併入逐字稿。at = epoch ms。
    * channel：'voice' = 這則其實是蜜塔的語音發言（逐字稿標「（語音）」；
    * bot 聲音被 provider 過濾不進 STT，靠這裡留痕）；預設 'chat'。

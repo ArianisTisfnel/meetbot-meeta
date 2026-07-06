@@ -36,7 +36,13 @@ import {
   handleChatMessage,
   handleBargeIn,
   parseIntent,
+  speechTiming,
 } from '../../../../backend/src/sessions/wake-word-detector'
+
+// 語音播放估時歸零：測試裡 speak 是即時 mock，不能真等「開場白唸完」的 3-6 秒
+speechTiming.msPerChar = 0
+speechTiming.extraMs = 0
+speechTiming.floorMs = 0
 import type { MeetingSession } from '../../../../backend/src/types/session'
 import type { BotSession } from '../../../../backend/src/provider/types'
 
@@ -64,6 +70,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     partialAckAt: 0,
     currentSpeech: null,
     speechStartedAt: 0,
+    speechEndsAt: 0,
     bargeEpoch: 0,
     chatLog: [],
     sessionStartedAt: 0,

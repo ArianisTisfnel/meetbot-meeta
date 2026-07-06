@@ -99,6 +99,7 @@ export async function startBotSession(params: {
     partialAckAt: 0,
     currentSpeech: null,
     speechStartedAt: 0,
+    speechEndsAt: 0,
     bargeEpoch: 0,
     chatLog: [],
     sessionStartedAt: 0,

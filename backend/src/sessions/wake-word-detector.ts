@@ -25,6 +25,20 @@ export const PROGRESS_VOICE = '等等喔，我正在頭腦風暴！'
 const PROGRESS_NOTICE_MS = 10_000
 
 /**
+ * 語音播放速度估算參數（speak() 送出即返回，播放進度只能用估的）。
+ * 匯出供測試歸零（單元測試不能真等 3-6 秒）。
+ */
+export const speechTiming = { msPerChar: 250, extraMs: 1500, floorMs: 3000 }
+
+/**
+ * 以字數估算一段語音的播放毫秒。speak() 是「送出就返回」（不等播放完），
+ * 再 POST 新音檔會蓋掉播放中的 → 開口前必須等上一段唸完。
+ */
+function estimateSpeechMs(text: string): number {
+  return Math.max(speechTiming.floorMs, text.length * speechTiming.msPerChar + speechTiming.extraMs)
+}
+
+/**
  * 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。
  * channel='voice'：這則是語音發言的文字鏡像 → 逐字稿標「（語音）」而非「（聊天室）」。
  */
@@ -143,6 +157,7 @@ export async function handlePartialSegment(
   )
   try {
     await botProvider.speak(requireBotSession(session), pendingVoice)
+    session.speechEndsAt = Date.now() + estimateSpeechMs(pendingVoice)
   } catch (err) {
     // ack 失敗不致命：清掉時間戳，讓 final 派發時照常說開場白
     session.partialAckAt = 0
@@ -270,10 +285,11 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
     speech = (lastPunct > 0 ? truncated.slice(0, lastPunct + 1) : truncated) + '……詳細內容我放在聊天室。'
   }
 
-  const estimatedMs = Math.max(3000, (speech.length / 4) * 1000 + 1500)
+  const estimatedMs = estimateSpeechMs(speech)
   session.isSpeaking = true
   session.speechStartedAt = Date.now()
   session.currentSpeech = speech
+  session.speechEndsAt = Date.now() + estimatedMs
   setTimeout(() => {
     session.isSpeaking = false
     session.currentSpeech = null
@@ -484,7 +500,7 @@ async function dispatchQuestion(
     void sendChatBestEffort(session, ackChat)
     // partial 快速喚醒已先說過開場白 → 跳過，直接查詢
     const speakPending = !opts?.skipPendingPrompt
-    const promptEstimatedMs = speakPending ? Math.max(3000, (pendingVoice.length / 4) * 1000 + 1500) : 0
+    const promptEstimatedMs = speakPending ? estimateSpeechMs(pendingVoice) : 0
     const epochAtStart = session.bargeEpoch // 查詢期間被 barge-in 打斷 → 答案改走聊天室
     session.isSpeaking = true
     session.speechStartedAt = Date.now()
@@ -494,6 +510,7 @@ async function dispatchQuestion(
     const progressTimer = setTimeout(() => {
       botProvider
         .speak(requireBotSession(session), PROGRESS_VOICE)
+        .then(() => { session.speechEndsAt = Date.now() + estimateSpeechMs(PROGRESS_VOICE) })
         .catch(() => sendChatBestEffort(session, PROGRESS_VOICE))
     }, PROGRESS_NOTICE_MS)
 
@@ -505,6 +522,7 @@ async function dispatchQuestion(
       if (speakPending) {
         session.currentSpeech = pendingVoice
         await botProvider.speak(botSession, pendingVoice)
+        session.speechEndsAt = Date.now() + promptEstimatedMs
       }
 
       const rawAnswer = await answerPromise
@@ -530,13 +548,35 @@ async function dispatchQuestion(
         answer = (lastPunct > 0 ? truncated.slice(0, lastPunct + 1) : truncated) + '……如果想了解更多，可以繼續問我。'
       }
 
+      // 答案再快也要等上一段語音（開場白/partial ack/進度句）唸完才開口——
+      // speak() 送出即返回，疊著 POST 會把播放中的音檔蓋掉（聽起來像語音壞掉）。
+      // 等待的空檔先把答案的 TTS 合成進快取，等完即播不再多耗時。
+      const warmPromise = botProvider.primeSpeech?.(botSession, [answer])?.catch(() => {})
+      const speechWaitMs = session.speechEndsAt - Date.now()
+      if (speechWaitMs > 0) await new Promise((r) => setTimeout(r, speechWaitMs))
+      await warmPromise
+
+      // 等待期間被打斷 → 同樣改走聊天室，不搶話
+      if (session.bargeEpoch !== epochAtStart) {
+        clearTimeout(lockTimer)
+        session.isSpeaking = false
+        session.currentSpeech = null
+        await sendChatBestEffort(session, rawAnswer)
+        logger.info(
+          { meetingInstanceId: session.meetingInstanceId },
+          'dispatchQuestion voice: interrupted while waiting for prompt to finish, answer via chat',
+        )
+        return
+      }
+
       clearTimeout(lockTimer)
-      const answerEstimatedMs = Math.max(3000, (answer.length / 4) * 1000 + 1500)
+      const answerEstimatedMs = estimateSpeechMs(answer)
       session.currentSpeech = answer
+      session.speechEndsAt = Date.now() + answerEstimatedMs
       setTimeout(() => {
         session.isSpeaking = false
         session.currentSpeech = null
-      }, promptEstimatedMs + answerEstimatedMs)
+      }, answerEstimatedMs)
 
       await botProvider.speak(botSession, answer)
       // 蜜塔的語音回答記進對話窗（重置破冰計時、決策層可見已回答）
