@@ -123,6 +123,7 @@ npx prisma db pull   # ⚠️ 執行後務必 diff，只保留 User/Meeting/Tran
 | 前端路由與 Hook 設計 | `docs/05-前端架構.md` |
 | 後端架構（Session/WS/摘要） | `docs/06-後端架構.md` |
 | 系統現況/路線圖/可測清單/使用的開源 | `docs/13-系統現況與路線圖.md` |
+| 環境變數（前後端 .env）設定與除錯 | `docs/14-環境變數設定說明.md` |
 
 ### 🔒 凍結快照（歷史紀錄，勿當現況）
 
