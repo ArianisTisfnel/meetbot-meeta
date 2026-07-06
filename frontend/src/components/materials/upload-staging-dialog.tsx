@@ -8,6 +8,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { DocIcon } from '@/components/ui/icons'
 import { useUploadMaterial } from '@/hooks/use-materials'
 import { formatBytes } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -67,7 +68,12 @@ export function UploadStagingDialog({
         <ul className="space-y-2">
           {files.map((file, i) => (
             <li key={i} className="flex items-center justify-between text-sm">
-              <span>📄 {file.name} ({formatBytes(file.size)})</span>
+              <span className="flex min-w-0 items-center gap-2">
+                <DocIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">
+                  {file.name}（{formatBytes(file.size)}）
+                </span>
+              </span>
               <Button
                 variant="ghost"
                 size="sm"

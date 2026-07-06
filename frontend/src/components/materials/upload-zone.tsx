@@ -1,5 +1,6 @@
 'use client'
 import { useState, useRef, useCallback } from 'react'
+import { UploadIcon } from '@/components/ui/icons'
 import { UploadStagingDialog } from './upload-staging-dialog'
 
 const ACCEPTED_EXTENSIONS = ['.pdf', '.docx', '.txt', '.md']
@@ -53,30 +54,36 @@ export function UploadZone({ projectId, onSuccess }: Props) {
 
   return (
     <>
-      <div
+      <button
+        type="button"
         onDrop={handleDrop}
         onDragOver={(e) => { e.preventDefault(); setIsDragActive(true) }}
         onDragLeave={() => setIsDragActive(false)}
         onClick={() => inputRef.current?.click()}
-        className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors ${
+        className={`w-full rounded-xl border-2 border-dashed p-12 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
           isDragActive
-            ? 'border-primary bg-primary/5'
-            : 'border-muted-foreground/30 hover:border-primary/50'
+            ? 'border-honey bg-pollen/50'
+            : 'border-line hover:border-honey/60 hover:bg-pollen/30'
         }`}
       >
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept={ACCEPTED_EXTENSIONS.join(',')}
-          className="hidden"
-          onChange={handleFileInput}
-        />
-        <p className="text-muted-foreground">
-          📤 拖拉檔案至此，或點擊選擇（PDF / DOCX / TXT / MD）
-        </p>
-        <p className="text-xs text-muted-foreground mt-1">最大 15 MB</p>
-      </div>
+        <span className="flex flex-col items-center gap-2 text-muted-foreground">
+          <UploadIcon
+            className={`size-6 ${isDragActive ? 'text-honey-deep' : ''}`}
+          />
+          <span>拖拉檔案至此，或點擊選擇（PDF / DOCX / TXT / MD）</span>
+          <span className="text-xs">單檔最大 15 MB</span>
+        </span>
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept={ACCEPTED_EXTENSIONS.join(',')}
+        className="hidden"
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={handleFileInput}
+      />
 
       <UploadStagingDialog
         open={dialogOpen}

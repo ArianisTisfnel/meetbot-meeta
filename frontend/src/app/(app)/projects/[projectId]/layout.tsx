@@ -14,6 +14,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
+import { ArrowLeftIcon, TrashIcon } from '@/components/ui/icons'
 import { toast } from 'sonner'
 
 interface Props {
@@ -29,11 +30,36 @@ export default function ProjectLayout({ children, params }: Props) {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   if (isLoading) {
-    return <div className="p-6 text-muted-foreground">載入中…</div>
+    return (
+      <div role="status" className="space-y-4 p-6">
+        <span className="sr-only">載入專案中…</span>
+        <div
+          aria-hidden="true"
+          className="h-8 w-56 animate-pulse rounded-md bg-muted motion-reduce:animate-none"
+        />
+        <div
+          aria-hidden="true"
+          className="h-10 w-full max-w-md animate-pulse rounded-md bg-muted motion-reduce:animate-none"
+        />
+      </div>
+    )
   }
 
   if (!project) {
-    return <div className="p-6 text-destructive">找不到此專案</div>
+    return (
+      <div className="p-6">
+        <p className="text-destructive">
+          找不到此專案，它可能已被刪除或你沒有存取權限。
+        </p>
+        <Link
+          href="/projects"
+          className="mt-2 inline-flex items-center gap-1.5 rounded text-sm font-medium text-honey-deep underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ArrowLeftIcon className="size-3.5" />
+          回到專案列表
+        </Link>
+      </div>
+    )
   }
 
   const handleDelete = async () => {
@@ -52,25 +78,27 @@ export default function ProjectLayout({ children, params }: Props) {
         <div className="flex items-center gap-3 min-w-0">
           <Link
             href="/projects"
-            className="text-muted-foreground hover:text-foreground text-sm shrink-0"
-            title="返回專案列表"
+            className="flex shrink-0 items-center gap-1.5 rounded-md text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            ← 返回
+            <ArrowLeftIcon className="size-3.5" />
+            返回
           </Link>
           <EditableProjectName
             projectId={projectId}
             name={project.name}
             canEdit={project.role === 'owner'}
-            className="text-xl font-semibold truncate"
+            className="truncate font-display text-xl font-bold"
           />
         </div>
         <PermissionGuard projectId={projectId} require="canDelete">
           <Button
             variant="destructive"
             size="sm"
+            className="gap-1.5"
             onClick={() => setConfirmOpen(true)}
           >
-            🗑 刪除專案
+            <TrashIcon className="size-3.5" />
+            刪除專案
           </Button>
         </PermissionGuard>
       </div>

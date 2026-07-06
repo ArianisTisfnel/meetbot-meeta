@@ -1,6 +1,7 @@
 'use client'
 import { IndexingStatusBadge } from './indexing-status-badge'
 import { Button } from '@/components/ui/button'
+import { TrashIcon } from '@/components/ui/icons'
 import { formatBytes, formatDate } from '@/lib/utils'
 import type { Material } from '@/types/api'
 
@@ -31,9 +32,9 @@ export function MaterialRow({ material, projectId, canEdit, onDelete }: Props) {
             variant="ghost"
             size="sm"
             onClick={() => onDelete(material.id)}
-            aria-label="刪除"
+            aria-label={`刪除「${material.displayName}」`}
           >
-            🗑
+            <TrashIcon />
           </Button>
         )}
       </td>

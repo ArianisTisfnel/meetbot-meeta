@@ -10,6 +10,7 @@ import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
 import { MeetingDebugInfo } from '@/components/meetings/meeting-debug-info'
 import { Button } from '@/components/ui/button'
+import { WarningIcon } from '@/components/ui/icons'
 import { formatDate } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -77,7 +78,10 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
 
       {meeting.status === 'FAILED' && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/5 p-6">
-          <h3 className="font-semibold text-destructive mb-2">⚠️ 蜜塔加入失敗</h3>
+          <h3 className="mb-2 flex items-center gap-2 font-semibold text-destructive">
+            <WarningIcon className="size-4" />
+            蜜塔加入失敗
+          </h3>
           <p className="text-sm text-muted-foreground">
             蜜塔未能成功加入此會議。常見原因與處理方式：
           </p>

@@ -14,9 +14,15 @@ import {
   useAcceptInvitation,
   useDeclineInvitation,
 } from '@/hooks/use-invitations'
+import { MailIcon } from '@/components/ui/icons'
 import { toast } from 'sonner'
 
-export function InboxButton() {
+interface Props {
+  /** 側欄收合時只顯示圖示，未讀數改為小圓點 */
+  collapsed?: boolean
+}
+
+export function InboxButton({ collapsed = false }: Props) {
   const { status } = useSession()
   const [open, setOpen] = useState(false)
   const { data } = useMyInvitations({ enabled: status === 'authenticated' })
@@ -47,11 +53,32 @@ export function InboxButton() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="relative flex w-full items-center justify-between rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent"
+        title={collapsed ? `信箱${count > 0 ? `（${count} 則邀請）` : ''}` : undefined}
+        className={`relative flex w-full items-center rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          collapsed ? 'justify-center px-0' : 'justify-between'
+        }`}
       >
-        <span>📬 信箱</span>
-        {count > 0 && (
-          <Badge variant="default" className="h-5 min-w-5 justify-center px-1.5">
+        <span className="relative flex items-center gap-2.5">
+          <MailIcon />
+          <span className={collapsed ? 'sr-only' : undefined}>
+            信箱
+            {count > 0 && (
+              <span className="sr-only">，{count} 則待處理邀請</span>
+            )}
+          </span>
+          {collapsed && count > 0 && (
+            <span
+              aria-hidden="true"
+              className="absolute -right-1 -top-1 size-2 rounded-full bg-honey"
+            />
+          )}
+        </span>
+        {!collapsed && count > 0 && (
+          <Badge
+            aria-hidden="true"
+            variant="default"
+            className="h-5 min-w-5 justify-center px-1.5"
+          >
             {count}
           </Badge>
         )}

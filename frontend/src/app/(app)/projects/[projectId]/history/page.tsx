@@ -2,22 +2,35 @@
 import { use } from 'react'
 import { useHistory } from '@/hooks/use-history'
 import { formatDate, displayName } from '@/lib/utils'
+import {
+  UploadIcon,
+  TrashIcon,
+  MailIcon,
+  PlusIcon,
+  MinusIcon,
+  SlidersIcon,
+  MeetingIcon,
+  PencilIcon,
+} from '@/components/ui/icons'
 import type { ActivityAction } from '@/types/api'
 
 interface Props {
   params: Promise<{ projectId: string }>
 }
 
-const ACTION_CONFIG: Record<ActivityAction, { icon: string; label: string }> = {
-  MATERIAL_UPLOAD:          { icon: '📤', label: '上傳資料' },
-  MATERIAL_DELETE:          { icon: '🗑', label: '刪除資料' },
-  MEMBER_INVITE:            { icon: '✉️', label: '邀請成員' },
-  MEMBER_ADD:               { icon: '➕', label: '加入成員' },
-  MEMBER_REMOVE:            { icon: '➖', label: '移除成員' },
-  MEMBER_PERMISSION_UPDATE: { icon: '🔧', label: '調整權限' },
-  MEETING_CREATE:           { icon: '📹', label: '建立會議' },
-  PROJECT_RENAME:           { icon: '✏️', label: '重新命名專案' },
+type IconComponent = (p: { className?: string }) => React.ReactNode
+
+const ACTION_CONFIG: Record<ActivityAction, { Icon: IconComponent; label: string }> = {
+  MATERIAL_UPLOAD:          { Icon: UploadIcon, label: '上傳資料' },
+  MATERIAL_DELETE:          { Icon: TrashIcon, label: '刪除資料' },
+  MEMBER_INVITE:            { Icon: MailIcon, label: '邀請成員' },
+  MEMBER_ADD:               { Icon: PlusIcon, label: '加入成員' },
+  MEMBER_REMOVE:            { Icon: MinusIcon, label: '移除成員' },
+  MEMBER_PERMISSION_UPDATE: { Icon: SlidersIcon, label: '調整權限' },
+  MEETING_CREATE:           { Icon: MeetingIcon, label: '建立會議' },
+  PROJECT_RENAME:           { Icon: PencilIcon, label: '重新命名專案' },
 }
+
 
 export default function HistoryPage({ params }: Props) {
   const { projectId } = use(params)
@@ -34,7 +47,7 @@ export default function HistoryPage({ params }: Props) {
       ) : (
         <div className="space-y-2">
           {data?.items.map((item) => {
-            const cfg = ACTION_CONFIG[item.action] ?? { icon: '•', label: item.action }
+            const cfg = ACTION_CONFIG[item.action]
             return (
               <div
                 key={item.id}
@@ -46,8 +59,11 @@ export default function HistoryPage({ params }: Props) {
                 <span className="w-28 shrink-0 truncate" title={displayName(item.actor.name, item.actor.email)}>
                   {displayName(item.actor.name, item.actor.email)}
                 </span>
-                <span className="w-28 shrink-0">
-                  {cfg.icon} {cfg.label}
+                <span className="flex w-28 shrink-0 items-center gap-1.5">
+                  {cfg && (
+                    <cfg.Icon className="size-3.5 text-muted-foreground" />
+                  )}
+                  {cfg?.label ?? item.action}
                 </span>
                 <span className="font-medium truncate">{item.targetLabel}</span>
               </div>

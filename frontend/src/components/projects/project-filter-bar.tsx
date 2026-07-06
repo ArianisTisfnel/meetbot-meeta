@@ -11,7 +11,7 @@ interface Props {
 }
 
 const SELECT_CLASS =
-  'h-9 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+  'h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
 export function ProjectFilterBar({
   search, onSearchChange,
@@ -21,6 +21,7 @@ export function ProjectFilterBar({
   return (
     <div className="flex flex-wrap items-center gap-2 mb-4">
       <Input
+        aria-label="搜尋專案"
         placeholder="搜尋專案…"
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}

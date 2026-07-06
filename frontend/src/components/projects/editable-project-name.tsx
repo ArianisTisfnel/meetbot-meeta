@@ -13,8 +13,9 @@ interface Props {
 }
 
 /**
- * 可就地編輯的專案名稱。canEdit 時，名稱左側顯示非 emoji 鉛筆符號 ✎ 提示可編輯，
- * 點擊名稱或鉛筆即進入編輯。所有互動都 stopPropagation，可安全用於可點擊的卡片內。
+ * 可就地編輯的專案名稱。canEdit 時，整個「✎ + 名稱」是單一按鈕，
+ * 點擊或鍵盤啟動皆進入編輯。輸入框的鍵盤事件 stopPropagation，
+ * 避免 Enter/Escape 觸發外層卡片的行為。
  */
 export function EditableProjectName({ projectId, name, canEdit, className }: Props) {
   const [editing, setEditing] = useState(false)
@@ -26,8 +27,7 @@ export function EditableProjectName({ projectId, name, canEdit, className }: Pro
     if (editing) inputRef.current?.focus()
   }, [editing])
 
-  const startEdit = (e: React.MouseEvent) => {
-    e.stopPropagation()
+  const startEdit = () => {
     if (!canEdit) return
     setValue(name)
     setEditing(true)
@@ -50,6 +50,7 @@ export function EditableProjectName({ projectId, name, canEdit, className }: Pro
     return (
       <Input
         ref={inputRef}
+        aria-label="專案名稱"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onClick={(e) => e.stopPropagation()}
@@ -68,28 +69,31 @@ export function EditableProjectName({ projectId, name, canEdit, className }: Pro
     )
   }
 
+  if (!canEdit) {
+    return <span className={className}>{name}</span>
+  }
+
   return (
-    <span className="inline-flex items-center gap-1">
-      {canEdit && (
-        <button
-          type="button"
-          onClick={startEdit}
-          aria-label="重新命名專案"
-          title="重新命名"
-          className="text-muted-foreground hover:text-foreground font-serif leading-none"
-        >
-          {'✎'}
-        </button>
-      )}
+    <button
+      type="button"
+      onClick={startEdit}
+      aria-label={`重新命名專案「${name}」`}
+      title="重新命名"
+      className="group inline-flex min-w-0 items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span
+        aria-hidden="true"
+        className="font-serif leading-none text-muted-foreground transition-colors group-hover:text-foreground"
+      >
+        {'✎'}
+      </span>
       <span
         className={
-          (className ?? '') + (canEdit ? ' cursor-text hover:underline decoration-dotted' : '')
+          (className ?? '') + ' hover:underline decoration-dotted'
         }
-        title={canEdit ? '點擊以重新命名' : undefined}
-        onClick={startEdit}
       >
         {name}
       </span>
-    </span>
+    </button>
   )
 }

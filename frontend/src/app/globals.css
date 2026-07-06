@@ -3,26 +3,29 @@
 @tailwind utilities;
 
 @layer base {
+  /* 蜜塔品牌主題：shadcn token 對映到蜂蜜色票
+     paper #FFFDF7 / ink #271C0E / honey #E89B0C / honey-deep #8A5B00
+     pollen #F7EDD8 / line #EADFC8 / ink-soft #5C5243 */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84.2% 4.9%;
+    --background: 45 100% 98%; /* paper */
+    --foreground: 34 47% 10%; /* ink */
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84.2% 4.9%;
+    --card-foreground: 34 47% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84.2% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --popover-foreground: 34 47% 10%;
+    --primary: 34 47% 10%; /* ink：主要動作用深褐，蜂蜜色留給強調 */
+    --primary-foreground: 39 47% 90%; /* 暖米白（hive-fg），同 landing 深色卡片 */
+    --secondary: 41 66% 91%; /* pollen */
+    --secondary-foreground: 34 47% 10%;
+    --muted: 41 66% 94%;
+    --muted-foreground: 36 16% 31%; /* ink-soft */
+    --accent: 41 66% 91%; /* pollen */
+    --accent-foreground: 34 47% 10%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    --border: 41 45% 85%; /* line */
+    --input: 41 45% 85%;
+    --ring: 40 100% 27%; /* honey-deep */
     --radius: 0.5rem;
   }
 
@@ -56,5 +59,45 @@
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
+  }
+  a,
+  button {
+    touch-action: manipulation;
+  }
+}
+
+/* ── 蜜塔 landing/login 動畫 ──
+   動畫只在使用者未要求減少動態時播放；
+   reduced-motion 下元素直接呈現最終狀態。 */
+@media (prefers-reduced-motion: no-preference) {
+  .mb-rise {
+    animation: mb-rise 0.6s ease-out both;
+    animation-delay: var(--d, 0s);
+  }
+  .mb-line {
+    animation: mb-line 0.5s ease-out both;
+    animation-delay: var(--d, 0s);
+  }
+}
+
+@keyframes mb-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes mb-line {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }

@@ -4,10 +4,10 @@ import { cn } from '@/lib/utils'
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'outline' | 'success'
 
 const VARIANT_CLASSES: Record<BadgeVariant, string> = {
-  default:     'border-transparent bg-slate-900 text-white',
-  secondary:   'border-transparent bg-slate-100 text-slate-900',
-  destructive: 'border-transparent bg-red-500 text-white',
-  outline:     'border-slate-200 text-slate-900',
+  default:     'border-transparent bg-primary text-primary-foreground',
+  secondary:   'border-transparent bg-secondary text-secondary-foreground',
+  destructive: 'border-transparent bg-destructive text-destructive-foreground',
+  outline:     'border-border text-foreground',
   success:     'border-transparent bg-green-100 text-green-800',
 }
 
