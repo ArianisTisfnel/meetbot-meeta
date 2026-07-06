@@ -58,8 +58,12 @@ export interface MeetingSession {
    * 開口時間早於此值的話不算打斷（實測誤判案例 2026-07-04）。
    */
   speechStartedAt: number
-  /** 聊天室訊息紀錄（含蜜塔自己的回覆），會後併入逐字稿。at = epoch ms。 */
-  chatLog: Array<{ speaker: string; text: string; at: number }>
+  /**
+   * 聊天室訊息紀錄（含蜜塔自己的回覆），會後併入逐字稿。at = epoch ms。
+   * channel：'voice' = 這則其實是蜜塔的語音發言（逐字稿標「（語音）」；
+   * bot 聲音被 provider 過濾不進 STT，靠這裡留痕）；預設 'chat'。
+   */
+  chatLog: Array<{ speaker: string; text: string; at: number; channel?: 'chat' | 'voice' }>
   /** bot admitted 時間（epoch ms）：聊天訊息換算會議相對秒數的錨點。0 = 未 admitted。 */
   sessionStartedAt: number
   /** barge-in 世代計數：每次被打斷 +1。語音派發流程據此偵測「查詢期間被打斷 → 答案改走聊天室」。 */

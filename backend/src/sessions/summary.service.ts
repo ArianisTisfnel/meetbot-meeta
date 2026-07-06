@@ -5,6 +5,7 @@ import * as dify from '../lib/dify.js'
 import { upsertFile } from '../lib/supabase.js'
 import { botProvider, type BotSession, type TranscriptSegment } from '../provider/index.js'
 import { normalizeRestSegment } from '../provider/vexa-adapter.js'
+import { isEndOfTurn } from '../lib/eou.js'
 
 export const SUMMARY_INITIAL_WAIT_MS = 5_000
 export const SUMMARY_POLL_INTERVAL_MS = 3_000
@@ -25,11 +26,13 @@ export interface ChatLogEntry {
   text: string
   /** epoch ms */
   at: number
+  /** 'voice' = 蜜塔語音發言的文字鏡像（bot 聲音不進 STT，靠這裡留痕）。預設 'chat'。 */
+  channel?: 'chat' | 'voice'
 }
 
 /**
  * 聊天室訊息併入語音 segments：epoch ms 以 sessionStartedAt 為錨點換算成
- * 會議相對秒數，speaker 加「（聊天室）」標註，與語音依時間排序。
+ * 會議相對秒數，speaker 加「（聊天室）」或「（語音）」標註，與語音依時間排序。
  * 錨點缺失（0）時聊天訊息一律排 0 秒（仍保留內容，只是順序不精確）。
  */
 export function mergeChatIntoSegments(
@@ -42,7 +45,7 @@ export function mergeChatIntoSegments(
     return {
       segmentId: null,
       text: m.text,
-      speaker: `${m.speaker}（聊天室）`,
+      speaker: `${m.speaker}（${m.channel === 'voice' ? '語音' : '聊天室'}）`,
       startTime,
       endTime: startTime,
       language: null,
@@ -55,23 +58,36 @@ export function mergeChatIntoSegments(
  * 合併「同一說話者、間隔 ≤ MERGE_GAP_SECONDS」的連續 segments。
  * STT 常把一句話切成多個細碎片段，每片各佔一行（各帶時間+名字前綴）→ 逐字稿擠成一團；
  * 合併後一人一段連續發言只佔一行，時間取第一片的 startTime。
+ *
+ * 斷句輔助：間隔 ≤ MERGE_HARD_GAP_SECONDS 視為 STT 切碎、無條件合併；
+ * 更長的停頓先問 LiveKit EOU 模型「上一段語意講完了嗎」——講完就斷句不合併
+ * （同一人兩個獨立發言各佔一行）。模型不可用（回 null）退回照舊合併，只是增強不是依賴。
  */
 const MERGE_GAP_SECONDS = 8
+const MERGE_HARD_GAP_SECONDS = 2
 
-export function mergeConsecutiveSegments(segments: TranscriptSegment[]): TranscriptSegment[] {
+export async function mergeConsecutiveSegments(
+  segments: TranscriptSegment[],
+): Promise<TranscriptSegment[]> {
   const out: TranscriptSegment[] = []
   for (const seg of segments) {
     const prev = out[out.length - 1]
-    if (
-      prev &&
-      (prev.speaker ?? '') === (seg.speaker ?? '') &&
-      seg.startTime - prev.endTime <= MERGE_GAP_SECONDS
-    ) {
-      prev.text = `${prev.text} ${seg.text}`.trim()
-      prev.endTime = Math.max(prev.endTime, seg.endTime)
-    } else {
-      out.push({ ...seg })
+    const gap = prev ? seg.startTime - prev.endTime : Infinity
+    if (prev && (prev.speaker ?? '') === (seg.speaker ?? '') && gap <= MERGE_GAP_SECONDS) {
+      let shouldMerge = true
+      if (gap > MERGE_HARD_GAP_SECONDS) {
+        const ended = await isEndOfTurn([{ role: 'user', content: prev.text }], 'zh').catch(
+          () => null,
+        )
+        if (ended === true) shouldMerge = false
+      }
+      if (shouldMerge) {
+        prev.text = `${prev.text} ${seg.text}`.trim()
+        prev.endTime = Math.max(prev.endTime, seg.endTime)
+        continue
+      }
     }
+    out.push({ ...seg })
   }
   return out
 }
@@ -154,8 +170,8 @@ export async function generateSummaryAsync(params: {
       return
     }
 
-    // 細碎 STT 片段合併成段（同說話者、間隔近）→ 逐字稿不再一句話拆好幾行
-    const transcriptMd = formatTranscriptAsMarkdown(mergeConsecutiveSegments(merged))
+    // 細碎 STT 片段合併成段（同說話者、間隔近，EOU 模型輔助斷句）→ 逐字稿不再一句話拆好幾行
+    const transcriptMd = formatTranscriptAsMarkdown(await mergeConsecutiveSegments(merged))
 
     const storagePath = `transcripts/${params.meetingInstanceId}/transcript.md`
     try {

@@ -24,12 +24,19 @@ export const PROGRESS_VOICE = '等等喔，我正在頭腦風暴！'
 /** 說完「我收到了」後自己計時：查詢還沒回來就說進度句（不然使用者會以為沒收到而重問）。 */
 const PROGRESS_NOTICE_MS = 10_000
 
-/** 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。 */
-export async function sendChatBestEffort(session: MeetingSession, text: string): Promise<void> {
+/**
+ * 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。
+ * channel='voice'：這則是語音發言的文字鏡像 → 逐字稿標「（語音）」而非「（聊天室）」。
+ */
+export async function sendChatBestEffort(
+  session: MeetingSession,
+  text: string,
+  channel: 'chat' | 'voice' = 'chat',
+): Promise<void> {
   try {
     await botProvider.sendChat?.(requireBotSession(session), text)
     // 蜜塔自己的聊天回覆也記進 chatLog（webhook 會過濾 bot 訊息，只能在送出端記錄）
-    session.chatLog?.push({ speaker: '蜜塔', text, at: Date.now() })
+    session.chatLog?.push({ speaker: '蜜塔', text, at: Date.now(), channel })
     // 也記進插話引擎的對話窗：決策層才知道「這個問題已經有人（蜜塔）回答過了」
     recordConversation(session, { speaker: '蜜塔', text, source: 'chat', fromBot: true, at: Date.now() })
   } catch (err) {
@@ -276,8 +283,13 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
     await botProvider.speak(requireBotSession(session), speech)
     // 蜜塔的語音也算「有人在說話」：記進對話窗（重置破冰計時、讓決策層知道已回答）
     recordConversation(session, { speaker: '蜜塔', text: speech, source: 'voice', fromBot: true, at: Date.now() })
-    // 截斷過的長內容補完整版到聊天室
-    if (speech !== text) await sendChatBestEffort(session, text)
+    if (speech !== text) {
+      // 截斷過的長內容補完整版到聊天室（同時留逐字稿紀錄，標「（語音）」）
+      await sendChatBestEffort(session, text, 'voice')
+    } else {
+      // 沒發聊天室訊息也要留逐字稿紀錄（bot 聲音不進 STT，這裡是唯一留痕點）
+      session.chatLog?.push({ speaker: '蜜塔', text: speech, at: Date.now(), channel: 'voice' })
+    }
     return true
   } catch (err) {
     session.isSpeaking = false
@@ -529,9 +541,9 @@ async function dispatchQuestion(
       await botProvider.speak(botSession, answer)
       // 蜜塔的語音回答記進對話窗（重置破冰計時、決策層可見已回答）
       recordConversation(session, { speaker: '蜜塔', text: answer, source: 'voice', fromBot: true, at: Date.now() })
-      // 語音回答同步貼聊天室：留下文字紀錄（會後隨 chatLog 併入逐字稿），
+      // 語音回答同步貼聊天室：留下文字紀錄（會後隨 chatLog 併入逐字稿，標「（語音）」），
       // 長答案被截短唸出時，完整版也在這裡補上
-      await sendChatBestEffort(session, rawAnswer)
+      await sendChatBestEffort(session, rawAnswer, 'voice')
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, answerPreview: answer.slice(0, 60) },
         'dispatchQuestion voice: answer spoken',

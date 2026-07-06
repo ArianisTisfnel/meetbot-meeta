@@ -25,6 +25,10 @@ vi.mock('../../../../backend/src/lib/supabase', () => ({
   upsertFile: vi.fn().mockResolvedValue(undefined),
 }))
 
+// EOU 模型（斷句輔助）：預設回 null（模型不可用 → 照舊合併），個別測試再覆寫
+const mockIsEndOfTurn = vi.hoisted(() => vi.fn().mockResolvedValue(null))
+vi.mock('../../../../backend/src/lib/eou', () => ({ isEndOfTurn: mockIsEndOfTurn }))
+
 import {
   formatTranscriptAsMarkdown,
   formatSeconds,
@@ -108,33 +112,55 @@ describe('formatTranscriptAsMarkdown', () => {
 })
 
 describe('mergeConsecutiveSegments', () => {
-  it('同說話者、間隔 ≤ 8 秒 → 合併成一段（時間取第一片、endTime 取最後片）', () => {
+  beforeEach(() => mockIsEndOfTurn.mockClear())
+
+  it('同說話者、間隔 ≤ 8 秒 → 合併成一段（時間取第一片、endTime 取最後片）', async () => {
     const segs = [
       makeSeg(0, '我們今天', 'Alice'),   // 0-5
       makeSeg(6, '要討論的是', 'Alice'), // 6-11，距上片 endTime 1 秒
       makeSeg(13, '期末報告', 'Alice'),  // 13-18，距上片 endTime 2 秒
     ]
-    const out = mergeConsecutiveSegments(segs)
+    const out = await mergeConsecutiveSegments(segs)
 
     expect(out).toHaveLength(1)
     expect(out[0].text).toBe('我們今天 要討論的是 期末報告')
     expect(out[0].startTime).toBe(0)
     expect(out[0].endTime).toBe(18)
+    // 間隔皆 ≤ 2 秒（硬合併門檻）→ 不需要問 EOU
+    expect(mockIsEndOfTurn).not.toHaveBeenCalled()
   })
 
-  it('不同說話者 → 不合併', () => {
+  it('不同說話者 → 不合併', async () => {
     const segs = [makeSeg(0, 'A 的話', 'Alice'), makeSeg(6, 'B 的話', 'Bob')]
-    expect(mergeConsecutiveSegments(segs)).toHaveLength(2)
+    expect(await mergeConsecutiveSegments(segs)).toHaveLength(2)
   })
 
-  it('同說話者但間隔 > 8 秒 → 不合併', () => {
+  it('同說話者但間隔 > 8 秒 → 不合併', async () => {
     const segs = [makeSeg(0, '第一段', 'Alice'), makeSeg(20, '第二段', 'Alice')] // gap = 20-5 = 15s
-    expect(mergeConsecutiveSegments(segs)).toHaveLength(2)
+    expect(await mergeConsecutiveSegments(segs)).toHaveLength(2)
   })
 
-  it('不改動原始輸入（copy-on-merge）', () => {
+  it('間隔 2~8 秒、EOU 判斷上一段講完 → 斷句不合併', async () => {
+    mockIsEndOfTurn.mockResolvedValueOnce(true)
+    const segs = [makeSeg(0, '第一個想法說完了。', 'Alice'), makeSeg(9, '另外一件事', 'Alice')] // gap = 4s
+    const out = await mergeConsecutiveSegments(segs)
+
+    expect(mockIsEndOfTurn).toHaveBeenCalledOnce()
+    expect(out).toHaveLength(2)
+  })
+
+  it('間隔 2~8 秒、EOU 不可用（null）→ 照舊合併', async () => {
+    const segs = [makeSeg(0, '講到一半', 'Alice'), makeSeg(9, '接著說', 'Alice')] // gap = 4s
+    const out = await mergeConsecutiveSegments(segs)
+
+    expect(mockIsEndOfTurn).toHaveBeenCalledOnce()
+    expect(out).toHaveLength(1)
+    expect(out[0].text).toBe('講到一半 接著說')
+  })
+
+  it('不改動原始輸入（copy-on-merge）', async () => {
     const segs = [makeSeg(0, '一', 'Alice'), makeSeg(6, '二', 'Alice')]
-    mergeConsecutiveSegments(segs)
+    await mergeConsecutiveSegments(segs)
     expect(segs[0].text).toBe('一')
     expect(segs[0].endTime).toBe(5)
   })
@@ -162,6 +188,16 @@ describe('mergeChatIntoSegments', () => {
     const merged = mergeChatIntoSegments([], [{ speaker: 'W', text: 'hi', at: 123 }], 0)
     expect(merged).toHaveLength(1)
     expect(merged[0].startTime).toBe(0)
+  })
+
+  it("channel='voice' → 標註（語音）而非（聊天室）", async () => {
+    const { mergeChatIntoSegments } = await import('../../../../backend/src/sessions/summary.service')
+    const merged = mergeChatIntoSegments(
+      [],
+      [{ speaker: '蜜塔', text: '報名截止是 6/30。', at: 5_000, channel: 'voice' as const }],
+      1_000,
+    )
+    expect(merged[0].speaker).toBe('蜜塔（語音）')
   })
 })
 
