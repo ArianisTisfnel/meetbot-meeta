@@ -353,9 +353,16 @@ export async function resolveAnswer(
   }
 
   // 意圖分流：意見/脈絡型不走 RAG（會答「資料沒提到」）
+  const classifyStart = Date.now()
   const intent = await classifyIntent(question, session.kbContentCard)
   logger.info(
-    { meetingInstanceId: session.meetingInstanceId, intent, mode, question: question.slice(0, 40) },
+    {
+      meetingInstanceId: session.meetingInstanceId,
+      intent,
+      mode,
+      question: question.slice(0, 40),
+      classifyMs: Date.now() - classifyStart,
+    },
     'resolveAnswer: intent classified',
   )
 
@@ -480,12 +487,15 @@ async function dispatchQuestion(
 
     try {
       const botSession = requireBotSession(session)
+      // 查詢與開場白並行：不等開場白唸完才開始查（省下開場白的 3-5 秒）
+      const answerPromise = resolveAnswer(session, question, 'voice')
+      answerPromise.catch(() => {}) // 先掛 handler：開場白 throw 時查詢的 rejection 才不會變 unhandled
       if (speakPending) {
         session.currentSpeech = pendingVoice
         await botProvider.speak(botSession, pendingVoice)
       }
 
-      const rawAnswer = await resolveAnswer(session, question, 'voice')
+      const rawAnswer = await answerPromise
       clearTimeout(progressTimer)
 
       // 開場白／查詢期間有人開口（barge-in）→ 不再出聲，完整答案貼聊天室
@@ -519,6 +529,9 @@ async function dispatchQuestion(
       await botProvider.speak(botSession, answer)
       // 蜜塔的語音回答記進對話窗（重置破冰計時、決策層可見已回答）
       recordConversation(session, { speaker: '蜜塔', text: answer, source: 'voice', fromBot: true, at: Date.now() })
+      // 語音回答同步貼聊天室：留下文字紀錄（會後隨 chatLog 併入逐字稿），
+      // 長答案被截短唸出時，完整版也在這裡補上
+      await sendChatBestEffort(session, rawAnswer)
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, answerPreview: answer.slice(0, 60) },
         'dispatchQuestion voice: answer spoken',

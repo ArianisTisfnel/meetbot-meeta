@@ -28,6 +28,7 @@ vi.mock('../../../../backend/src/lib/supabase', () => ({
 import {
   formatTranscriptAsMarkdown,
   formatSeconds,
+  mergeConsecutiveSegments,
   waitForTranscriptStable,
   generateSummaryAsync,
   SUMMARY_INITIAL_WAIT_MS,
@@ -103,6 +104,39 @@ describe('formatTranscriptAsMarkdown', () => {
     const md = formatTranscriptAsMarkdown(segs)
 
     expect(md).toContain('[0:05] 參與者: 我說的話')
+  })
+})
+
+describe('mergeConsecutiveSegments', () => {
+  it('同說話者、間隔 ≤ 8 秒 → 合併成一段（時間取第一片、endTime 取最後片）', () => {
+    const segs = [
+      makeSeg(0, '我們今天', 'Alice'),   // 0-5
+      makeSeg(6, '要討論的是', 'Alice'), // 6-11，距上片 endTime 1 秒
+      makeSeg(13, '期末報告', 'Alice'),  // 13-18，距上片 endTime 2 秒
+    ]
+    const out = mergeConsecutiveSegments(segs)
+
+    expect(out).toHaveLength(1)
+    expect(out[0].text).toBe('我們今天 要討論的是 期末報告')
+    expect(out[0].startTime).toBe(0)
+    expect(out[0].endTime).toBe(18)
+  })
+
+  it('不同說話者 → 不合併', () => {
+    const segs = [makeSeg(0, 'A 的話', 'Alice'), makeSeg(6, 'B 的話', 'Bob')]
+    expect(mergeConsecutiveSegments(segs)).toHaveLength(2)
+  })
+
+  it('同說話者但間隔 > 8 秒 → 不合併', () => {
+    const segs = [makeSeg(0, '第一段', 'Alice'), makeSeg(20, '第二段', 'Alice')] // gap = 20-5 = 15s
+    expect(mergeConsecutiveSegments(segs)).toHaveLength(2)
+  })
+
+  it('不改動原始輸入（copy-on-merge）', () => {
+    const segs = [makeSeg(0, '一', 'Alice'), makeSeg(6, '二', 'Alice')]
+    mergeConsecutiveSegments(segs)
+    expect(segs[0].text).toBe('一')
+    expect(segs[0].endTime).toBe(5)
   })
 })
 

@@ -8,13 +8,31 @@ interface Props {
   isActive: boolean
 }
 
+/** 同一說話者、間隔 ≤ 8 秒的連續片段合併成一行（STT 常把一句話切成多個細碎片段）。 */
+function mergeConsecutive<T extends { speaker: string | null; text: string; startTime: number; endTime: number }>(
+  segments: T[],
+): T[] {
+  const out: T[] = []
+  for (const seg of segments) {
+    const prev = out[out.length - 1]
+    if (prev && (prev.speaker ?? '') === (seg.speaker ?? '') && seg.startTime - prev.endTime <= 8) {
+      prev.text = `${prev.text} ${seg.text}`.trim()
+      prev.endTime = Math.max(prev.endTime, seg.endTime)
+    } else {
+      out.push({ ...seg })
+    }
+  }
+  return out
+}
+
 export function LiveTranscript({ projectId, meetingId, isActive }: Props) {
-  const segments = useLiveTranscriptions(projectId, meetingId, isActive)
+  const rawSegments = useLiveTranscriptions(projectId, meetingId, isActive)
+  const segments = mergeConsecutive(rawSegments)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [segments.length])
+  }, [rawSegments.length]) // 用合併前的數量：合併後行數不變但內容仍在增長時也要跟捲
 
   if (segments.length === 0) {
     return (

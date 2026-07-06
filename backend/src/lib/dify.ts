@@ -174,6 +174,7 @@ export async function askQuestion(params: {
   userId: string
   conversationId?: string | null
 }): Promise<{ answer: string; conversationId: string }> {
+  const startedAt = Date.now()
   const res = await fetch(`${env.DIFY_API_BASE}/chat-messages`, {
     method: 'POST',
     headers: {
@@ -215,6 +216,7 @@ export async function askQuestion(params: {
         userId: params.userId,
         conversationId: data.conversation_id ?? '',
         answerLength: answer.length,
+        difyMs: Date.now() - startedAt,
       },
       'Dify Chatflow answered (RAG hit)',
     )

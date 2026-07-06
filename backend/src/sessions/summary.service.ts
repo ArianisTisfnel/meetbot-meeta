@@ -51,6 +51,31 @@ export function mergeChatIntoSegments(
   return [...segments, ...chatSegments].sort((a, b) => a.startTime - b.startTime)
 }
 
+/**
+ * 合併「同一說話者、間隔 ≤ MERGE_GAP_SECONDS」的連續 segments。
+ * STT 常把一句話切成多個細碎片段，每片各佔一行（各帶時間+名字前綴）→ 逐字稿擠成一團；
+ * 合併後一人一段連續發言只佔一行，時間取第一片的 startTime。
+ */
+const MERGE_GAP_SECONDS = 8
+
+export function mergeConsecutiveSegments(segments: TranscriptSegment[]): TranscriptSegment[] {
+  const out: TranscriptSegment[] = []
+  for (const seg of segments) {
+    const prev = out[out.length - 1]
+    if (
+      prev &&
+      (prev.speaker ?? '') === (seg.speaker ?? '') &&
+      seg.startTime - prev.endTime <= MERGE_GAP_SECONDS
+    ) {
+      prev.text = `${prev.text} ${seg.text}`.trim()
+      prev.endTime = Math.max(prev.endTime, seg.endTime)
+    } else {
+      out.push({ ...seg })
+    }
+  }
+  return out
+}
+
 /** 逐字稿轉純文字（無 markdown 標記；前端原樣顯示、Dify 當摘要輸入）。 */
 export function formatTranscriptAsMarkdown(segments: TranscriptSegment[]): string {
   const lines = segments.map((seg) => {
@@ -129,7 +154,8 @@ export async function generateSummaryAsync(params: {
       return
     }
 
-    const transcriptMd = formatTranscriptAsMarkdown(merged)
+    // 細碎 STT 片段合併成段（同說話者、間隔近）→ 逐字稿不再一句話拆好幾行
+    const transcriptMd = formatTranscriptAsMarkdown(mergeConsecutiveSegments(merged))
 
     const storagePath = `transcripts/${params.meetingInstanceId}/transcript.md`
     try {
