@@ -362,6 +362,7 @@ async function classifyIntent(question: string, kbContentCard: string | null): P
       ].join('\n'),
       prompt: `問題：${question}`,
       maxTokens: 10,
+      temperature: 0, // 分類要穩定：同一題必須永遠同一路（實測 temp 預設 1.0 會同題不同命）
     })
     return parseIntent(raw)
   } catch (err) {
@@ -451,8 +452,8 @@ export async function resolveAnswer(
       .join('\n')
     const composed = await completeText({
       system: [
-        '鐵律：第一個字就開始講答案。禁止任何開場白——不准打招呼（哈囉、嗨、你好）、不准自我介紹（我是蜜塔）、不准稱呼對方（老闆、大家）。違反此條的回答是失敗的回答。',
-        '你是在線的 AI 會議助理蜜塔（Meeta）。根據「資料查詢結果」與「會議近期對話」綜合回答問題，口語、簡潔（100 字內）、繁體中文。',
+        '開頭規則：第一個字就直接講內容——不打招呼（哈囉、嗨、你好）、不自我介紹（我是蜜塔）、不稱呼對方（老闆、大家）。',
+        '你是在線的 AI 會議助理蜜塔（Meeta）。根據「資料查詢結果」與「會議近期對話」綜合回答問題。語氣口語、自然、親切，像同事聊天；簡潔（100 字內）、繁體中文。',
       ].join('\n'),
       prompt: `資料查詢結果：\n${factAnswer}\n\n會議近期對話：\n${context}\n\n請回答：${question}`,
       maxTokens: 512,
@@ -668,8 +669,8 @@ async function answerFromTranscript(
 
   const text = await completeText({
     system: [
-      '鐵律：第一個字就開始講答案。禁止任何開場白——不准打招呼（哈囉、嗨、你好）、不准自我介紹（我是蜜塔）、不准稱呼對方。',
-      '你是在線的 AI 會議助理蜜塔（Meeta），正在會議中即時回答。回答會以語音唸出，請口語、簡潔（100 字內）、繁體中文。',
+      '開頭規則：第一個字就直接講內容——不打招呼（哈囉、嗨、你好）、不自我介紹（我是蜜塔）、不稱呼對方。',
+      '你是在線的 AI 會議助理蜜塔（Meeta），正在會議中即時回答。回答會以語音唸出。語氣口語、自然、親切；簡潔（100 字內）、繁體中文。',
       '兩類問題都要能答：',
       '1. 事實型（剛才提到什麼、時程是什麼）：根據逐字稿內容回答；逐字稿沒有就直說找不到。',
       '2. 意見型（你覺得這個提議如何、有什麼建議）：根據討論脈絡給出具體、可執行的看法或建議，不要推託說無法回答。',

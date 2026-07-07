@@ -266,6 +266,7 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
 
     const raw = await completeText({
       maxTokens: 200,
+      temperature: 0, // 決策要穩定（實測 temp 預設 1.0 時同情境會忽插忽不插）
       system: INTERJECTION_DECISION_SYSTEM,
       prompt: `最近的對話：\n\n${context}`,
     })

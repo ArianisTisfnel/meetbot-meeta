@@ -16,6 +16,8 @@ export async function completeText(params: {
   system: string
   prompt: string
   maxTokens: number
+  /** 未指定時用模型預設（Gemini 預設 1.0）。分類/決策類呼叫請給 0，避免同題不同命。 */
+  temperature?: number
 }): Promise<string> {
   if (env.GEMINI_API_KEY) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`
@@ -27,6 +29,7 @@ export async function completeText(params: {
         contents: [{ role: 'user', parts: [{ text: params.prompt }] }],
         generationConfig: {
           maxOutputTokens: params.maxTokens,
+          ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
           // 2.5 系列預設會「思考」，會吃掉輸出額度導致空回覆 → 關閉（低延遲也更適合即時場景）
           thinkingConfig: { thinkingBudget: 0 },
         },
@@ -51,6 +54,7 @@ export async function completeText(params: {
   const message = await anthropic.messages.create({
     model: params.maxTokens <= 256 ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
     max_tokens: params.maxTokens,
+    ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
     system: params.system,
     messages: [{ role: 'user', content: params.prompt }],
   })
