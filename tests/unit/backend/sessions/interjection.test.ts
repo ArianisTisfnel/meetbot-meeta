@@ -237,6 +237,16 @@ describe('icebreaker — 沉默破冰', () => {
     expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
   })
 
+  it('喚醒查詢寬限：距上次喚醒 <45s 不破冰（Dify 鏈最長 45s，避免與遲到的答案自打臉）', async () => {
+    const session = putSession()
+    startIcebreaker(session)
+    session.lastWakeAt = Date.now() // 剛有人喚醒提問（查詢可能還在跑）
+    await vi.advanceTimersByTimeAsync(40_000) // 到點：距喚醒 40s < 45s 寬限 → 跳過
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(40_000) // 下一輪：距喚醒 80s → 觸發
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+  })
+
   it('LLM 回空字串 → 本輪不出聲，且監看不中斷（下一輪照常破冰）', async () => {
     const session = putSession()
     startIcebreaker(session)

@@ -51,6 +51,11 @@ const WINDOW_MAX_ENTRIES = 60
 const DECISION_CONTEXT_ENTRIES = 12
 /** 喚醒詞問答進行中／剛結束時不插話的靜默期。 */
 const WAKE_GRACE_MS = 15_000
+/**
+ * 破冰的喚醒寬限：Dify 查詢鏈最長 45s（DIFY_CHATFLOW_TIMEOUT_MS 預設值），
+ * 答案落地前破冰會自打臉（實測 2026-07-08：破冰說「我查不到預算」，2 秒後自己的答案就到了）。
+ */
+const ICEBREAKER_WAKE_QUERY_GRACE_MS = 45_000
 
 interface InterjectionState {
   window: ConversationEntry[]
@@ -153,8 +158,9 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   if (
     session.isSpeaking ||
     now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS ||
-    // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默
-    now - session.lastWakeAt < env.ICEBREAKER_SILENCE_MS
+    // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
+    // 寬限取 max(沉默門檻, 45s 查詢鏈上限)，避免破冰搶在遲到的答案前面
+    now - session.lastWakeAt < Math.max(env.ICEBREAKER_SILENCE_MS, ICEBREAKER_WAKE_QUERY_GRACE_MS)
   ) {
     armIcebreaker(meetingInstanceId) // 繼續監看下一段沉默
     return
