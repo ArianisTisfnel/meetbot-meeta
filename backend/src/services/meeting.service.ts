@@ -193,8 +193,18 @@ export async function leaveMeeting(meetingInstanceId: string): Promise<{
     where: { id: meetingInstanceId },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+  if (meeting.status === 'ENDED' || meeting.status === 'FAILED') {
+    // 會議已結束：Recall 狀態輪詢偵測 call_ended 後，session-manager 已自動收尾
+    // （含摘要、DB 轉 ENDED）。使用者此時按「結束會議」→ 冪等成功即可，
+    // 不再回 400（實測 2026-07-09：手動關掉 Meet 後按結束被擋的 UX 痛點）。
+    return {
+      id: meetingInstanceId,
+      status: meeting.status,
+      endedAt: meeting.endedAt ?? new Date(),
+    }
+  }
   if (meeting.status !== 'ACTIVE') {
-    throw new AppError('INVALID_REQUEST', 400, '只有進行中的會議才能讓 Bot 離開')
+    throw new AppError('INVALID_REQUEST', 400, '加入中的會議請改用「取消」；只有進行中的會議才能讓 Bot 離開')
   }
 
   // handleSessionClose 原子鎖更新 DB，並透過 provider 抽象層讓 bot 離開（含撤除）。

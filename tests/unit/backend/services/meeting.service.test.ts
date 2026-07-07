@@ -120,7 +120,20 @@ describe('leaveMeeting', () => {
     mockVexa.removeBot.mockResolvedValue(undefined)
   })
 
-  it('status 非 ACTIVE → 400 INVALID_REQUEST，不呼叫 removeBot', async () => {
+  it('status = ENDED（會議已自然結束、自動收尾完成）→ 冪等成功，不丟 400', async () => {
+    const endedAt = new Date('2026-07-09T10:00:00Z')
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      status: 'ENDED',
+      endedAt,
+    })
+
+    const result = await leaveMeeting('meet-uuid-1')
+    expect(result).toEqual({ id: 'meet-uuid-1', status: 'ENDED', endedAt })
+    expect(mockVexa.removeBot).not.toHaveBeenCalled()
+  })
+
+  it('status = PENDING → 400 INVALID_REQUEST，不呼叫 removeBot', async () => {
     mockPrisma.meetingInstance.findUnique.mockResolvedValue({
       ...MOCK_MEETING,
       status: 'PENDING',

@@ -1,0 +1,66 @@
+import { vi, describe, it, expect, beforeEach } from 'vitest'
+
+const mockEnv = vi.hoisted(() => ({ INTERNAL_AUTH_SECRET: 'test-secret-1234567890' as string | undefined }))
+vi.mock('../../../../backend/src/types/env', () => ({ env: mockEnv }))
+
+const mockPrisma = vi.hoisted(() => ({ $queryRaw: vi.fn() }))
+vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
+
+import internalRoutes from '../../../../backend/src/routes/internal'
+
+const post = (body: unknown, secret?: string) =>
+  internalRoutes.request('/internal/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(secret ? { 'x-internal-secret': secret } : {}),
+    },
+    body: JSON.stringify(body),
+  })
+
+describe('POST /internal/token — 登入鑄 token（免 Docker）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockEnv.INTERNAL_AUTH_SECRET = 'test-secret-1234567890'
+  })
+
+  it('未設定 INTERNAL_AUTH_SECRET → 503（端點停用，前端退回舊路）', async () => {
+    mockEnv.INTERNAL_AUTH_SECRET = undefined
+    const res = await post({ email: 'a@b.c' }, 'whatever')
+    expect(res.status).toBe(503)
+  })
+
+  it('密鑰錯誤 → 401', async () => {
+    const res = await post({ email: 'a@b.c' }, 'wrong')
+    expect(res.status).toBe(401)
+  })
+
+  it('缺 email → 400', async () => {
+    const res = await post({}, 'test-secret-1234567890')
+    expect(res.status).toBe(400)
+  })
+
+  it('既有使用者＋有效 token → 直接重用（不再增生新 token）', async () => {
+    mockPrisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 7 }]) // SELECT user
+      .mockResolvedValueOnce([{ token: 'existing-token' }]) // SELECT token
+    const res = await post({ email: 'Kai@Test.io' }, 'test-secret-1234567890')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ token: 'existing-token' })
+    expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(2)
+  })
+
+  it('新使用者 → 建 user＋發新 token', async () => {
+    mockPrisma.$queryRaw
+      .mockResolvedValueOnce([]) // SELECT user → 無
+      .mockResolvedValueOnce([{ id: 42 }]) // INSERT user
+      .mockResolvedValueOnce([]) // SELECT token → 無
+      .mockResolvedValueOnce([]) // INSERT token
+    const res = await post({ email: 'new@user.io', name: '小新' }, 'test-secret-1234567890')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(typeof body.token).toBe('string')
+    expect(body.token.length).toBe(64) // randomBytes(32).hex
+    expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(4)
+  })
+})

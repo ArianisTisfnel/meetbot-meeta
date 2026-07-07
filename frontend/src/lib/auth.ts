@@ -47,6 +47,29 @@ function dockerExecCurl(containerId: string, args: string[]): unknown {
   return JSON.parse(result.toString())
 }
 
+/**
+ * 優先路徑：請後端（有 DB 存取）直接 get-or-create 使用者與 token，
+ * 登入不再依賴 vexa-lite 容器。INTERNAL_AUTH_SECRET 未設定時回 null，
+ * 由呼叫端退回 docker exec 舊路。
+ */
+async function getTokenViaBackend(email: string, name?: string | null): Promise<string | null> {
+  const secret = process.env.INTERNAL_AUTH_SECRET
+  if (!secret) return null
+  const base = process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
+  try {
+    const res = await fetch(`${base}/internal/token`, {
+      method: 'POST',
+      headers: { 'x-internal-secret': secret, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, name }),
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as { token?: string }
+    return data.token ?? null
+  } catch {
+    return null
+  }
+}
+
 async function getOrCreateVexaToken(email: string, name?: string | null): Promise<string | null> {
   const containerId = getVexaContainerId()
   if (!containerId) return null
@@ -82,18 +105,37 @@ export const authOptions: NextAuthOptions = {
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID ?? '',
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+      // calendar.events：一鍵建立會議用（前端以使用者身分呼叫 Calendar API 生成 Meet 連結）。
+      // 新 scope 生效需重新登入一次；使用者若在同意畫面拒絕日曆權限，登入仍成功，
+      // 僅一鍵建立退化為手動貼連結。
+      authorization: {
+        params: {
+          scope: 'openid email profile https://www.googleapis.com/auth/calendar.events',
+        },
+      },
     }),
   ],
   callbacks: {
     async jwt({ token, account, profile }) {
       if (account && profile?.email) {
-        const vexaToken = await getOrCreateVexaToken(profile.email, profile.name)
+        // 優先走後端內部端點（免 Docker）；未設定密鑰或後端不在時退回容器舊路
+        const vexaToken =
+          (await getTokenViaBackend(profile.email, profile.name)) ??
+          (await getOrCreateVexaToken(profile.email, profile.name))
         token.vexaToken = vexaToken
+      }
+      if (account) {
+        // Google access token（約 1 小時效期）：一鍵建立會議的 Calendar API 呼叫用。
+        // 未實作 refresh rotation——過期時前端會提示重新登入（demo 場景足夠）。
+        token.googleAccessToken = account.access_token
+        token.googleAccessTokenExpires = account.expires_at
       }
       return token
     },
     async session({ session, token }) {
       ;(session as any).vexaToken = token.vexaToken
+      ;(session as any).googleAccessToken = token.googleAccessToken
+      ;(session as any).googleAccessTokenExpires = token.googleAccessTokenExpires
       return session
     },
   },
