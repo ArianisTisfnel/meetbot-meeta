@@ -76,7 +76,12 @@ if ($LASTEXITCODE -ne 0) {
 # Recall POSTs realtime transcript/chat to RECALL_WEBHOOK_URL, forwarded to local backend(4000).
 # The domain is read from each developer's backend\.env (authtoken is stored in ngrok config).
 Write-Host "Starting ngrok tunnel (Recall webhook)..." -ForegroundColor Cyan
+# 優先用專案內 tools\ngrok.exe；沒有就退回 PATH 上的 ngrok（例如 winget / App Execution Alias 安裝的）。
 $ngrokExe = "$rootDir\tools\ngrok.exe"
+if (-not (Test-Path $ngrokExe)) {
+    $ngrokCmd = Get-Command ngrok -ErrorAction SilentlyContinue
+    if ($ngrokCmd) { $ngrokExe = $ngrokCmd.Source }
+}
 $webhookUrl = $null
 $envFile = "$rootDir\backend\.env"
 if (Test-Path $envFile) {
@@ -84,7 +89,7 @@ if (Test-Path $envFile) {
     if ($line) { $webhookUrl = ($line.Line -replace '^\s*RECALL_WEBHOOK_URL=', '').Trim().Trim('"') }
 }
 if (-not (Test-Path $ngrokExe)) {
-    Write-Host "Note: tools\ngrok.exe not found -> skipping ngrok (Recall realtime voice/chat will not work; everything else is fine)." -ForegroundColor Yellow
+    Write-Host "Note: ngrok not found (neither tools\ngrok.exe nor on PATH) -> skipping ngrok (Recall realtime voice/chat will not work; everything else is fine)." -ForegroundColor Yellow
 } elseif (-not $webhookUrl) {
     Write-Host "Note: RECALL_WEBHOOK_URL not set in backend\.env -> skipping ngrok (Recall realtime will not work)." -ForegroundColor Yellow
 } elseif (Get-Process ngrok -ErrorAction SilentlyContinue) {
