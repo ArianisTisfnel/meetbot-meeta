@@ -13,6 +13,11 @@ vi.mock('../../../../backend/src/lib/dify', () => ({
   askQuestion: vi.fn().mockResolvedValue({ answer: '測試回答', conversationId: 'conv-1' }),
   DIFY_NO_RESULT_SENTINEL: '抱歉 沒有檢索到相關資訊',
 }))
+// 直接 mock lib/llm：原本只 mock @anthropic-ai/sdk，但 llm.ts 解析到 backend/node_modules
+// 的實體套件，mock 從未生效（classify 路徑靠 catch 回退 factual 才沒炸）。
+vi.mock('../../../../backend/src/lib/llm', () => ({
+  completeText: vi.fn().mockResolvedValue('Claude 回答'),
+}))
 vi.mock('../../../../backend/src/types/env', () => ({
   env: {
     ANTHROPIC_API_KEY: 'sk-ant-test',
@@ -371,6 +376,32 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
     expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
     expect(session.bargeEpoch).toBe(1)
   })
+})
+
+describe('answerFromTranscript — 純文字會議的脈絡來源', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('無知識庫＋逐字稿為空：context 從 chatLog 取得（不再「內容不足」）', async () => {
+    const session = makeSession({
+      difyDatasetId: null,
+      chatLog: [
+        { speaker: '小明', text: '我們決定用 A 方案', at: Date.now() - 60_000 },
+        { speaker: '小華', text: '好，預算抓 50 萬', at: Date.now() - 30_000 },
+      ],
+    })
+    mockBotProvider.getTranscript.mockResolvedValueOnce([])
+    await handleChatMessage(session, {
+      sender: '小明',
+      text: '蜜塔 我們剛剛的結論是什麼？',
+      is_from_bot: false,
+    } as any)
+    const texts = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
+    expect(texts.some((t) => t.includes('Claude 回答'))).toBe(true)
+    expect(texts.some((t) => t.includes('還沒有足夠'))).toBe(false)
+  })
+
+  // 註：「chatLog 完全為空」的防禦分支在聊天流程中實際到不了——
+  // dispatchQuestion 會先把「收到你的問題…」ack 記進 chatLog，context 永遠至少有一句。
 })
 
 describe('handleChatMessage — 聊天室喚醒詞', () => {

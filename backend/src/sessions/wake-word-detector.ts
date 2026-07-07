@@ -345,6 +345,12 @@ async function classifyIntent(question: string, kbContentCard: string | null): P
         'factual = 查專案文件/資料就能回答的事實型問題（日期、金額、規則、名額）',
         'context = 需要對話脈絡或主觀判斷的問題（你覺得如何、有什麼建議、剛才誰說了什麼）',
         'hybrid = 同時需要文件資料與對話脈絡（依照文件看我們的討論/規劃合理嗎）',
+        '接續型追問（「那X呢」「X呢」）若追問焦點 X 是日期、金額、名額、規則等查資料可答的事實 → factual。',
+        '多輪脈絡由檢索端的對話記憶處理，不要只因句子省略主詞就分成 context（實測：「那 Beta 呢」誤分 context 會答不出來）。',
+        '意見/評估型問題若評估對象是專案資料的內容（時程、規則、預算合不合理）→ hybrid：要先查文件才有評估依據。',
+        'context 保留給純會議脈絡問題（剛才誰說了什麼、我們剛剛的結論是什麼）。',
+        '最高優先規則：問「誰說了／誰問了／剛才是誰」，或指涉「這場會、我們剛剛、現在開的會」的問題 → 一律 context，就算句中出現文件相關名詞也一樣（實測：「剛才是誰在問簡報格式」被誤送去查文件，只會回無法回答）。',
+        '對蜜塔自身狀態或行為的話（你還在嗎、你不X了嗎、你怎麼不說話）→ chitchat。',
         // 內容卡：讓分類器知道知識庫實際有什麼，別把查不到的事實題硬分成 factual
         ...(kbContentCard
           ? [
@@ -352,7 +358,7 @@ async function classifyIntent(question: string, kbContentCard: string | null): P
               'factual/hybrid 只給「上述文件能涵蓋」的問題；與文件內容無關的事實題，分 context（讓助理靠對話脈絡回答）。',
             ]
           : []),
-        '範例：「今年銷售多少」→ factual；「hello 蜜塔」→ chitchat；「你覺得剛剛的提案如何」→ context',
+        '範例：「今年銷售多少」→ factual；「那 Beta 呢」「那決賽呢」→ factual；「hello 蜜塔」→ chitchat；「你覺得剛剛的提案如何」→ context；「你覺得我們時程安排合理嗎」→ hybrid；「剛才是誰在問簡報格式」「我們這場會確認了哪些日期」→ context；「你不破冰了嗎」→ chitchat',
       ].join('\n'),
       prompt: `問題：${question}`,
       maxTokens: 10,
@@ -640,13 +646,23 @@ async function answerFromTranscript(
   question: string,
 ): Promise<{ answer: string }> {
   const allSegments = await botProvider.getTranscript(requireBotSession(session))
-  const recentSegments = allSegments.slice(-30)
-  if (!recentSegments.length) {
-    return { answer: '目前還沒有足夠的逐字稿內容可以回答，請稍後再試。' }
+  // 語音逐字稿＋聊天室訊息（chatLog 含使用者與蜜塔）依時間合併：
+  // 純打字會議沒有 STT 段落，只靠 getTranscript 會回「逐字稿不足」
+  //（實測 2026-07-07：意見題四連敗全是這個原因）。
+  const merged = [
+    ...allSegments.map((seg) => ({
+      at: session.sessionStartedAt > 0 ? session.sessionStartedAt + seg.startTime * 1000 : 0,
+      speaker: seg.speaker || '參與者',
+      text: seg.text,
+    })),
+    ...(session.chatLog ?? []).map((m) => ({ at: m.at, speaker: m.speaker, text: m.text })),
+  ]
+    .sort((a, b) => a.at - b.at)
+    .slice(-30)
+  if (!merged.length) {
+    return { answer: '目前還沒有足夠的會議內容可以回答，請稍後再試。' }
   }
-  const context = recentSegments
-    .map((seg) => `[${seg.speaker || '參與者'}]: ${seg.text}`)
-    .join('\n')
+  const context = merged.map((l) => `[${l.speaker}]: ${l.text}`).join('\n')
 
   const text = await completeText({
     system: [

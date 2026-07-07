@@ -172,14 +172,34 @@ describe('icebreaker — 沉默破冰', () => {
     )
   })
 
-  it('破冰後進入 5 分鐘冷卻：期間每 40s 到點都跳過，冷卻結束後才會再破冰', async () => {
+  it('破冰後進入 5 分鐘冷卻：期間到點都跳過，冷卻結束＋有人再發言後才會再破冰', async () => {
     const session = putSession()
     startIcebreaker(session)
-    await vi.advanceTimersByTimeAsync(40_000) // 第一次破冰
+    await vi.advanceTimersByTimeAsync(40_000) // 第一次破冰（t=40s）
     expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(280_000) // 冷卻中（40s*7 次到點全跳過）
+    await vi.advanceTimersByTimeAsync(240_000) // t=280s：冷卻中，全部跳過
     expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(80_000) // 冷卻已過 → 下一個 40s 到點觸發
+    recordConversation(session, humanEntry('我們繼續吧')) // t=280s 有人開口
+    await vi.advanceTimersByTimeAsync(40_000) // t=320s 到點：距上次 280s，仍在冷卻 → 跳過
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(40_000) // t=360s 到點：冷卻過＋有新發言 → 觸發
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(2)
+  })
+
+  it('破冰後無人再發言 → 永不重複破冰；有人開口後的新沉默才會再觸發', async () => {
+    const session = putSession()
+    startIcebreaker(session)
+    recordConversation(session, humanEntry('先討論預算'))
+    recordConversation(session, humanEntry('好啊', '小華'))
+    llm.completeText.mockResolvedValueOnce('聊到預算了。要先確認什麼？')
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+    // 冷卻結束很久之後也一樣：沒有人類新發言 → 不重複（修正前會連發相同總結）
+    await vi.advanceTimersByTimeAsync(400_000)
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+    recordConversation(session, humanEntry('欸大家還在嗎', '阿傑'))
+    llm.completeText.mockResolvedValueOnce('剛才停在預算。要繼續嗎？')
+    await vi.advanceTimersByTimeAsync(40_000)
     expect(wwd.speakProactive).toHaveBeenCalledTimes(2)
   })
 
@@ -227,6 +247,24 @@ describe('icebreaker — 沉默破冰', () => {
     expect(wwd.speakProactive).not.toHaveBeenCalled()
     llm.completeText.mockResolvedValueOnce('剛才聊到分工。後端誰要接？')
     await vi.advanceTimersByTimeAsync(40_000) // 修正前：計時器已斷線，這裡永遠不觸發
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+  })
+
+  it('LLM 生成期間有人開口 → 放棄本輪破冰（不撞車）、監看繼續', async () => {
+    const session = putSession()
+    startIcebreaker(session)
+    recordConversation(session, humanEntry('我們來討論預算'))
+    recordConversation(session, humanEntry('抓 50 萬吧', '小華'))
+    llm.completeText.mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 50) // 生成期間有人提問
+      recordConversation(session, humanEntry('欸等等我有問題', '阿傑'))
+      return '目前聊到預算 50 萬。要先確認資金來源嗎？'
+    })
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(wwd.speakProactive).not.toHaveBeenCalled() // 撞車防護生效
+    // 監看沒斷：之後真的冷場 → 下一輪照常破冰
+    llm.completeText.mockResolvedValueOnce('剛才聊到預算。下一步要確認什麼？')
+    await vi.advanceTimersByTimeAsync(40_000)
     expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
   })
 

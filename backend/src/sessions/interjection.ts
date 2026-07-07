@@ -160,6 +160,13 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
     return
   }
 
+  // 上次破冰後若沒有任何人類新發言 → 大家就是暫時不想說話，重複破冰只是騷擾
+  //（實測 2026-07-07：同一段沉默把一模一樣的總結連發兩次）。
+  if (s.lastIcebreakerAt > 0 && !s.window.some((e) => !e.fromBot && e.at > s.lastIcebreakerAt)) {
+    armIcebreaker(meetingInstanceId)
+    return
+  }
+
   const humanEntries = s.window.filter((e) => !e.fromBot)
   let text: string
   if (humanEntries.length < 2) {
@@ -168,6 +175,8 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   } else {
     // 會議中沉默：總結＋拋問題
     try {
+      // 記住進 LLM 前的最後一則：生成期間（1-2 秒）若有人開口，代表已不是冷場
+      const lastEntryAt = s.window.length ? s.window[s.window.length - 1].at : 0
       const context = formatConversation(s.window.slice(-DECISION_CONTEXT_ENTRIES), { chatMarker: false })
       text = await completeText({
         system: ICEBREAKER_SUMMARY_SYSTEM,
@@ -176,6 +185,14 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
       })
       if (!text.trim()) {
         // 空文案：本輪不出聲，但監看不能斷——否則要等到下一筆活動才會復活
+        armIcebreaker(meetingInstanceId)
+        return
+      }
+      // 撞車防護：LLM 生成期間有人類新發言 → 放棄本輪破冰
+      //（實測 2026-07-07：有人 3:05 提問、破冰 3:06 照發，變成打斷提問者）
+      const nowLast = s.window[s.window.length - 1]
+      if (nowLast && nowLast.at !== lastEntryAt && !nowLast.fromBot) {
+        logger.info({ meetingInstanceId }, 'icebreaker: someone spoke during generation, aborting this round')
         armIcebreaker(meetingInstanceId)
         return
       }
