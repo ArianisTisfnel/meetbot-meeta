@@ -68,6 +68,8 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   ICEBREAKER_SILENCE_MS: z.coerce.number().default(40_000),
   ICEBREAKER_COOLDOWN_MS: z.coerce.number().default(300_000),
+  // 內部信任端點（前端 NextAuth 登入鑄 token）共享密鑰；未設定＝端點停用（退回 docker exec 舊路）。
+  INTERNAL_AUTH_SECRET: z.string().min(16).optional(),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),
   // 前端基底 URL，用於組出邀請接受連結。

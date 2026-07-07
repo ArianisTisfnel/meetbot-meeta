@@ -4,7 +4,8 @@ import type { AppEnv } from '../types/hono.js'
 
 export const authMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
   // 外部 webhook（如 Recall realtime）不帶我們的 Bearer，改用各自的 ?token= 密鑰自行驗證。
-  if (c.req.path.startsWith('/webhooks/')) {
+  if (c.req.path.startsWith('/webhooks/') || c.req.path.startsWith('/internal/')) {
+    // /internal/：前端伺服器端的信任呼叫（x-internal-secret 各自驗證）
     return next()
   }
 

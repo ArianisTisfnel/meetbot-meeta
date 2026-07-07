@@ -165,7 +165,7 @@ export async function getDocumentSegments(
 
 // ── RAG Q&A（Dify Chatflow）─────────────────────────────────────────────────
 
-const DIFY_NO_RESULT_SENTINEL = '抱歉 沒有檢索到相關資訊'
+export const DIFY_NO_RESULT_SENTINEL = '抱歉 沒有檢索到相關資訊'
 
 export async function askQuestion(params: {
   datasetId: string

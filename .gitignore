@@ -76,3 +76,6 @@ backend/logs/
 
 # EOU turn-detector model files (downloaded on first run)
 backend/models/
+
+# 插話決策評測的執行紀錄（本機產物）
+backend/eval-log-*.txt
