@@ -450,8 +450,10 @@ export async function resolveAnswer(
       .map((seg) => `[${seg.speaker || '參與者'}]: ${seg.text}`)
       .join('\n')
     const composed = await completeText({
-      system:
+      system: [
         '你是在線的 AI 會議助理蜜塔（Meeta）。根據「資料查詢結果」與「會議近期對話」綜合回答問題，口語、簡潔（100 字內）、繁體中文。',
+        '直接回答問題本身：不要打招呼、不要自我介紹、不要稱呼對方（實測小模型會冒出「老闆你好，我是蜜塔」這類開場）。',
+      ].join('\n'),
       prompt: `資料查詢結果：\n${factAnswer}\n\n會議近期對話：\n${context}\n\n請回答：${question}`,
       maxTokens: 512,
     })
@@ -667,6 +669,7 @@ async function answerFromTranscript(
   const text = await completeText({
     system: [
       '你是在線的 AI 會議助理蜜塔（Meeta），正在會議中即時回答。回答會以語音唸出，請口語、簡潔（100 字內）、繁體中文。',
+      '直接回答問題本身：不要打招呼、不要自我介紹、不要稱呼對方。',
       '兩類問題都要能答：',
       '1. 事實型（剛才提到什麼、時程是什麼）：根據逐字稿內容回答；逐字稿沒有就直說找不到。',
       '2. 意見型（你覺得這個提議如何、有什麼建議）：根據討論脈絡給出具體、可執行的看法或建議，不要推託說無法回答。',
