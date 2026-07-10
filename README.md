@@ -39,24 +39,25 @@
 
 ## 快速啟動
 
-### 第一步：啟動本機基礎設施（Postgres + MinIO + Vexa-lite）
+### 第一步：啟動本機基礎設施（Postgres + MinIO + Vexa-lite + pgAdmin）
 
-專案根目錄的 `docker-compose.yml` 一次管理三個服務：
+專案根目錄的 `docker-compose.yml` 一次管理四個服務：
 - **postgres**：本機資料庫，取代原本的 Supabase PostgreSQL（對外 port 用 **5433**，不是預設的 5432——很多電腦上已經有原生安裝的 Postgres 佔用 5432，用不同 port 避免衝突）
 - **minio**：S3 相容的檔案儲存，取代 Supabase Storage
 - **vexa-lite**：Bot 基礎設施（failover secondary provider，也用來維持 `public.users` / `api_tokens` 表供登入流程使用）
+- **pgadmin**：網頁版資料庫管理介面（`http://localhost:5050`），詳見「[資料庫管理](#資料庫管理)」
 
 ```bash
 docker compose up -d
 ```
 
-首次啟動會自動：建立 `meeting-materials` bucket（`minio-init`）、初始化 Vexa 的 `public` schema（`vexa-init-db`，有 marker 檔守門，之後每次 `up` 不會重跑）。
+首次啟動會自動：建立 `meeting-materials` bucket（`minio-init`）、初始化 Vexa 的 `public` schema（`vexa-init-db`，有 marker 檔守門，之後每次 `up` 不會重跑）、在 pgAdmin 預先帶入連線設定（`pgadmin/servers.json`）。
 
 確認全部容器健康：
 
 ```bash
 docker compose ps
-# 應看到 meetbot-postgres / meetbot-minio / meetbot-vexa-lite 都是 Up ... (healthy)
+# 應看到 meetbot-postgres / meetbot-minio / meetbot-vexa-lite / meetbot-pgadmin 都是 Up ...（pgadmin 沒有 healthcheck，看到 Up 就是正常）
 ```
 
 > ℹ️ vexa-lite 官方 image 啟動時預設會送測試音檔驗證 `TRANSCRIPTION_SERVICE_URL`/`TOKEN`，沒有可用權杖會直接 `exit 1` 開不起來。這個專案目前 `BOT_PRIMARY_PROVIDER=recall`、用不到 Vexa 轉錄，`docker-compose.yml` 已經設 `SKIP_TRANSCRIPTION_CHECK=true` 跳過這個檢查，不用額外處理。
@@ -333,9 +334,18 @@ docker exec -it meetbot-postgres psql -U meetbot -d meetbot
 
 進去後 `\dt app.*` 看這個專案的表，`\dt public.*` 看 Vexa 的表。
 
-### 方法三：桌面 GUI 工具（DBeaver、TablePlus、pgAdmin 等）
+### 方法三：pgAdmin（網頁版，涵蓋所有 schema，全組共用同一套設定）
 
-用以下資訊連線：
+`docker-compose.yml` 已內建 pgAdmin 服務，`docker compose up -d` 就會一起啟動，不用另外裝軟體。
+
+1. 開瀏覽器 **http://localhost:5050**
+2. 登入：`meetbot@local.dev` / `meetbot_local_dev`
+3. 左側樹狀選單已經預先帶好連線設定（`pgadmin/servers.json`），展開 **Servers → meetbot-local**，第一次連線會要求輸入資料庫密碼：`meetbot_local_dev`（可勾 Save Password）
+4. 展開 **Databases → meetbot → Schemas**，`app` 是這個專案的表，`public` 是 Vexa 管理的表
+
+### 方法四：桌面 GUI 工具（DBeaver、TablePlus 等）
+
+不想用網頁版的話，用以下資訊連線：
 
 | 欄位 | 值 |
 |------|-----|
@@ -376,7 +386,9 @@ meetbot/
 │   ├── unit/             # Vitest 單元測試
 │   └── mocks/            # 外部服務 mock
 ├── docs/                 # 設計文件（需求 / Schema / API / 前端 / 後端架構）
-└── docker-compose.yml    # 本機基礎設施：postgres / minio / vexa-lite
+├── pgadmin/
+│   └── servers.json      # pgAdmin 預帶連線設定
+└── docker-compose.yml    # 本機基礎設施：postgres / minio / vexa-lite / pgadmin
 ```
 
 ---

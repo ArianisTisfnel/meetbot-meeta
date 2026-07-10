@@ -122,8 +122,29 @@ services:
     volumes:
       - vexa-recordings:/var/lib/vexa/recordings
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: meetbot-pgadmin
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: meetbot@local.dev
+      PGADMIN_DEFAULT_PASSWORD: meetbot_local_dev
+      # 關掉登入時的 master password 二次確認，本機開發用不需要
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "5050:80" # 網頁版 pgAdmin — http://localhost:5050
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      # 預先帶入連線設定（host/port/db/user），組員開起來就有現成的 server，
+      # 只需要在第一次連線時輸入密碼（meetbot_local_dev）。唯讀掛載，避免容器改到原始檔。
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+
 volumes:
   pgdata:
   minio-data:
   vexa-recordings:
   vexa-init-marker:
+  pgadmin-data:
