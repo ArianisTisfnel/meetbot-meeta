@@ -305,18 +305,49 @@ cd backend && npx prisma db push
 # 查看本機基礎設施容器狀態（postgres / minio / vexa-lite）
 docker compose ps
 
-# 進 Postgres 互動查詢（\dt app.* 看這個專案的表，\dt public.* 看 Vexa 的表）
-docker exec -it meetbot-postgres psql -U meetbot -d meetbot
-
-# 瀏覽本機資料庫（GUI，看 app schema）
-cd backend && npx prisma studio
-
-# 瀏覽 MinIO 檔案（GUI，取代 Supabase Storage 的 Table Editor）
-# 開瀏覽器 http://localhost:9001（帳密 meetbot / meetbot_local_dev）
-
 # 查看 Vexa 用戶列表（確認 admin API 正常）
 docker exec meetbot-vexa-lite curl -s -H "X-Admin-API-Key: my-local-admin-token-2026" http://localhost:8057/admin/users
 ```
+
+> 資料庫瀏覽 / 查詢方式（Prisma Studio、psql、GUI 工具連線資訊）見下方「[資料庫管理](#資料庫管理)」。
+
+---
+
+## 資料庫管理
+
+Supabase 原本有網頁版的 Table Editor；換成本機 Postgres 後，依需求選一種：
+
+### 方法一：Prisma Studio（推薦，零額外設定）
+
+```bash
+cd backend && npx prisma studio
+```
+
+開啟網頁 GUI（預設 `http://localhost:5555`），可瀏覽/編輯這個專案自己的資料表（`projects`、`meetings`、`materials` 等，即 `app` schema）。**限制**：看不到 Vexa 管理的 `public` schema（`users`、`api_tokens` 等）。
+
+### 方法二：psql（指令列，涵蓋所有 schema）
+
+```bash
+docker exec -it meetbot-postgres psql -U meetbot -d meetbot
+```
+
+進去後 `\dt app.*` 看這個專案的表，`\dt public.*` 看 Vexa 的表。
+
+### 方法三：桌面 GUI 工具（DBeaver、TablePlus、pgAdmin 等）
+
+用以下資訊連線：
+
+| 欄位 | 值 |
+|------|-----|
+| Host | `localhost` |
+| Port | `5433` |
+| User | `meetbot` |
+| Password | `meetbot_local_dev` |
+| Database | `meetbot` |
+
+### 檔案儲存（MinIO，取代 Supabase Storage）
+
+開瀏覽器 **http://localhost:9001**（帳密 `meetbot` / `meetbot_local_dev`），可以瀏覽上傳的會議資料檔案與逐字稿。
 
 ---
 
