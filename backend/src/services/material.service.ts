@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
-import { uploadFile, deleteFile } from '../lib/supabase.js'
+import { uploadFile, deleteFile } from '../lib/storage.js'
 import { uploadDocument, deleteDocument } from '../lib/dify.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
@@ -95,8 +95,8 @@ export async function uploadMaterial(
     })
   }
 
-  // ③ Upload to Supabase Storage: {projectId}/{uuid}/{safeName}
-  // Supabase Storage 物件 key 僅接受 ASCII 安全字元，非 ASCII（如中文檔名）會被拒（InvalidKey）。
+  // ③ Upload to Storage: {projectId}/{uuid}/{safeName}
+  // 物件 key 只用 ASCII 安全字元（避開跨 provider 的 key 編碼問題）。
   // 原始檔名仍存於 DB（filename / displayName），這裡只用清理過的安全名稱當儲存 key。
   const safeName =
     file.filename.replace(/[^A-Za-z0-9._-]/g, '_').replace(/_+/g, '_') || 'file'

@@ -2,9 +2,12 @@ import { z } from 'zod'
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
-  SUPABASE_URL: z.string().url(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-  SUPABASE_STORAGE_BUCKET: z.string().min(1),
+  S3_ENDPOINT: z.string().url(),
+  S3_ACCESS_KEY: z.string().min(1),
+  S3_SECRET_KEY: z.string().min(1),
+  S3_BUCKET: z.string().min(1),
+  // MinIO 不檢查這個值，但 AWS SDK v3 的 SigV4 簽章需要一個 region。
+  S3_REGION: z.string().default('us-east-1'),
   DIFY_API_BASE: z.string().url(),
   DIFY_DATASET_API_KEY: z.string().min(1),
   DIFY_WORKFLOW_API_KEY: z.string().min(1),

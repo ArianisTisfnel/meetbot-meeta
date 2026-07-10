@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createDataset, deleteDataset, deleteDocument } from '../lib/dify.js'
-import { deleteFile } from '../lib/supabase.js'
+import { deleteFile } from '../lib/storage.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
 import { recordActivity } from './activity.service.js'

@@ -11,8 +11,8 @@
 | 前端 | Next.js 15（App Router）+ shadcn/ui + TanStack Query v5 |
 | 後端 | Hono（Node.js 20+）|
 | ORM | Prisma 5（`app` schema）|
-| 資料庫 / Storage | Supabase（PostgreSQL + Storage）|
-| Bot 基礎設施 | Vexa-lite（Docker，port 8056 + 8057）|
+| 資料庫 / Storage | PostgreSQL + MinIO（本機 Docker，`docker-compose` 一鍵啟動）|
+| Bot 基礎設施 | Recall.ai（主要）+ Vexa-lite（失效轉移／本機 Docker，port 8056 + 8057）|
 | AI / RAG | Dify（Knowledge Base + Chatflow + Workflow）|
 | 認證 | NextAuth v4（Google OAuth）|
 
@@ -29,51 +29,37 @@
 
 | 服務 | 用途 |
 |------|------|
-| [Supabase](https://supabase.com) | PostgreSQL + Storage |
 | [Dify](https://dify.ai) | RAG Q&A + 會議摘要 Workflow |
 | Google Cloud Console | Google OAuth 登入 |
-| [Recall.ai](https://recall.ai) + [ngrok](https://ngrok.com)（optional） | Vexa 進不去時 failover + 即時問答，設定見 [docs/13](docs/13-Recall-Failover-開發設定.md) |
+| [Recall.ai](https://recall.ai)（主要 provider）+ [ngrok](https://ngrok.com) | Bot 加入會議、即時問答 webhook，設定見 [docs/13](docs/13-Recall-Failover-開發設定.md) |
+
+> PostgreSQL 與檔案儲存（原本用 Supabase）已改為本機 Docker（Postgres + MinIO），**不需要**申請 Supabase 帳號。
 
 ---
 
 ## 快速啟動
 
-### 第一步：啟動 Vexa-lite
+### 第一步：啟動本機基礎設施（Postgres + MinIO + Vexa-lite）
 
-Vexa-lite 是 Bot 的核心基礎設施，必須最先啟動。使用以下 `docker run` 指令（請替換 `<YOUR_DB_URL>` 為你的 Supabase DATABASE_URL）或直接執行`00-vexa-lite-local.md`內的指令：
-
-```bash
-docker run \
-  --env=ADMIN_API_TOKEN=my-local-admin-token-2026 \
-  --env=DATABASE_URL=<YOUR_DB_URL> \
-  --env=TRANSCRIPTION_SERVICE_URL=https://transcription.vexa.ai/v1/audio/transcriptions \
-  --env=TRANSCRIPTION_SERVICE_TOKEN=<YOUR_VEXA_TX_TOKEN> \
-  --env=OPENAI_API_KEY=<YOUR_OPENAI_KEY> \
-  --env=VEXA_API_URL=http://localhost:8056 \
-  --env=ADMIN_API_URL=http://localhost:8057 \
-  --env=ORCHESTRATOR_BACKEND=process \
-  --env=STORAGE_BACKEND=local \
-  --env=LOCAL_STORAGE_DIR=/var/lib/vexa/recordings \
-  -p 8056:8056 \
-  -p 8057:8057 \
-  -d vexaai/vexa-lite:latest
-```
-
-> ⚠️ 必須同時映射 **8056**（Bot API）與 **8057**（Admin API）兩個 port，NextAuth 登入流程需要存取 Admin API。
-
-初次啟動後，執行一次 DB 初始化（之後不需要再執行）：
+專案根目錄的 `docker-compose.yml` 一次管理三個服務：
+- **postgres**：本機資料庫，取代原本的 Supabase PostgreSQL（對外 port 用 **5433**，不是預設的 5432——很多電腦上已經有原生安裝的 Postgres 佔用 5432，用不同 port 避免衝突）
+- **minio**：S3 相容的檔案儲存，取代 Supabase Storage
+- **vexa-lite**：Bot 基礎設施（failover secondary provider，也用來維持 `public.users` / `api_tokens` 表供登入流程使用）
 
 ```bash
-docker exec <CONTAINER_ID> python3 -c "import asyncio; from admin_models.database import init_db; asyncio.run(init_db())"
-docker exec <CONTAINER_ID> python3 -c "import asyncio; from meeting_api.database import init_db; asyncio.run(init_db())"
+docker compose up -d
 ```
 
-確認容器正常運行：
+首次啟動會自動：建立 `meeting-materials` bucket（`minio-init`）、初始化 Vexa 的 `public` schema（`vexa-init-db`，有 marker 檔守門，之後每次 `up` 不會重跑）。
+
+確認全部容器健康：
 
 ```bash
-docker ps
-# 應看到 STATUS: Up ... (healthy)，PORTS: 0.0.0.0:8056->8056, 0.0.0.0:8057->8057
+docker compose ps
+# 應看到 meetbot-postgres / meetbot-minio / meetbot-vexa-lite 都是 Up ... (healthy)
 ```
+
+> ℹ️ vexa-lite 官方 image 啟動時預設會送測試音檔驗證 `TRANSCRIPTION_SERVICE_URL`/`TOKEN`，沒有可用權杖會直接 `exit 1` 開不起來。這個專案目前 `BOT_PRIMARY_PROVIDER=recall`、用不到 Vexa 轉錄，`docker-compose.yml` 已經設 `SKIP_TRANSCRIPTION_CHECK=true` 跳過這個檢查，不用額外處理。
 
 ---
 
@@ -96,11 +82,17 @@ cp .env.example .env
 編輯 `backend/.env`，填入以下所有欄位：
 
 ```bash
-# Supabase（從 Supabase Dashboard → Settings → Database 取得）
-DATABASE_URL="postgresql://postgres.<PROJECT_REF>:<PASSWORD>@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
-SUPABASE_URL="https://<PROJECT_REF>.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY="<SERVICE_ROLE_KEY>"   # Settings → API → service_role
-SUPABASE_STORAGE_BUCKET="meeting-materials"
+# Local Postgres（docker-compose：postgres 服務，對外 port 5433）
+DATABASE_URL="postgresql://meetbot:meetbot_local_dev@localhost:5433/meetbot"
+# Prisma CLI 專用（db push）。本機沒有 pgbouncer，兩者可指向同一條連線字串。
+DIRECT_URL="postgresql://meetbot:meetbot_local_dev@localhost:5433/meetbot"
+
+# Local MinIO（docker-compose：minio 服務，取代 Supabase Storage）
+S3_ENDPOINT="http://localhost:9000"
+S3_ACCESS_KEY="meetbot"
+S3_SECRET_KEY="meetbot_local_dev"
+S3_BUCKET="meeting-materials"
+S3_REGION="us-east-1"
 
 # Dify（從 Dify → Settings → API Keys 取得）
 DIFY_API_BASE="https://api.dify.ai/v1"
@@ -113,9 +105,15 @@ DIFY_CHATFLOW_TIMEOUT_MS=45000
 # Anthropic（可選，僅用於無專案的獨立會議 Q&A fallback）
 ANTHROPIC_API_KEY="sk-ant-..."
 
-# Vexa（與 docker run 的 ADMIN_API_TOKEN 相同）
+# Vexa（需與 docker-compose 的 vexa-lite 一致）
 VEXA_API_URL="http://localhost:8056"
 VEXA_WS_URL="ws://localhost:8056"
+# vexa-lite 容器自身設定，透過 docker-compose env_file 傳入該容器。
+# ADMIN_API_TOKEN 需與 frontend/.env.local 的 VEXA_ADMIN_API_KEY 同值。
+ADMIN_API_TOKEN="my-local-admin-token-2026"
+# 跟 Vexa 官方申請；沒有的話留空也能開機（見上方 SKIP_TRANSCRIPTION_CHECK 說明）。
+TRANSCRIPTION_SERVICE_URL="https://transcription.vexa.ai/v1/audio/transcriptions"
+TRANSCRIPTION_SERVICE_TOKEN="vxa_tx_..."
 
 # Server
 APP_PORT=4000
@@ -139,14 +137,16 @@ INVITATION_TTL_DAYS=7   # 邀請連結有效天數
 
 ### 第四步：初始化資料庫 Schema
 
-首次執行需要同步 Prisma schema 至 Supabase：
+首次執行需要同步 Prisma schema 至本機 Postgres：
 
 ```bash
 cd backend
 npx prisma db push
 ```
 
-> ℹ️ 這會在 Supabase 建立 `app` schema 的所有表格（`projects`、`project_members`、`materials`、`meeting_instances` 等）。Vexa 管理的 `public` schema **不受影響**。
+> ℹ️ 這會在本機 Postgres 建立 `app` schema 的所有表格（`projects`、`project_members`、`materials`、`meeting_instances` 等）。Vexa 管理的 `public` schema（由第一步的 `vexa-init-db` 建立）**不受影響**。
+>
+> ⚠️ 每個人現在都是**自己的本機資料庫**（不像 Supabase 是全組共用），這一步**每個人都要自己執行一次**，不是做過一次就好。
 
 ---
 
@@ -235,8 +235,8 @@ npm run dev
 
 **方法二（終端）**：
 ```bash
-# 1. 確認 Docker Desktop 已開啟，然後啟動 Vexa 容器
-docker start <CONTAINER_ID>
+# 1. 確認 Docker Desktop 已開啟，然後啟動本機基礎設施
+docker compose up -d
 
 # 2. 在專案根目錄同時啟動前後端（Ctrl+C 一次全停）
 npm start
@@ -254,7 +254,7 @@ npm start
   cd backend && npm install && npx prisma generate
   cd ../frontend && npm install
   ```
-- **資料庫**：因為全組共用同一個 Supabase，`schema.prisma` 的變更只需**任一人** `npx prisma db push` 套用一次即可，其他人**不必再 push**。
+- **資料庫**：現在每個人都是**自己的本機 Postgres**（不是共用 Supabase），`schema.prisma` 有變更時**每個人都要自己**跑一次 `cd backend && npx prisma db push`，不是任一人 push 過就好。
 
 ---
 
@@ -302,11 +302,20 @@ npx vitest run
 # Prisma schema 同步（schema.prisma 有變更時）
 cd backend && npx prisma db push
 
-# 查看 Vexa-lite 容器狀態
-docker ps
+# 查看本機基礎設施容器狀態（postgres / minio / vexa-lite）
+docker compose ps
+
+# 進 Postgres 互動查詢（\dt app.* 看這個專案的表，\dt public.* 看 Vexa 的表）
+docker exec -it meetbot-postgres psql -U meetbot -d meetbot
+
+# 瀏覽本機資料庫（GUI，看 app schema）
+cd backend && npx prisma studio
+
+# 瀏覽 MinIO 檔案（GUI，取代 Supabase Storage 的 Table Editor）
+# 開瀏覽器 http://localhost:9001（帳密 meetbot / meetbot_local_dev）
 
 # 查看 Vexa 用戶列表（確認 admin API 正常）
-docker exec <CONTAINER_ID> curl -s -H "X-Admin-API-Key: my-local-admin-token-2026" http://localhost:8057/admin/users
+docker exec meetbot-vexa-lite curl -s -H "X-Admin-API-Key: my-local-admin-token-2026" http://localhost:8057/admin/users
 ```
 
 ---
@@ -320,7 +329,7 @@ meetbot/
 │   │   ├── routes/       # API 路由
 │   │   ├── services/     # 業務邏輯（project / member / invitation / material / meeting）
 │   │   ├── sessions/     # Bot Session 管理（WebSocket + 喚醒詞 + 摘要）
-│   │   ├── lib/          # 外部服務封裝（dify / supabase / vexa / prisma / email）
+│   │   ├── lib/          # 外部服務封裝（dify / storage(S3) / vexa / prisma / email）
 │   │   ├── middleware/   # auth / logger / error-handler
 │   │   └── types/        # env schema、hono context type
 │   └── prisma/
@@ -335,7 +344,8 @@ meetbot/
 ├── tests/
 │   ├── unit/             # Vitest 單元測試
 │   └── mocks/            # 外部服務 mock
-└── docs/                 # 設計文件（需求 / Schema / API / 前端 / 後端架構）
+├── docs/                 # 設計文件（需求 / Schema / API / 前端 / 後端架構）
+└── docker-compose.yml    # 本機基礎設施：postgres / minio / vexa-lite
 ```
 
 ---
