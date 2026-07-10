@@ -69,15 +69,15 @@ export function verifyAgentToken(agentId: string, token: string): boolean {
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }
 
-/** relay WS URL：後端公開 base（RECALL_WEBHOOK_URL，http→ws）＋ agentId＋簽名。 */
-export function deriveAgentWsUrl(agentId: string): string {
-  const base = (env.RECALL_WEBHOOK_URL ?? '').replace(/\/+$/, '').replace(/^http/, 'ws')
-  return `${base}/ws/agent?agent=${agentId}&token=${signAgentToken(agentId)}`
-}
-
-/** bot 瀏覽器要開的網頁 URL（agent 網頁 ＋ ws 參數指回 relay）。 */
+/**
+ * bot 瀏覽器要開的網頁 URL。
+ * 網頁由後端自己供應（routes/agent-page.ts），與 /ws/agent 同源——頁面拿 agent+token
+ * 自行組同源 WS URL，因此網頁與 WS 只需要「一條」公開 tunnel（cloudflared，無 ngrok 警告頁）。
+ * 跨源部署（頁面放前端）時，頁面另支援 ?ws= 完整 WS URL 覆蓋（手動測試用）。
+ */
 export function buildAgentPageUrl(agentId: string): string {
-  return `${env.AGENT_PAGE_URL}?ws=${encodeURIComponent(deriveAgentWsUrl(agentId))}`
+  const base = (env.AGENT_PAGE_URL ?? '').replace(/\/+$/, '')
+  return `${base}?agent=${agentId}&token=${signAgentToken(agentId)}`
 }
 
 export function registerAgentSession(

@@ -8,6 +8,7 @@ import materialsRoutes from './materials.js'
 import meetingsRoutes from './meetings.js'
 import recallWebhookRoutes from './recall-webhook.js'
 import internalRoutes from './internal.js'
+import agentPageRoutes from './agent-page.js'
 
 export function registerRoutes(app: Hono<AppEnv>): void {
   app.route('/', meRoutes)
@@ -20,4 +21,6 @@ export function registerRoutes(app: Hono<AppEnv>): void {
   app.route('/', recallWebhookRoutes)
   // 內部端點（登入鑄 token；x-internal-secret 驗證，authMiddleware 已跳過 /internal/）
   app.route('/', internalRoutes)
+  // Output Media agent 網頁（bot 瀏覽器開啟；免 Bearer，authMiddleware 已跳過 /agent）
+  app.route('/', agentPageRoutes)
 }

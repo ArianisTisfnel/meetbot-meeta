@@ -17,7 +17,6 @@ import {
   isAgentModeEnabled,
   signAgentToken,
   verifyAgentToken,
-  deriveAgentWsUrl,
   buildAgentPageUrl,
   registerAgentSession,
   unregisterAgentSession,
@@ -72,16 +71,17 @@ describe('token 簽名與驗證', () => {
 })
 
 describe('URL 組裝', () => {
-  it('deriveAgentWsUrl：https→wss、帶 agent 與 token', () => {
-    const url = deriveAgentWsUrl(AGENT_ID)
-    expect(url).toBe(`wss://hook.test/ws/agent?agent=${AGENT_ID}&token=${signAgentToken(AGENT_ID)}`)
+  it('buildAgentPageUrl：帶 agent 與簽名 token（頁面自行組同源 /ws/agent）', () => {
+    const url = buildAgentPageUrl(AGENT_ID)
+    const parsed = new URL(url)
+    expect(url.startsWith('https://front.test/agent?')).toBe(true)
+    expect(parsed.searchParams.get('agent')).toBe(AGENT_ID)
+    expect(parsed.searchParams.get('token')).toBe(signAgentToken(AGENT_ID))
   })
 
-  it('buildAgentPageUrl：agent 網頁 URL 帶 encode 過的 ws 參數', () => {
-    const url = buildAgentPageUrl(AGENT_ID)
-    expect(url.startsWith('https://front.test/agent?ws=')).toBe(true)
-    const ws = new URL(url).searchParams.get('ws')
-    expect(ws).toBe(deriveAgentWsUrl(AGENT_ID))
+  it('buildAgentPageUrl：AGENT_PAGE_URL 尾端斜線容錯', () => {
+    ;(env as Record<string, unknown>).AGENT_PAGE_URL = 'https://front.test/agent/'
+    expect(buildAgentPageUrl(AGENT_ID).startsWith('https://front.test/agent?')).toBe(true)
   })
 })
 

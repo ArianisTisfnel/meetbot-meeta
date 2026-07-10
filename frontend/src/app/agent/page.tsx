@@ -107,7 +107,19 @@ export default function AgentPage() {
     if (startedRef.current) return
     startedRef.current = true
 
-    const wsUrl = new URLSearchParams(window.location.search).get('ws')
+    // ws=完整 WS URL（跨源部署/手動測試用）優先；否則 agent+token 連同源 /ws/agent
+    //（正式路徑是後端版 routes/agent-page.ts —— 與 WS 同源、單一 tunnel；此頁協定保持一致）。
+    const params = new URLSearchParams(window.location.search)
+    let wsUrl = params.get('ws')
+    if (!wsUrl) {
+      const agent = params.get('agent')
+      const token = params.get('token')
+      if (agent && token) {
+        wsUrl =
+          window.location.origin.replace(/^http/, 'ws') +
+          `/ws/agent?agent=${encodeURIComponent(agent)}&token=${encodeURIComponent(token)}`
+      }
+    }
     if (!wsUrl) {
       setState('error')
       return
