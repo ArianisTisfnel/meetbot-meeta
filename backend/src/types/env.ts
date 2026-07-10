@@ -32,6 +32,13 @@ const envSchema = z.object({
   // recallai_streaming（prioritize_accuracy 模式）的轉錄語言碼：
   // 'auto' = 自動偵測、可中英夾雜（推薦）；或指定如 'zh'（中文）、'en'。'multi' 非合法值。
   RECALL_TRANSCRIBE_LANGUAGE: z.string().default('auto'),
+  // ── Output Media 即時語音 agent（方案 A，見 docs/16）────────────────────────
+  // 'on'：Recall bot 加掛 agent 網頁（耳朵/嘴巴走串流，喚醒 ack 由分鐘級降到秒級）。
+  // 'off'（預設）：完全走現行 webhook + mp3 路徑。
+  // 真正啟用還需 AGENT_PAGE_URL、OPENAI_API_KEY、RECALL_WEBHOOK_URL/TOKEN 齊全。
+  AGENT_MODE: z.enum(['on', 'off']).default('off'),
+  // agent 網頁（前端 /agent）的公開 URL；bot 的雲端瀏覽器會開啟它，需外網可達。
+  AGENT_PAGE_URL: z.string().url().optional(),
   // 主要 bot provider：'recall'（預設，Vexa 被 reCAPTCHA 擋死後的決策）或 'vexa'。
   // 另一個 provider 自動成為 failover secondary（未設定齊全時退化為單一 provider）。
   BOT_PRIMARY_PROVIDER: z.enum(['vexa', 'recall']).default('recall'),

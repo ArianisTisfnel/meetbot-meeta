@@ -1,0 +1,132 @@
+import { createHmac, timingSafeEqual } from 'node:crypto'
+import { env } from '../types/env.js'
+import type { LiveHandlers } from '../provider/types.js'
+
+/**
+ * Agent session registry — Output Media 即時語音 agent（方案 A）的共用狀態。
+ *
+ * 一個 agent session 對應「一個 Recall bot ＋ 它瀏覽器裡開的 agent 網頁」。
+ * bot 建立時（recall-adapter.join）先產生 agentId 放進網頁 URL（bot id 要等
+ * POST 回來才知道，網頁 URL 卻必須在同一個 payload 裡 → 用自產 id 解雞生蛋），
+ * 網頁載入後帶 agentId＋簽名 token 連回 /ws/agent，由 relay 依 agentId 找回這裡的註冊。
+ *
+ * 與 recall-adapter 的 realtimeRegistry 分開：那邊管 webhook（逐字稿/聊天室），
+ * 這邊管串流語音（喚醒/回答）。兩邊共用同一組 LiveHandlers。
+ */
+
+/** WS 連線的最小介面（避免 registry 依賴 ws 套件的執行期物件；ws 與瀏覽器皆相容）。 */
+export interface PageSocketLike {
+  readonly readyState: number
+  readonly OPEN: number
+  send(data: string | Buffer): void
+  close(): void
+}
+
+export interface AgentSession {
+  agentId: string
+  botId: string
+  botName: string
+  handlers: LiveHandlers
+  /** agent 網頁目前的 WS 連線（null = 尚未連上 / 已斷線 → 退回 webhook + mp3）。 */
+  pageWs: PageSocketLike | null
+  /** relay 對 OpenAI 轉錄 WS 的把手（型別由 relay 管理，registry 只負責存放）。 */
+  openaiWs: unknown
+  /** 語音世代計數：stopSpeaking 時 +1，讓串流中的 TTS 轉發知道自己已作廢。 */
+  speakEpoch: number
+  /** 固定台詞（ack/進度句）與預熱答案的 TTS PCM 快取（24kHz s16le mono）。 */
+  pcmCache: Map<string, Buffer>
+  /**
+   * 會議相對時間錨點（epoch ms）：segment startTime = (now - anchorMs) / 1000。
+   * 註冊時先填建立時間，admitted 時由 adapter 更新成與 session.sessionStartedAt
+   * 幾乎同刻的值——barge-in 的晚到事件防護用 sessionStartedAt + startTime 還原
+   * 開口時刻，錨點不對齊會把即時插話誤判成晚到事件而略過。
+   */
+  anchorMs: number
+}
+
+const byAgentId = new Map<string, AgentSession>()
+const agentIdByBotId = new Map<string, string>()
+
+/** PCM 快取上限（同 adapter 的 mp3 快取；答案預熱會進來，防無界成長）。 */
+export const PCM_CACHE_MAX = 30
+
+/** agent 模式是否啟用（開關 on 且必要設定齊全）。 */
+export function isAgentModeEnabled(): boolean {
+  return (
+    env.AGENT_MODE === 'on' &&
+    Boolean(env.AGENT_PAGE_URL && env.OPENAI_API_KEY && env.RECALL_WEBHOOK_URL && env.RECALL_WEBHOOK_TOKEN)
+  )
+}
+
+/** agentId 的簽名 token（HMAC-SHA256，密鑰沿用 RECALL_WEBHOOK_TOKEN，不新增必填 env）。 */
+export function signAgentToken(agentId: string): string {
+  return createHmac('sha256', env.RECALL_WEBHOOK_TOKEN ?? '').update(agentId).digest('hex')
+}
+
+export function verifyAgentToken(agentId: string, token: string): boolean {
+  const expected = Buffer.from(signAgentToken(agentId))
+  const actual = Buffer.from(token)
+  return expected.length === actual.length && timingSafeEqual(expected, actual)
+}
+
+/** relay WS URL：後端公開 base（RECALL_WEBHOOK_URL，http→ws）＋ agentId＋簽名。 */
+export function deriveAgentWsUrl(agentId: string): string {
+  const base = (env.RECALL_WEBHOOK_URL ?? '').replace(/\/+$/, '').replace(/^http/, 'ws')
+  return `${base}/ws/agent?agent=${agentId}&token=${signAgentToken(agentId)}`
+}
+
+/** bot 瀏覽器要開的網頁 URL（agent 網頁 ＋ ws 參數指回 relay）。 */
+export function buildAgentPageUrl(agentId: string): string {
+  return `${env.AGENT_PAGE_URL}?ws=${encodeURIComponent(deriveAgentWsUrl(agentId))}`
+}
+
+export function registerAgentSession(
+  agentId: string,
+  botId: string,
+  botName: string,
+  handlers: LiveHandlers,
+): AgentSession {
+  const session: AgentSession = {
+    agentId,
+    botId,
+    botName,
+    handlers,
+    pageWs: null,
+    openaiWs: null,
+    speakEpoch: 0,
+    pcmCache: new Map(),
+    anchorMs: Date.now(),
+  }
+  byAgentId.set(agentId, session)
+  agentIdByBotId.set(botId, agentId)
+  return session
+}
+
+export function unregisterAgentSession(agentId: string): AgentSession | undefined {
+  const session = byAgentId.get(agentId)
+  if (!session) return undefined
+  byAgentId.delete(agentId)
+  agentIdByBotId.delete(session.botId)
+  return session
+}
+
+export function getAgentSession(agentId: string): AgentSession | undefined {
+  return byAgentId.get(agentId)
+}
+
+export function getAgentSessionByBotId(botId: string): AgentSession | undefined {
+  const agentId = agentIdByBotId.get(botId)
+  return agentId ? byAgentId.get(agentId) : undefined
+}
+
+/** admitted 時對齊時間錨點（與 session.sessionStartedAt 同刻，誤差毫秒級）。 */
+export function markAgentAnchor(agentId: string): void {
+  const session = byAgentId.get(agentId)
+  if (session) session.anchorMs = Date.now()
+}
+
+/** agent 網頁是否在線（webhook 喚醒抑制與 speak 分流的依據）。 */
+export function isAgentLive(botId: string): boolean {
+  const session = getAgentSessionByBotId(botId)
+  return Boolean(session?.pageWs && session.pageWs.readyState === session.pageWs.OPEN)
+}

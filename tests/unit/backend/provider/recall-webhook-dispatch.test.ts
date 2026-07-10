@@ -10,12 +10,17 @@ import {
   registerRealtimeHandlers,
   unregisterRealtimeHandlers,
 } from '../../../../backend/src/provider/recall-adapter'
+import {
+  registerAgentSession,
+  unregisterAgentSession,
+  type PageSocketLike,
+} from '../../../../backend/src/agent/agent-registry'
 
 const BOT_ID = 'bot-abc'
 const BOT_NAME = '蜜塔'
 
 function makeHandlers() {
-  return { onSegment: vi.fn(), onChat: vi.fn(), onStatus: vi.fn() }
+  return { onSegment: vi.fn(), onPartialSegment: vi.fn(), onChat: vi.fn(), onStatus: vi.fn() }
 }
 
 function transcriptEvent(participantName: string, text: string) {
@@ -100,5 +105,58 @@ describe('dispatchRecallEvent', () => {
     expect(segments.map((s) => s.text)).toEqual(['蜜塔請問', '我是蜜塔', '第二句'])
     // handlers 只收到非 bot 的兩句（防自迴圈）
     expect(handlers.onSegment).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('dispatchRecallEvent × agent 模式（方案 A）', () => {
+  const AGENT_ID = 'agent-for-dispatch-test'
+  let handlers: ReturnType<typeof makeHandlers>
+
+  function partialEvent(text: string) {
+    return {
+      event: 'transcript.partial_data',
+      data: {
+        bot: { id: BOT_ID },
+        transcript: { id: 'tx-1' },
+        data: {
+          words: [{ text, start_timestamp: { relative: 1 }, end_timestamp: { relative: 2 } }],
+          participant: { id: 1, name: 'Wendy' },
+          language_code: 'zh',
+        },
+      },
+    }
+  }
+
+  beforeEach(() => {
+    handlers = makeHandlers()
+    registerRealtimeHandlers(BOT_ID, handlers, BOT_NAME)
+    unregisterAgentSession(AGENT_ID)
+  })
+
+  it('agent 網頁在線 → webhook 語音事件只寫逐字稿、不觸發喚醒（防分鐘級晚到重複回答）', () => {
+    const session = registerAgentSession(AGENT_ID, BOT_ID, BOT_NAME, handlers)
+    session.pageWs = { readyState: 1, OPEN: 1, send: vi.fn(), close: vi.fn() } satisfies PageSocketLike
+
+    const segments: import('../../../../backend/src/provider/types').TranscriptSegment[] = []
+    registerRealtimeHandlers(BOT_ID, handlers, BOT_NAME, segments)
+
+    dispatchRecallEvent(transcriptEvent('Wendy', '蜜塔請問'))
+    dispatchRecallEvent(partialEvent('蜜塔'))
+
+    expect(segments.map((s) => s.text)).toEqual(['蜜塔請問']) // 逐字稿照寫
+    expect(handlers.onSegment).not.toHaveBeenCalled() // 喚醒改由 relay 驅動
+    expect(handlers.onPartialSegment).not.toHaveBeenCalled()
+
+    // 聊天室事件不受 agent 模式影響（doc 16 §06）
+    dispatchRecallEvent(chatEvent('Wendy', '蜜塔 這是什麼'))
+    expect(handlers.onChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('agent 網頁斷線 → webhook 喚醒 fallback 自動恢復', () => {
+    const session = registerAgentSession(AGENT_ID, BOT_ID, BOT_NAME, handlers)
+    session.pageWs = null // 網頁未連上 / 已斷線
+
+    dispatchRecallEvent(transcriptEvent('Wendy', '蜜塔請問'))
+    expect(handlers.onSegment).toHaveBeenCalledTimes(1)
   })
 })
