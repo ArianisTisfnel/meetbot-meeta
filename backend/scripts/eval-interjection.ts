@@ -143,7 +143,7 @@ async function main() {
   //   .env 不完整（types/env.ts 的 zod 檢查缺必填會直接 process.exit）→
   //   退回內建 Gemini 直呼叫，只需要 GEMINI_API_KEY（行為對齊 llm.ts 的 Gemini 分支）。
   const FULL_ENV = Boolean(
-    process.env.ANTHROPIC_API_KEY && process.env.SUPABASE_URL && process.env.VEXA_API_URL && process.env.DATABASE_URL,
+    process.env.ANTHROPIC_API_KEY && process.env.S3_ENDPOINT && process.env.VEXA_API_URL && process.env.DATABASE_URL,
   )
   let completeText: CompleteTextFn
   if (FULL_ENV) {

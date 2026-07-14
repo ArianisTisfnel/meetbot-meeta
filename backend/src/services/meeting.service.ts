@@ -293,7 +293,7 @@ export async function deleteMeeting(
 
   // best-effort 清掉 Storage 逐字稿檔（失敗不擋刪除）
   if (meeting.transcriptStoragePath) {
-    const { deleteFile } = await import('../lib/supabase.js')
+    const { deleteFile } = await import('../lib/storage.js')
     await deleteFile(meeting.transcriptStoragePath).catch((err: unknown) =>
       logger.warn({ err, meetingId }, 'deleteMeeting: failed to delete transcript storage file'),
     )
@@ -616,7 +616,7 @@ export async function getProjectMeeting(
 
 /**
  * 取得會後完整逐字稿的 Markdown（provider-agnostic）。
- * 來源為摘要階段存進 Supabase Storage 的 transcript.md——這是 Recall 會議結束後
+ * 來源為摘要階段存進 Storage 的 transcript.md——這是 Recall 會議結束後
  * 唯一可靠的逐字稿來源（session 已離開記憶體、Recall bot id 未持久化，無法即時重抓）。
  * 權限與 getMeeting / getProjectMeeting 一致（呼叫端先做存取檢查）。
  */
@@ -626,7 +626,7 @@ export async function getMeetingTranscriptMarkdown(meetingId: string): Promise<s
     select: { transcriptStoragePath: true },
   })
   if (!meeting?.transcriptStoragePath) return null
-  const { downloadTextFile } = await import('../lib/supabase.js')
+  const { downloadTextFile } = await import('../lib/storage.js')
   return downloadTextFile(meeting.transcriptStoragePath)
 }
 

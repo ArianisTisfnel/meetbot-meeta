@@ -21,7 +21,7 @@ vi.mock('../../../../backend/src/lib/dify', () => ({
     decisions: ['決定一'],
   }),
 }))
-vi.mock('../../../../backend/src/lib/supabase', () => ({
+vi.mock('../../../../backend/src/lib/storage', () => ({
   upsertFile: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -39,7 +39,7 @@ import {
   SUMMARY_POLL_INTERVAL_MS,
 } from '../../../../backend/src/sessions/summary.service'
 import * as difyMod from '../../../../backend/src/lib/dify'
-import * as supabaseMod from '../../../../backend/src/lib/supabase'
+import * as storageMod from '../../../../backend/src/lib/storage'
 import type { TranscriptSegment } from '../../../../backend/src/provider/types'
 
 /** 統一 schema 的 segment（formatTranscriptAsMarkdown / waitForTranscriptStable 用）。 */
@@ -288,7 +288,7 @@ describe('generateSummaryAsync', () => {
     await advanceUntilStable()
     await promise
 
-    expect(vi.mocked(supabaseMod.upsertFile)).toHaveBeenCalledWith(
+    expect(vi.mocked(storageMod.upsertFile)).toHaveBeenCalledWith(
       `transcripts/${baseParams.meetingInstanceId}/transcript.md`,
       expect.any(Buffer),
       'text/markdown',
@@ -334,7 +334,7 @@ describe('generateSummaryAsync', () => {
   })
 
   it('Storage 上傳失敗 → warn log，繼續執行 Dify 摘要不中斷', async () => {
-    vi.mocked(supabaseMod.upsertFile).mockRejectedValueOnce(new Error('Storage error'))
+    vi.mocked(storageMod.upsertFile).mockRejectedValueOnce(new Error('Storage error'))
 
     const promise = generateSummaryAsync(baseParams)
     await advanceUntilStable()
