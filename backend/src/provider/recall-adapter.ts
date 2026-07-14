@@ -272,7 +272,13 @@ export class RecallAdapter implements MeetingBotProvider {
       bot_name: botName,
       recording_config: recordingConfig,
       ...(agentId
-        ? { output_media: { camera: { kind: 'webpage', config: { url: buildAgentPageUrl(agentId) } } } }
+        ? {
+            output_media: { camera: { kind: 'webpage', config: { url: buildAgentPageUrl(agentId) } } },
+            // 官方 demo 對 output media 指定 4 核規格：網頁要在 bot 瀏覽器裡跑
+            // 收音＋播放管線，預設規格 CPU 不足會掉幀（實測 2026-07-10：語音斷斷續續、
+            // 收音破碎導致轉錄文字錯亂）。
+            variant: { google_meet: 'web_4_core' },
+          }
         : {}),
     })
 

@@ -61,23 +61,50 @@ class PcmCapture extends AudioWorkletProcessor {
 registerProcessor('pcm-capture', PcmCapture)
 
 class PcmPlayer extends AudioWorkletProcessor {
+  // Jitter buffer：串流塊到達時間不均勻，到一塊播一塊會斷斷續續。
+  // 先積 PREBUFFER 才開播；'flush' = 這一句串流結束，剩多少播多少。
   constructor() {
     super()
     this.queue = []
     this.offset = 0
+    this.buffered = 0
+    this.started = false
+    this.forceStart = false
     this.playing = false
+    this.PREBUFFER = 12000 // 24kHz × 0.5s
     this.port.onmessage = (e) => {
       if (e.data === 'clear') {
         this.queue = []
         this.offset = 0
+        this.buffered = 0
+        this.started = false
+        this.forceStart = false
+      } else if (e.data === 'flush') {
+        this.forceStart = true
       } else {
         this.queue.push(e.data)
+        this.buffered += e.data.length
       }
+    }
+  }
+  report(playing) {
+    if (playing !== this.playing) {
+      this.playing = playing
+      this.port.postMessage({ playing })
     }
   }
   process(_inputs, outputs) {
     const out = outputs[0][0]
     if (!out) return true
+    if (!this.started) {
+      if (this.buffered >= this.PREBUFFER || (this.forceStart && this.buffered > 0)) {
+        this.started = true
+      } else {
+        for (let i = 0; i < out.length; i++) out[i] = 0
+        this.report(false)
+        return true
+      }
+    }
     let i = 0
     while (i < out.length && this.queue.length) {
       const chunk = this.queue[0]
@@ -87,12 +114,13 @@ class PcmPlayer extends AudioWorkletProcessor {
         this.offset = 0
       }
     }
+    this.buffered -= i
     for (; i < out.length; i++) out[i] = 0
-    const playing = this.queue.length > 0
-    if (playing !== this.playing) {
-      this.playing = playing
-      this.port.postMessage({ playing })
+    if (this.queue.length === 0) {
+      this.started = false
+      this.forceStart = false
     }
+    this.report(this.started || this.queue.length > 0)
     return true
   }
 }
@@ -144,9 +172,10 @@ export default function AgentPage() {
       await ctx.audioWorklet.addModule(workletUrl)
       URL.revokeObjectURL(workletUrl)
 
-      // 「麥克風」＝會議混音。echoCancellation 防蜜塔自己的聲音殘留造成自迴圈。
+      // 「麥克風」＝會議混音，不是真的麥克風——noiseSuppression/AGC 會把乾淨的
+      // 會議音訊處理出雜音與音量泵動，弄髒轉錄 → 關閉；echoCancellation 保留（防自迴圈）。
       const mic = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
       })
       const source = ctx.createMediaStreamSource(mic)
       const capture = new AudioWorkletNode(ctx, 'pcm-capture')
@@ -177,6 +206,7 @@ export default function AgentPage() {
             try {
               const msg = JSON.parse(ev.data)
               if (msg?.type === 'stop') player.port.postMessage('clear')
+              else if (msg?.type === 'flush') player.port.postMessage('flush')
             } catch {
               /* 未知訊息忽略 */
             }

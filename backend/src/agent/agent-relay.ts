@@ -316,6 +316,7 @@ export async function agentSpeak(botId: string, text: string): Promise<boolean> 
   const cached = session.pcmCache.get(text)
   if (cached) {
     sendPcmToPage(session, cached, epoch)
+    sendFlush(session, epoch)
     return true
   }
 
@@ -348,7 +349,14 @@ export async function agentSpeak(botId: string, text: string): Promise<boolean> 
     }
     if (chunk.length) session.pageWs!.send(chunk)
   }
+  sendFlush(session, epoch)
   return true
+}
+
+/** 通知網頁「這一句的串流已結束」：播放端剩多少播多少，短句不用等 jitter buffer 積滿。 */
+function sendFlush(session: AgentSession, epoch: number): void {
+  if (session.speakEpoch !== epoch || !isPageOpen(session)) return
+  session.pageWs!.send(JSON.stringify({ type: 'flush' }))
 }
 
 /** 預先合成台詞進 PCM 快取（不播放）。網頁未連線也可預熱（純 API 呼叫）。 */
