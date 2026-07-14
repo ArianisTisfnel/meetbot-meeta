@@ -155,13 +155,21 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   if (!session || !session.botSession || !s) return
 
   const now = Date.now()
-  if (
-    session.isSpeaking ||
-    now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS ||
-    // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
-    // 寬限取 max(沉默門檻, 45s 查詢鏈上限)，避免破冰搶在遲到的答案前面
-    now - session.lastWakeAt < Math.max(env.ICEBREAKER_SILENCE_MS, ICEBREAKER_WAKE_QUERY_GRACE_MS)
-  ) {
+  // 跳過時必留 log：這些防護原本靜默 return，實測「破冰沒出來」時完全無從診斷是哪條擋的
+  const skipReason = session.isSpeaking
+    ? 'bot-speaking'
+    : now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS
+      ? 'cooldown'
+      : // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
+        // 寬限取 max(沉默門檻, 45s 查詢鏈上限)，避免破冰搶在遲到的答案前面
+        now - session.lastWakeAt < Math.max(env.ICEBREAKER_SILENCE_MS, ICEBREAKER_WAKE_QUERY_GRACE_MS)
+        ? 'wake-grace'
+        : null
+  if (skipReason) {
+    logger.info(
+      { meetingInstanceId, skipReason, sinceWakeMs: now - session.lastWakeAt, sinceLastIcebreakerMs: now - s.lastIcebreakerAt },
+      'icebreaker: skipped, re-arming',
+    )
     armIcebreaker(meetingInstanceId) // 繼續監看下一段沉默
     return
   }
@@ -169,6 +177,7 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   // 上次破冰後若沒有任何人類新發言 → 大家就是暫時不想說話，重複破冰只是騷擾
   //（實測 2026-07-07：同一段沉默把一模一樣的總結連發兩次）。
   if (s.lastIcebreakerAt > 0 && !s.window.some((e) => !e.fromBot && e.at > s.lastIcebreakerAt)) {
+    logger.info({ meetingInstanceId }, 'icebreaker: skipped (no human speech since last icebreaker), re-arming')
     armIcebreaker(meetingInstanceId)
     return
   }
@@ -257,13 +266,27 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   if (!session || !session.botSession || !s || s.evaluating) return
 
   const now = Date.now()
-  // 硬性防護：呼叫模型前先擋（省 token、避免搶話）
-  if (session.isSpeaking) return
-  if (now - session.lastWakeAt < WAKE_GRACE_MS) return
-  if (session.wakePendingUntil > now) return
-  if (now - s.lastInterjectionAt < env.INTERJECTION_COOLDOWN_MS) return
+  // 硬性防護：呼叫模型前先擋（省 token、避免搶話）。
+  // 跳過時必留 log：原本靜默 return，實測「都不插話」時無從診斷是哪條擋的。
   const last = s.window[s.window.length - 1]
-  if (!last || last.fromBot) return
+  const skipReason = session.isSpeaking
+    ? 'bot-speaking'
+    : now - session.lastWakeAt < WAKE_GRACE_MS
+      ? 'wake-grace'
+      : session.wakePendingUntil > now
+        ? 'wake-pending'
+        : now - s.lastInterjectionAt < env.INTERJECTION_COOLDOWN_MS
+          ? 'cooldown'
+          : !last || last.fromBot
+            ? 'last-entry-from-bot'
+            : null
+  if (skipReason) {
+    logger.info(
+      { meetingInstanceId, skipReason, sinceWakeMs: now - session.lastWakeAt },
+      'interjection: evaluation skipped',
+    )
+    return
+  }
 
   s.evaluating = true
   try {
