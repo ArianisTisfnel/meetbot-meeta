@@ -1,4 +1,4 @@
-# meetbot dev environment startup script
+﻿# meetbot dev environment startup script
 # Usage: double-click start.bat, or run .\start.ps1 from project root
 
 $rootDir = $PSScriptRoot
@@ -65,11 +65,21 @@ if ($LASTEXITCODE -ne 0) {
 # Recall POSTs realtime transcript/chat to RECALL_WEBHOOK_URL, forwarded to local backend(4000).
 # The domain is read from each developer's backend\.env (authtoken is stored in ngrok config).
 Write-Host "Starting ngrok tunnel (Recall webhook)..." -ForegroundColor Cyan
-# 優先用專案內 tools\ngrok.exe；沒有就退回 PATH 上的 ngrok（例如 winget / App Execution Alias 安裝的）。
-$ngrokExe = "$rootDir\tools\ngrok.exe"
-if (-not (Test-Path $ngrokExe)) {
+# 先試「明確路徑」（不依賴 PATH）：專案內 tools\，再來是 MSIX/winget 裝的 WindowsApps 位置。
+# 重點：start.bat 由 Explorer/cmd 啟動時，子 PowerShell 的 PATH 未必含 WindowsApps，導致
+# Get-Command ngrok 落空 → 誤判「找不到 ngrok」→ 跳過 → 喚醒詞收不到即時字幕。改成先 Test-Path
+# 明確檔案就繞開這個坑（檔案在不在跟 PATH 無關）。
+$ngrokExe = $null
+$ngrokCandidates = @(
+    (Join-Path $rootDir 'tools\ngrok.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\ngrok.exe')
+)
+foreach ($c in $ngrokCandidates) { if ($c -and (Test-Path $c)) { $ngrokExe = $c; break } }
+if (-not $ngrokExe) {
+    # 明確路徑都沒有，最後才靠 PATH。App Execution Alias 的 .Source 可能為 $null，
+    # 那就用命令名 'ngrok' 交給 Start-Process 解析（別對這名字 Test-Path）。
     $ngrokCmd = Get-Command ngrok -ErrorAction SilentlyContinue
-    if ($ngrokCmd) { $ngrokExe = $ngrokCmd.Source }
+    if ($ngrokCmd) { $ngrokExe = if ($ngrokCmd.Source) { $ngrokCmd.Source } else { 'ngrok' } }
 }
 $webhookUrl = $null
 $envFile = "$rootDir\backend\.env"
@@ -77,7 +87,7 @@ if (Test-Path $envFile) {
     $line = Select-String -Path $envFile -Pattern '^\s*RECALL_WEBHOOK_URL=' | Select-Object -First 1
     if ($line) { $webhookUrl = ($line.Line -replace '^\s*RECALL_WEBHOOK_URL=', '').Trim().Trim('"') }
 }
-if (-not (Test-Path $ngrokExe)) {
+if (-not $ngrokExe -or -not (Test-Path $ngrokExe)) {
     Write-Host "Note: ngrok not found (neither tools\ngrok.exe nor on PATH) -> skipping ngrok (Recall realtime voice/chat will not work; everything else is fine)." -ForegroundColor Yellow
 } elseif (-not $webhookUrl) {
     Write-Host "Note: RECALL_WEBHOOK_URL not set in backend\.env -> skipping ngrok (Recall realtime will not work)." -ForegroundColor Yellow
