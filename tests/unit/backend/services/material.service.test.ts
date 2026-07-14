@@ -1,11 +1,11 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest'
 import { mockPrisma } from '../../../mocks/prisma.mock'
 import { mockDify } from '../../../mocks/dify.mock'
-import { mockSupabase } from '../../../mocks/supabase.mock'
+import { mockStorage } from '../../../mocks/storage.mock'
 
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('../../../../backend/src/lib/dify', () => mockDify)
-vi.mock('../../../../backend/src/lib/supabase', () => mockSupabase)
+vi.mock('../../../../backend/src/lib/storage', () => mockStorage)
 
 // crypto.randomUUID() 需要 stable 值方便斷言 storagePath
 vi.mock('node:crypto', async (importOriginal) => {
@@ -68,7 +68,7 @@ describe('uploadMaterial', () => {
   it('case 1: 上傳成功 → Material 與 EditHistory 均建立，storagePath 正確', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({ ...MOCK_PROJECT })
     mockPrisma.material.findFirst.mockResolvedValueOnce(null)
-    mockSupabase.uploadFile.mockResolvedValueOnce(undefined)
+    mockStorage.uploadFile.mockResolvedValueOnce(undefined)
     mockDify.uploadDocument.mockResolvedValueOnce({ documentId: 'doc-123', batch: 'batch-abc' })
     mockPrisma.material.create.mockResolvedValueOnce(MOCK_MATERIAL)
     mockPrisma.materialEditHistory.create.mockResolvedValueOnce({})
@@ -78,7 +78,7 @@ describe('uploadMaterial', () => {
 
     expect(result.filename).toBe('test.pdf')
     expect(result.indexingStatus).toBe('PENDING')
-    expect(mockSupabase.uploadFile).toHaveBeenCalledWith(
+    expect(mockStorage.uploadFile).toHaveBeenCalledWith(
       'proj-1/test-uuid/test.pdf',
       PDF_BUFFER,
       'application/pdf',
@@ -103,7 +103,7 @@ describe('uploadMaterial', () => {
       uploadMaterial('proj-1', 1, { ...PDF_FILE, mimeType: 'image/png', filename: 'img.png' }),
     ).rejects.toMatchObject({ code: 'UNSUPPORTED_MEDIA_TYPE', statusCode: 415 })
 
-    expect(mockSupabase.uploadFile).not.toHaveBeenCalled()
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled()
   })
 
   it('case 3: 超過 15MB → 413', async () => {
@@ -112,7 +112,7 @@ describe('uploadMaterial', () => {
       uploadMaterial('proj-1', 1, { buffer: bigBuffer, filename: 'big.pdf', mimeType: 'application/pdf' }),
     ).rejects.toMatchObject({ code: 'FILE_TOO_LARGE', statusCode: 413 })
 
-    expect(mockSupabase.uploadFile).not.toHaveBeenCalled()
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled()
   })
 
   it('case 4: SHA-256 重複（未刪除）→ 409 DUPLICATE_FILE', async () => {
@@ -123,7 +123,7 @@ describe('uploadMaterial', () => {
       code: 'DUPLICATE_FILE',
       statusCode: 409,
     })
-    expect(mockSupabase.uploadFile).not.toHaveBeenCalled()
+    expect(mockStorage.uploadFile).not.toHaveBeenCalled()
   })
 
   it('case 5: SHA-256 重複（已刪除）→ 舊紀錄 sha256 改為 DELETED_{id}，建立新紀錄', async () => {
@@ -131,7 +131,7 @@ describe('uploadMaterial', () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({ ...MOCK_PROJECT })
     mockPrisma.material.findFirst.mockResolvedValueOnce(deletedMaterial)
     mockPrisma.material.update.mockResolvedValueOnce({}) // free unique slot
-    mockSupabase.uploadFile.mockResolvedValueOnce(undefined)
+    mockStorage.uploadFile.mockResolvedValueOnce(undefined)
     mockDify.uploadDocument.mockResolvedValueOnce({ documentId: 'doc-new', batch: 'batch-new' })
     mockPrisma.material.create.mockResolvedValueOnce(MOCK_MATERIAL)
     mockPrisma.materialEditHistory.create.mockResolvedValueOnce({})
@@ -152,11 +152,11 @@ describe('uploadMaterial', () => {
     const p2002 = Object.assign(new Error('Unique constraint'), { code: 'P2002' })
     mockPrisma.project.findUnique.mockResolvedValueOnce({ ...MOCK_PROJECT })
     mockPrisma.material.findFirst.mockResolvedValueOnce(null)
-    mockSupabase.uploadFile.mockResolvedValueOnce(undefined)
+    mockStorage.uploadFile.mockResolvedValueOnce(undefined)
     mockDify.uploadDocument.mockResolvedValueOnce({ documentId: 'doc-x', batch: 'batch-x' })
     mockPrisma.material.create.mockRejectedValueOnce(p2002)
     // rollback mocks
-    mockSupabase.deleteFile.mockResolvedValueOnce(undefined)
+    mockStorage.deleteFile.mockResolvedValueOnce(undefined)
     mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT)
     mockDify.deleteDocument.mockResolvedValueOnce(undefined)
 
@@ -169,28 +169,28 @@ describe('uploadMaterial', () => {
   it('case 7: Dify 上傳失敗（步驟④）→ 呼叫 deleteFile 回滾', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({ ...MOCK_PROJECT })
     mockPrisma.material.findFirst.mockResolvedValueOnce(null)
-    mockSupabase.uploadFile.mockResolvedValueOnce(undefined)
+    mockStorage.uploadFile.mockResolvedValueOnce(undefined)
     mockDify.uploadDocument.mockRejectedValueOnce(new Error('Dify down'))
-    mockSupabase.deleteFile.mockResolvedValueOnce(undefined)
+    mockStorage.deleteFile.mockResolvedValueOnce(undefined)
 
     await expect(uploadMaterial('proj-1', 1, PDF_FILE)).rejects.toThrow('Dify down')
-    expect(mockSupabase.deleteFile).toHaveBeenCalledWith('proj-1/test-uuid/test.pdf')
+    expect(mockStorage.deleteFile).toHaveBeenCalledWith('proj-1/test-uuid/test.pdf')
     expect(mockPrisma.material.create).not.toHaveBeenCalled()
   })
 
   it('case 8: Prisma create 失敗（步驟⑤）→ 刪除 Storage + Dify（雙回滾）', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({ ...MOCK_PROJECT })
     mockPrisma.material.findFirst.mockResolvedValueOnce(null)
-    mockSupabase.uploadFile.mockResolvedValueOnce(undefined)
+    mockStorage.uploadFile.mockResolvedValueOnce(undefined)
     mockDify.uploadDocument.mockResolvedValueOnce({ documentId: 'doc-x', batch: 'batch-x' })
     mockPrisma.material.create.mockRejectedValueOnce(new Error('DB error'))
     // rollback
-    mockSupabase.deleteFile.mockResolvedValueOnce(undefined)
+    mockStorage.deleteFile.mockResolvedValueOnce(undefined)
     mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT)
     mockDify.deleteDocument.mockResolvedValueOnce(undefined)
 
     await expect(uploadMaterial('proj-1', 1, PDF_FILE)).rejects.toThrow('DB error')
-    expect(mockSupabase.deleteFile).toHaveBeenCalledWith('proj-1/test-uuid/test.pdf')
+    expect(mockStorage.deleteFile).toHaveBeenCalledWith('proj-1/test-uuid/test.pdf')
     expect(mockDify.deleteDocument).toHaveBeenCalledWith('dataset-abc', 'doc-x')
   })
 })
@@ -204,14 +204,14 @@ describe('deleteMaterial', () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({ ...MOCK_PROJECT })
     mockPrisma.material.findUnique.mockResolvedValueOnce(MOCK_MATERIAL)
     mockDify.deleteDocument.mockResolvedValueOnce(undefined)
-    mockSupabase.deleteFile.mockResolvedValueOnce(undefined)
+    mockStorage.deleteFile.mockResolvedValueOnce(undefined)
     mockPrisma.material.update.mockResolvedValueOnce({})
     mockPrisma.materialEditHistory.create.mockResolvedValueOnce({})
 
     await deleteMaterial('proj-1', 'mat-1', 1)
 
     expect(mockDify.deleteDocument).toHaveBeenCalledWith('dataset-abc', 'doc-123')
-    expect(mockSupabase.deleteFile).toHaveBeenCalledWith('proj-1/test-uuid/test.pdf')
+    expect(mockStorage.deleteFile).toHaveBeenCalledWith('proj-1/test-uuid/test.pdf')
     expect(mockPrisma.material.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'mat-1' },
@@ -224,12 +224,12 @@ describe('deleteMaterial', () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({ ...MOCK_PROJECT })
     mockPrisma.material.findUnique.mockResolvedValueOnce(MOCK_MATERIAL)
     mockDify.deleteDocument.mockRejectedValueOnce(new Error('Dify timeout'))
-    mockSupabase.deleteFile.mockResolvedValueOnce(undefined)
+    mockStorage.deleteFile.mockResolvedValueOnce(undefined)
     mockPrisma.material.update.mockResolvedValueOnce({})
     mockPrisma.materialEditHistory.create.mockResolvedValueOnce({})
 
     await expect(deleteMaterial('proj-1', 'mat-1', 1)).resolves.not.toThrow()
-    expect(mockSupabase.deleteFile).toHaveBeenCalled()
+    expect(mockStorage.deleteFile).toHaveBeenCalled()
     expect(mockPrisma.material.update).toHaveBeenCalled()
   })
 })

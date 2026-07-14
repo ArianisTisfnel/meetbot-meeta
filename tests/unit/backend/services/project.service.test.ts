@@ -8,7 +8,7 @@ vi.mock('../../../../backend/src/lib/prisma', () => ({
 
 vi.mock('../../../../backend/src/lib/dify', () => mockDify)
 
-vi.mock('../../../../backend/src/lib/supabase', () => ({
+vi.mock('../../../../backend/src/lib/storage', () => ({
   uploadFile: vi.fn().mockResolvedValue(undefined),
   deleteFile: vi.fn().mockResolvedValue(undefined),
 }))
