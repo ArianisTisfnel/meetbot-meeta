@@ -285,6 +285,19 @@ model MeetingInstance {
   /// 路徑格式：transcripts/{meetingInstanceId}/transcript.md
   /// Bucket：SUPABASE_STORAGE_BUCKET（與 meeting-materials 共用，以路徑前綴區隔）
   transcriptStoragePath String?      @map("transcript_storage_path")
+  /// Bot provider 追蹤（P3 前置）：'vexa' | 'recall'。轉 ACTIVE 時由 session-manager 寫入。
+  /// 僅供會後批次處理（重轉錄）與 debug，業務邏輯不可拿來做 provider 條件分支。
+  provider              String?      @map("provider")
+  /// Provider 端會議識別碼：Recall = bot UUID（字串）；Vexa = String(meetingId)。
+  /// Recall 的 download_url 為短效 pre-signed URL，不落 DB——每次用 bot id 重新解析。
+  providerMeetingId     String?      @map("provider_meeting_id")
+  /// 會後重轉錄（Breeze-ASR-25）狀態機，由 retranscription-poller 驅動
+  retranscriptionStatus   RetranscriptionStatus @default(PENDING) @map("retranscription_status")
+  retranscriptionAttempts Int                   @default(0) @map("retranscription_attempts")
+  /// whisper-service 的 job id：落 DB 使流程跨後端重啟可續接（服務重啟 job 蒸發 → 404 → 重送）
+  whisperJobId            String?               @map("whisper_job_id")
+  /// 終態（FAILED/SKIPPED）的診斷訊息
+  retranscriptionError    String?               @map("retranscription_error")
   createdAt            DateTime      @default(now()) @map("created_at")
   updatedAt            DateTime      @updatedAt @map("updated_at")
 
@@ -296,6 +309,7 @@ model MeetingInstance {
   @@index([vexaMeetingId])
   @@index([status])
   @@index([createdByVexaUserId, status])   // activeBotCount 查詢（GET /me 及建立會議前並發檢查）
+  @@index([status, retranscriptionStatus]) // retranscription-poller 掃描（ENDED + PENDING/PROCESSING）
   @@map("meeting_instances")
   @@schema("app")
 }
@@ -317,6 +331,17 @@ enum EditAction {
   DELETE // 刪除資料檔案
 
   @@map("edit_action")
+  @@schema("app")
+}
+
+enum RetranscriptionStatus {
+  PENDING    // 尚未處理（poller 掃描對象；第一輪摘要落定即 summary != null 後才啟動）
+  PROCESSING // 已送 whisper-service，輪詢 job 中
+  COMPLETED  // transcript-v2.md + 摘要覆寫完成（終態）
+  SKIPPED    // 不適用：Vexa 會議 / 無錄音 / 舊資料無 providerMeetingId / whisper 回空（終態）
+  FAILED     // 暫時性失敗重試耗盡（終態），見 retranscriptionError
+
+  @@map("retranscription_status")
   @@schema("app")
 }
 

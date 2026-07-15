@@ -80,6 +80,7 @@ ngrok 在獨立的最小化視窗執行；要單獨停它 `Stop-Process -Name ng
 | `RECALL_API_URL/KEY` | 不啟用 failover，只用 Vexa |
 | `RECALL_WEBHOOK_URL/TOKEN` 或 ngrok 沒開 | Recall 仍能進會議 + 會後逐字稿，但**沒有即時喚醒詞問答** |
 | `OPENAI_API_KEY` | Recall 即時問答能用**聊天文字**回，但**不能語音**回 |
+| `WHISPER_SERVICE_URL` | 會後重轉錄（Breeze-ASR-25 高品質逐字稿重生摘要）不啟動，摘要用 Recall 原逐字稿 |
 
 ---
 
@@ -173,6 +174,7 @@ ICEBREAKER_COOLDOWN_MS=300000 # 冷卻 5 分鐘
 | 讓喚醒詞「即時」有反應 | 設 `RECALL_WEBHOOK_URL` + `RECALL_WEBHOOK_TOKEN`（本機要 ngrok，見第三節） |
 | 跑 Prisma CLI（migrate / db execute） | 確認 `DIRECT_URL`（5432）存在，CLI 自動走它 |
 | 真的把邀請信寄出去 | 填 SMTP 六個變數（見 `.env.example` 註解） |
+| 開會後重轉錄（高品質繁中逐字稿重生摘要） | 起 `whisper-service/`（可跑在區網 GPU 機器，見 `whisper-service/README.md`）+ 設 `WHISPER_SERVICE_URL`；選用 `RETRANSCRIBE_POLL_INTERVAL_MS`（預設 60s）/`RETRANSCRIBE_MAX_ATTEMPTS`（預設 60） |
 
 ## 九、除錯對照
 
@@ -184,3 +186,4 @@ ICEBREAKER_COOLDOWN_MS=300000 # 冷卻 5 分鐘
 | Prisma CLI 報 P1017（connection closed） | CLI 走到 6543 了；確認 `DIRECT_URL` 存在且是 5432 |
 | 蜜塔不說話只回聊天室 | `OPENAI_API_KEY` 沒設（Recall TTS） |
 | 喚醒詞完全沒反應 | `RECALL_WEBHOOK_URL` 沒設或 ngrok 斷了 |
+| 會後重轉錄卡在 PENDING | whisper-service 沒起／`WHISPER_SERVICE_URL` 打不通；看 backend log 的 `Retranscription:` 行與 `retranscription_error` 欄位 |

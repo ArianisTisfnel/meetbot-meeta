@@ -1399,6 +1399,13 @@ setInterval(async () => {
 - **邏輯**：呼叫 Vexa REST API 取全量逐字稿 → 格式化為 Markdown → 存至 Supabase Storage → 上傳 MD 檔至 Dify Files API → 呼叫 Dify 摘要工作流（以 file 傳入）生成摘要與交辦事項 → 更新 MeetingInstance
 - **非同步執行**：回應 200 後在背景執行，完成後透過前端輪詢可見結果
 
+### 10.4 會後重轉錄輪詢（retranscription-poller）
+
+- **觸發頻率**：每 60 秒（`RETRANSCRIBE_POLL_INTERVAL_MS`）；`WHISPER_SERVICE_URL` 未設定時整體不註冊
+- **邏輯**：掃 `status=ENDED` 且 `retranscriptionStatus IN (PENDING, PROCESSING)` 且 `summary != null`（等第一輪摘要落定）的會議 → 解析 Recall 錄音 pre-signed URL → 送 whisper-service（Breeze-ASR-25）→ 完成後併回 chatlog.json、產 `transcript-v2.md`、重跑 Dify 摘要覆寫 MeetingInstance
+- **後端無新 HTTP 端點**；whisper-service 的內部 API（`GET /health`、`POST /jobs`、`GET /jobs/{id}`）見 `whisper-service/README.md`
+- **狀態機欄位**：見 `03-資料庫Schema設計.md` 的 `RetranscriptionStatus`
+
 ---
 
 ## 十二、前端輪詢策略（Real-time）

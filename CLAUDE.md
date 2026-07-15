@@ -47,6 +47,7 @@ app schema     ← 我們管理，Prisma migrate 控制
 meetbot/
 ├── backend/          ← Hono 後端
 ├── frontend/         ← Next.js 前端
+├── whisper-service/  ← 會後重轉錄微服務（Python/FastAPI + Breeze-ASR-25，可跑在區網 GPU 機器）
 ├── tests/
 │   ├── unit/         ← Vitest 單元測試（mock 外部依賴）
 │   ├── integration/  ← 整合測試（需真實服務，手動執行）
