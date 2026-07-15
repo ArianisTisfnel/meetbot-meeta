@@ -4,6 +4,7 @@ import {
   normalizeVexaWsSegment as normalizeWsSegment,
   normalizeRecallTranscript,
   normalizeRecallRealtimeUtterance,
+  normalizeWhisperSegments,
 } from '../../../../backend/src/provider/normalize'
 import type { TranscriptSegment } from '../../../../backend/src/provider/types'
 
@@ -158,6 +159,51 @@ describe('Recall realtime utterance normalization', () => {
   })
 })
 
+describe('normalizeWhisperSegments（會後重轉錄）', () => {
+  it('whisper segment → 統一 schema：speaker=null、segmentId=whisper-{i}', () => {
+    const out = normalizeWhisperSegments([
+      { text: '大家好。', start: 0.0, end: 2.5 },
+      { text: '開始開會。', start: 2.8, end: 4.1 },
+    ])
+
+    expect(out).toHaveLength(2)
+    out.forEach(assertUnifiedShape)
+    expect(out[0]).toEqual({
+      segmentId: 'whisper-0',
+      text: '大家好。',
+      speaker: null,
+      startTime: 0.0,
+      endTime: 2.5,
+      language: null,
+    })
+    expect(out[1].segmentId).toBe('whisper-1')
+  })
+
+  it('簡體字轉繁體（Breeze 原生繁體，但照慣例過 toTraditional 保險）', () => {
+    const out = normalizeWhisperSegments([{ text: '会议纪要', start: 0, end: 1 }])
+    expect(out[0].text).toBe('會議紀要')
+  })
+
+  it('空白 text 的 segment 被過濾', () => {
+    const out = normalizeWhisperSegments([
+      { text: '  ', start: 0, end: 1 },
+      { text: '有內容', start: 1, end: 2 },
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].text).toBe('有內容')
+  })
+
+  it('timestamp 非數字（NaN）→ start 補 0、end 補 start', () => {
+    const out = normalizeWhisperSegments([{ text: '句子', start: NaN, end: NaN }])
+    expect(out[0].startTime).toBe(0)
+    expect(out[0].endTime).toBe(0)
+  })
+
+  it('非陣列輸入回空陣列', () => {
+    expect(normalizeWhisperSegments(undefined as any)).toEqual([])
+  })
+})
+
 describe('cross-provider schema parity', () => {
   it('Vexa 與 Recall 正規化後的 segment 鍵集合一致', () => {
     const vexa = normalizeRestSegment({ segment_id: 'a', text: 't', speaker: 's', start: 1, end: 2, language: 'zh' })
@@ -165,5 +211,11 @@ describe('cross-provider schema parity', () => {
       { id: 1, speaker: 's', text: 't', start_time: 1, end_time: 2, language: 'zh' },
     ])[0]
     expect(Object.keys(vexa).sort()).toEqual(Object.keys(recall).sort())
+  })
+
+  it('Whisper 正規化後的 segment 鍵集合與 Vexa 一致', () => {
+    const vexa = normalizeRestSegment({ segment_id: 'a', text: 't', speaker: 's', start: 1, end: 2, language: 'zh' })
+    const whisper = normalizeWhisperSegments([{ text: 't', start: 1, end: 2 }])[0]
+    expect(Object.keys(vexa).sort()).toEqual(Object.keys(whisper).sort())
   })
 })

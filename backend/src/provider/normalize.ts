@@ -102,6 +102,33 @@ export function normalizeRecallRealtimeUtterance(
 }
 
 /**
+ * whisper-service（Breeze-ASR-25 會後重轉錄）的 segment → 統一 schema。
+ * Whisper 無 diarization → speaker 一律 null（formatTranscriptAsMarkdown 會顯示「參與者」）。
+ * Breeze 原生輸出繁體，但照專案慣例仍過一次 toTraditional（對繁體是 no-op，保險）。
+ */
+export function normalizeWhisperSegments(
+  raw: Array<{ text: string; start: number; end: number }>,
+): TranscriptSegment[] {
+  if (!Array.isArray(raw)) return []
+  const out: TranscriptSegment[] = []
+  raw.forEach((seg, idx) => {
+    const text = toTraditional((seg?.text ?? '').trim())
+    if (!text) return
+    const startTime = typeof seg.start === 'number' && !Number.isNaN(seg.start) ? seg.start : 0
+    const endTime = typeof seg.end === 'number' && !Number.isNaN(seg.end) ? seg.end : startTime
+    out.push({
+      segmentId: `whisper-${idx}`,
+      text,
+      speaker: null,
+      startTime,
+      endTime,
+      language: null,
+    })
+  })
+  return out
+}
+
+/**
  * Recall transcript（speaker + words[]）→ 統一 schema。
  * 每個 speaker 區塊（含 words[]）成為一個 segment：text = words 串接、
  * startTime/endTime 取 words 的首/尾相對時間戳。

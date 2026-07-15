@@ -199,6 +199,56 @@ function latestStatus(bot: any): string | undefined {
   return bot?.status?.code ?? bot?.status
 }
 
+/** fetchRecallAudioUrl 的結果：三態對應 retranscription poller 的分支。 */
+export type RecallRecordingResult =
+  | { kind: 'ready'; url: string } // pre-signed 下載 URL（短效，用完即棄、不落 DB）
+  | { kind: 'pending' } // Recall 會後處理中，稍後再試
+  | { kind: 'none' } // 此 bot 無錄音（如未曾入會）→ 呼叫端標 SKIPPED
+
+/**
+ * 取會後錄音的 pre-signed 下載 URL（會後重轉錄用）。
+ *
+ * 走 media_shortcuts，audio_mixed 優先、video_mixed 退回（現行 recording_config
+ * 未顯式關錄影，Recall 預設產 video mp4；whisper-service 端 ffmpeg 可直接抽音軌）。
+ * shortcut 物件可能直接內含 data.download_url，也可能只有 id 需再打 media 端點。
+ */
+export async function fetchRecallAudioUrl(botId: string): Promise<RecallRecordingResult> {
+  const bot = await recallFetch<any>('GET', `/api/v1/bot/${botId}/`)
+  const recording = bot?.recordings?.[0]
+  if (!recording) return { kind: 'none' }
+
+  const shortcuts = recording.media_shortcuts ?? {}
+  const candidates: Array<{ shortcut: any; endpoint: string }> = [
+    { shortcut: shortcuts.audio_mixed, endpoint: 'audio_mixed' },
+    { shortcut: shortcuts.video_mixed, endpoint: 'video_mixed' },
+  ]
+
+  let sawProcessing = false
+  for (const { shortcut, endpoint } of candidates) {
+    if (!shortcut) continue
+
+    // 就緒的 shortcut 通常直接帶 download_url
+    if (shortcut.status?.code === 'done' && shortcut.data?.download_url) {
+      return { kind: 'ready', url: shortcut.data.download_url }
+    }
+    if (shortcut.status?.code && shortcut.status.code !== 'done') {
+      sawProcessing = true
+      continue
+    }
+    // 只有 id → 再打對應 media 端點拿完整物件
+    if (shortcut.id) {
+      const media = await recallFetch<any>('GET', `/api/v1/${endpoint}/${shortcut.id}/`)
+      if (media?.status?.code === 'done' && media?.data?.download_url) {
+        return { kind: 'ready', url: media.data.download_url }
+      }
+      sawProcessing = true
+    }
+  }
+
+  // 有 recording 但兩種 media 都還沒 done → 後處理中；連 shortcut 都沒有 → 視為無錄音
+  return sawProcessing ? { kind: 'pending' } : { kind: 'none' }
+}
+
 export class RecallAdapter implements MeetingBotProvider {
   readonly name = 'recall'
 

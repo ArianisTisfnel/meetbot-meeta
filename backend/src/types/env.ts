@@ -71,6 +71,14 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   ICEBREAKER_SILENCE_MS: z.coerce.number().default(40_000),
   ICEBREAKER_COOLDOWN_MS: z.coerce.number().default(300_000),
+  // ── 會後重轉錄（whisper-service，Breeze-ASR-25）────────────────────────────
+  // whisper-service 的 base URL（可指向區網另一台 GPU 機器）。未設定＝功能整體關閉，
+  // retranscription poller 不註冊，現有 Recall 逐字稿摘要路徑完全不受影響。
+  WHISPER_SERVICE_URL: z.string().url().optional(),
+  RETRANSCRIBE_POLL_INTERVAL_MS: z.coerce.number().default(60_000),
+  // 暫時性失敗（錄音未就緒 / whisper 不可達）的重試上限；60 次 × 60s ≈ 1 小時視窗，
+  // 遠在 Recall 媒體 7 天保存期內。耗盡 → FAILED 終態。
+  RETRANSCRIBE_MAX_ATTEMPTS: z.coerce.number().default(60),
   // 內部信任端點（前端 NextAuth 登入鑄 token）共享密鑰；未設定＝端點停用（退回 docker exec 舊路）。
   INTERNAL_AUTH_SECRET: z.string().min(16).optional(),
   APP_PORT: z.coerce.number().default(4000),

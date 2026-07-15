@@ -7,6 +7,7 @@ import { errorHandler } from './middleware/error-handler.js'
 import { requestLogger, logger } from './middleware/logger.js'
 import { registerRoutes } from './routes/index.js'
 import { startIndexingPoller } from './jobs/indexing-poller.js'
+import { startRetranscriptionPoller } from './jobs/retranscription-poller.js'
 import { restoreActiveSessions } from './sessions/session-manager.js'
 import type { AppEnv } from './types/hono.js'
 
@@ -25,6 +26,9 @@ app.onError(errorHandler)
 
 // ── Background Jobs ───────────────────────────────
 startIndexingPoller()
+// 會後重轉錄（P3）：未設定 WHISPER_SERVICE_URL 即整體關閉，PENDING 紀錄無害地留著，
+// 日後設定好服務位址重啟即自動補跑。
+if (env.WHISPER_SERVICE_URL) startRetranscriptionPoller()
 
 // ── Restore Active Sessions ───────────────────────
 await restoreActiveSessions()
