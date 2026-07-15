@@ -18,6 +18,11 @@ const envSchema = z.object({
   // 設定後，插話決策/無知識庫問答改走 Gemini（AI Studio 免費額度）而非 Anthropic。
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+  // 插話/破冰專用的第二把 Gemini key（另一個帳號的免費額度）。未設定時退回 GEMINI_API_KEY。
+  // 目的：插話決策每輪講話都會打 LLM、最燒額度，用獨立帳號隔離，燒完不拖垮其他功能。
+  GEMINI_INTERJECTION_API_KEY: z.string().optional(),
+  // 新帳號不能用 gemini-2.5-flash（對新用戶停開），預設用 lite 系列 alias。
+  GEMINI_INTERJECTION_MODEL: z.string().default('gemini-flash-lite-latest'),
   VEXA_API_URL: z.string().url(),
   VEXA_WS_URL: z.string().url(),
   // ── Meeting Bot Provider failover ──────────────────────────────────────────

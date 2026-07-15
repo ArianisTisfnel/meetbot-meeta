@@ -8,6 +8,9 @@ import { logger } from '../middleware/logger.js'
  * Provider 選擇：設了 GEMINI_API_KEY 就走 Gemini（AI Studio 免費額度，
  * flash 模型免費層足夠本專案用量），否則走 Anthropic（需儲值）。
  * 兩邊都是單輪 system+user → text，無工具呼叫，故可無痛互換。
+ *
+ * purpose: 'interjection' 時改用 GEMINI_INTERJECTION_API_KEY（第二帳號的獨立額度）；
+ * 該 key 未設定時退回預設 key，呼叫方不用管有幾把 key。
  */
 
 let anthropic: Anthropic | null = null
@@ -18,9 +21,13 @@ export async function completeText(params: {
   maxTokens: number
   /** 未指定時用模型預設（Gemini 預設 1.0）。分類/決策類呼叫請給 0，避免同題不同命。 */
   temperature?: number
+  purpose?: 'interjection'
 }): Promise<string> {
-  if (env.GEMINI_API_KEY) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`
+  const useInterjectionKey = params.purpose === 'interjection' && env.GEMINI_INTERJECTION_API_KEY
+  const geminiKey = useInterjectionKey ? env.GEMINI_INTERJECTION_API_KEY : env.GEMINI_API_KEY
+  const geminiModel = useInterjectionKey ? env.GEMINI_INTERJECTION_MODEL : env.GEMINI_MODEL
+  if (geminiKey) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

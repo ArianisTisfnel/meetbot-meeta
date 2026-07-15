@@ -197,6 +197,7 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
         system: ICEBREAKER_SUMMARY_SYSTEM,
         prompt: `最近的對話：\n\n${context}`,
         maxTokens: 200,
+        purpose: 'interjection',
       })
       if (!text.trim()) {
         // 空文案：本輪不出聲，但監看不能斷——否則要等到下一筆活動才會復活
@@ -298,6 +299,7 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
       temperature: 0, // 決策要穩定（實測 temp 預設 1.0 時同情境會忽插忽不插）
       system: INTERJECTION_DECISION_SYSTEM,
       prompt: `最近的對話：\n\n${context}`,
+      purpose: 'interjection',
     })
 
     let decision: { interject?: boolean; question?: string } = {}
