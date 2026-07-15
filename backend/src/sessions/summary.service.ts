@@ -35,12 +35,11 @@ export interface ChatLogEntry {
  * 會議相對秒數，speaker 加「（聊天室）」或「（語音）」標註，與語音依時間排序。
  * 錨點缺失（0）時聊天訊息一律排 0 秒（仍保留內容，只是順序不精確）。
  */
-export function mergeChatIntoSegments(
-  segments: TranscriptSegment[],
+export function buildChatSegments(
   chatLog: ChatLogEntry[],
   sessionStartedAt: number,
 ): TranscriptSegment[] {
-  const chatSegments: TranscriptSegment[] = chatLog.map((m) => {
+  return chatLog.map((m) => {
     const startTime = sessionStartedAt > 0 ? Math.max(0, (m.at - sessionStartedAt) / 1000) : 0
     return {
       segmentId: null,
@@ -51,7 +50,16 @@ export function mergeChatIntoSegments(
       language: null,
     }
   })
-  return [...segments, ...chatSegments].sort((a, b) => a.startTime - b.startTime)
+}
+
+export function mergeChatIntoSegments(
+  segments: TranscriptSegment[],
+  chatLog: ChatLogEntry[],
+  sessionStartedAt: number,
+): TranscriptSegment[] {
+  return [...segments, ...buildChatSegments(chatLog, sessionStartedAt)].sort(
+    (a, b) => a.startTime - b.startTime,
+  )
 }
 
 /**
@@ -184,6 +192,22 @@ export async function generateSummaryAsync(params: {
       logger.warn(
         { err: uploadErr, meetingInstanceId: params.meetingInstanceId },
         'transcript storage upload failed, proceeding anyway',
+      )
+    }
+
+    // 聊天段落另存 JSON（已換算會議相對秒數）：會後重轉錄跑在數分鐘後、可能跨後端重啟，
+    // 屆時 in-memory chatLog 已消失，poller 靠這份檔案把聊天/蜜塔語音鏡像併回 v2 逐字稿。
+    if (params.chatLog?.length) {
+      const chatSegments = buildChatSegments(params.chatLog, params.sessionStartedAt ?? 0)
+      await upsertFile(
+        `transcripts/${params.meetingInstanceId}/chatlog.json`,
+        Buffer.from(JSON.stringify(chatSegments), 'utf-8'),
+        'application/json',
+      ).catch((err) =>
+        logger.warn(
+          { err, meetingInstanceId: params.meetingInstanceId },
+          'chatlog.json upload failed, retranscription will proceed without chat',
+        ),
       )
     }
 

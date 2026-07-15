@@ -333,6 +333,62 @@ describe('generateSummaryAsync', () => {
     )
   })
 
+  it('有 chatLog → 額外上傳 chatlog.json（會後重轉錄的聊天來源）', async () => {
+    const startedAt = 1_000_000
+    const promise = generateSummaryAsync({
+      ...baseParams,
+      chatLog: [{ speaker: 'Wendy', text: '打字的問題', at: startedAt + 20_000 }],
+      sessionStartedAt: startedAt,
+    })
+    await advanceUntilStable()
+    await promise
+
+    expect(vi.mocked(storageMod.upsertFile)).toHaveBeenCalledWith(
+      `transcripts/${baseParams.meetingInstanceId}/chatlog.json`,
+      expect.any(Buffer),
+      'application/json',
+    )
+    // 內容是已換算相對秒數的 TranscriptSegment[]
+    const call = vi
+      .mocked(storageMod.upsertFile)
+      .mock.calls.find(([path]) => String(path).endsWith('chatlog.json'))!
+    const parsed = JSON.parse(call[1].toString('utf-8'))
+    expect(parsed).toEqual([
+      expect.objectContaining({ speaker: 'Wendy（聊天室）', startTime: 20, text: '打字的問題' }),
+    ])
+  })
+
+  it('無 chatLog → 不上傳 chatlog.json', async () => {
+    const promise = generateSummaryAsync(baseParams)
+    await advanceUntilStable()
+    await promise
+
+    const chatlogCalls = vi
+      .mocked(storageMod.upsertFile)
+      .mock.calls.filter(([path]) => String(path).endsWith('chatlog.json'))
+    expect(chatlogCalls).toHaveLength(0)
+  })
+
+  it('chatlog.json 上傳失敗 → 只 warn，摘要流程不中斷', async () => {
+    vi.mocked(storageMod.upsertFile).mockImplementation(async (path: string) => {
+      if (String(path).endsWith('chatlog.json')) throw new Error('Storage error')
+    })
+
+    const promise = generateSummaryAsync({
+      ...baseParams,
+      chatLog: [{ speaker: 'W', text: 'hi', at: 1_001_000 }],
+      sessionStartedAt: 1_000_000,
+    })
+    await advanceUntilStable()
+    await promise
+
+    expect(mockPrisma.meetingInstance.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ summary: '這是會議摘要' }),
+      }),
+    )
+  })
+
   it('Storage 上傳失敗 → warn log，繼續執行 Dify 摘要不中斷', async () => {
     vi.mocked(storageMod.upsertFile).mockRejectedValueOnce(new Error('Storage error'))
 
