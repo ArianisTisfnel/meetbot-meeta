@@ -211,6 +211,11 @@ export async function startBotSession(params: {
         startedAt: new Date(),
         vexaNativeMeetingId: nativeMeetingId,
         ...(vexaMeetingId !== null ? { vexaMeetingId } : {}),
+        // P3 前置：持久化 provider 與其會議識別碼（Recall bot UUID / Vexa meeting id），
+        // 供會後重轉錄 poller 抓錄音；僅供批次處理與 debug，不可用於業務分支。
+        provider: botSession.provider,
+        providerMeetingId:
+          botSession.providerMeetingId != null ? String(botSession.providerMeetingId) : null,
       },
     })
 

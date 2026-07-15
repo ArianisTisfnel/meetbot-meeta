@@ -168,6 +168,15 @@ model MeetingInstance {
   keyTopics             Json?         @map("key_topics")
   decisions             Json?
   transcriptStoragePath String?       @map("transcript_storage_path")
+  /// Bot provider 追蹤（P3 前置；亦為日後「重啟復原 Recall session」的基礎）。
+  /// 僅供會後批次處理（重轉錄）與 debug；業務邏輯不可拿來做 provider 條件分支。
+  provider              String?       @map("provider") // 'vexa' | 'recall'
+  providerMeetingId     String?       @map("provider_meeting_id") // Recall: bot UUID；Vexa: String(meetingId)
+  /// 會後重轉錄（Breeze-ASR-25）狀態機，見 docs/03-資料庫Schema設計.md
+  retranscriptionStatus   RetranscriptionStatus @default(PENDING) @map("retranscription_status")
+  retranscriptionAttempts Int                   @default(0) @map("retranscription_attempts")
+  whisperJobId            String?               @map("whisper_job_id") // 跨後端重啟續接 whisper 服務 job
+  retranscriptionError    String?               @map("retranscription_error") // 終態 FAILED 的診斷訊息
   createdAt             DateTime      @default(now()) @map("created_at")
   updatedAt             DateTime      @updatedAt @map("updated_at")
 
@@ -178,6 +187,7 @@ model MeetingInstance {
   @@index([vexaMeetingId])
   @@index([status])
   @@index([createdByVexaUserId, status])
+  @@index([status, retranscriptionStatus])
   @@map("meeting_instances")
   @@schema("app")
 }
@@ -235,5 +245,17 @@ enum MeetingStatus {
   FAILED
 
   @@map("meeting_status")
+  @@schema("app")
+}
+
+/// 會後重轉錄狀態機（retranscription-poller 驅動）
+enum RetranscriptionStatus {
+  PENDING // 尚未處理（poller 掃描對象）
+  PROCESSING // 已送 whisper 服務，輪詢中
+  COMPLETED // v2 逐字稿 + 摘要覆寫完成（終態）
+  SKIPPED // 不適用：Vexa 會議 / 無錄音 / 舊資料無 providerMeetingId（終態）
+  FAILED // 重試耗盡（終態）
+
+  @@map("retranscription_status")
   @@schema("app")
 }
