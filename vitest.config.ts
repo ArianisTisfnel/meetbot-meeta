@@ -20,6 +20,10 @@ export default defineConfig({
         __dirname,
         'tests/unit/frontend/__mocks__/next-auth-react.ts'
       ),
+      'next-auth/next': path.resolve(
+        __dirname,
+        'tests/unit/frontend/__mocks__/next-auth-next.ts'
+      ),
       'next/font/google': path.resolve(
         __dirname,
         'tests/unit/frontend/__mocks__/next-font-google.ts'
