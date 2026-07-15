@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn>=0.30
+httpx>=0.27
+transformers>=4.44
+accelerate>=0.33
+# torch 請依機器另裝（CPU 或 CUDA 版），見 README.md
+torch>=2.3
