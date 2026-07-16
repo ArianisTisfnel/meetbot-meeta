@@ -40,6 +40,11 @@ vi.mock('../../../../backend/src/provider/recall-adapter', () => ({
 // EOU（mergeConsecutiveSegments 斷句輔助）：回 null = 模型不可用，照舊合併
 vi.mock('../../../../backend/src/lib/eou', () => ({ isEndOfTurn: vi.fn().mockResolvedValue(null) }))
 vi.mock('../../../../backend/src/lib/vexa', () => ({ getTranscriptions: vi.fn() }))
+// 會議記錄回灌知識庫（finalize 的 best-effort hook）
+const mockSyncMeetingRecordToKb = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+vi.mock('../../../../backend/src/sessions/meeting-kb', () => ({
+  syncMeetingRecordToKb: mockSyncMeetingRecordToKb,
+}))
 
 import { pollOnce } from '../../../../backend/src/jobs/retranscription-poller'
 import * as difyMod from '../../../../backend/src/lib/dify'
@@ -247,6 +252,12 @@ describe('retranscription-poller: job 輪詢與 finalize', () => {
           retranscriptionStatus: 'COMPLETED',
         }),
       }),
+    )
+
+    // v2 完成後用高品質版替換知識庫的會議記錄
+    expect(mockSyncMeetingRecordToKb).toHaveBeenCalledWith(
+      'meet-1',
+      expect.stringContaining('Q3 目標'),
     )
   })
 

@@ -1406,6 +1406,12 @@ setInterval(async () => {
 - **後端無新 HTTP 端點**；whisper-service 的內部 API（`GET /health`、`POST /jobs`、`GET /jobs/{id}`）見 `whisper-service/README.md`
 - **狀態機欄位**：見 `03-資料庫Schema設計.md` 的 `RetranscriptionStatus`
 
+### 10.5 會議記錄回灌知識庫
+
+- **觸發**：10.3 摘要落定後（第一輪）與 10.4 v2 完成後（替換）
+- **邏輯**：摘要＋重點主題＋決議＋待辦＋逐字稿組成 markdown → `uploadDocument` 到專案 Dify dataset；已有 `kbDocumentId` 時先 `deleteDocument` 舊版再傳新版
+- **Best-effort**：任何失敗只記 log；無專案（`projectId=null`）的會議跳過
+
 ---
 
 ## 十二、前端輪詢策略（Real-time）

@@ -10,6 +10,7 @@ import {
   mergeConsecutiveSegments,
   formatTranscriptAsMarkdown,
 } from '../sessions/summary.service.js'
+import { syncMeetingRecordToKb } from '../sessions/meeting-kb.js'
 import type { TranscriptSegment } from '../provider/types.js'
 
 // ── 會後重轉錄（P3）───────────────────────────────────────────────────────────
@@ -107,6 +108,9 @@ async function finalize(
     { meetingId, segmentCount: voiceSegments.length },
     'Retranscription: v2 transcript + summary completed',
   )
+
+  // 用 v2 高品質版替換知識庫裡的會議記錄（刪舊傳新，best-effort）
+  await syncMeetingRecordToKb(meetingId, transcriptMd)
 }
 
 /** 處理單筆會議的狀態機一步（暫時性失敗只 bump attempts，下輪重來）。 */

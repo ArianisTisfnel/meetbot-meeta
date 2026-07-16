@@ -298,6 +298,9 @@ model MeetingInstance {
   whisperJobId            String?               @map("whisper_job_id")
   /// 終態（FAILED/SKIPPED）的診斷訊息
   retranscriptionError    String?               @map("retranscription_error")
+  /// 會議記錄回灌知識庫：此會議在專案 Dify dataset 的文件 id。
+  /// v2 重轉錄完成時憑此刪舊傳新（替換）；null = 尚未回灌（無專案的會議恆為 null）。
+  kbDocumentId            String?               @map("kb_document_id")
   createdAt            DateTime      @default(now()) @map("created_at")
   updatedAt            DateTime      @updatedAt @map("updated_at")
 

@@ -29,6 +29,12 @@ vi.mock('../../../../backend/src/lib/storage', () => ({
 const mockIsEndOfTurn = vi.hoisted(() => vi.fn().mockResolvedValue(null))
 vi.mock('../../../../backend/src/lib/eou', () => ({ isEndOfTurn: mockIsEndOfTurn }))
 
+// 會議記錄回灌知識庫（best-effort hook）：mock 掉以隔離摘要主流程
+const mockSyncMeetingRecordToKb = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+vi.mock('../../../../backend/src/sessions/meeting-kb', () => ({
+  syncMeetingRecordToKb: mockSyncMeetingRecordToKb,
+}))
+
 import {
   formatTranscriptAsMarkdown,
   formatSeconds,
@@ -305,6 +311,27 @@ describe('generateSummaryAsync', () => {
         data: expect.objectContaining({ summary: '這是會議摘要' }),
       }),
     )
+  })
+
+  it('摘要成功 → 會議記錄回灌知識庫（帶逐字稿內容）', async () => {
+    const promise = generateSummaryAsync(baseParams)
+    await advanceUntilStable()
+    await promise
+
+    expect(mockSyncMeetingRecordToKb).toHaveBeenCalledWith(
+      baseParams.meetingInstanceId,
+      expect.stringContaining('] '),
+    )
+  })
+
+  it('Dify 摘要失敗 → 不回灌知識庫（留給 v2 重轉錄救援）', async () => {
+    vi.mocked(difyMod.generateSummary).mockRejectedValueOnce(new Error('Dify down'))
+
+    const promise = generateSummaryAsync(baseParams)
+    await advanceUntilStable()
+    await promise
+
+    expect(mockSyncMeetingRecordToKb).not.toHaveBeenCalled()
   })
 
   it('逐字稿為空 → 不呼叫 Dify，summary 更新為空字串 sentinel', async () => {

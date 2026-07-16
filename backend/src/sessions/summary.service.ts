@@ -6,6 +6,7 @@ import { upsertFile } from '../lib/storage.js'
 import { botProvider, type BotSession, type TranscriptSegment } from '../provider/index.js'
 import { normalizeRestSegment } from '../provider/vexa-adapter.js'
 import { isEndOfTurn } from '../lib/eou.js'
+import { syncMeetingRecordToKb } from './meeting-kb.js'
 
 export const SUMMARY_INITIAL_WAIT_MS = 5_000
 export const SUMMARY_POLL_INTERVAL_MS = 3_000
@@ -227,6 +228,10 @@ export async function generateSummaryAsync(params: {
       { meetingInstanceId: params.meetingInstanceId, actionItemCount: actionItems.length },
       'meeting summary generated',
     )
+
+    // 會議記錄回灌專案知識庫（best-effort）：下一場會議可問「上次決定了什麼」。
+    // v2 重轉錄完成時會刪舊傳新替換成高品質版。
+    await syncMeetingRecordToKb(params.meetingInstanceId, transcriptMd)
   } catch (err) {
     logger.error({ err, meetingInstanceId: params.meetingInstanceId }, 'generateSummaryAsync failed')
     try {
