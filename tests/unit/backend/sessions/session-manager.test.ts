@@ -141,6 +141,7 @@ describe('handleSessionClose', () => {
     vi.clearAllMocks()
     activeSessions.clear()
     mockPrisma.meetingInstance.update.mockResolvedValue({})
+    mockPrisma.meetingInstance.updateMany.mockResolvedValue({ count: 0 })
   })
 
   it('被呼叫兩次（雙重清理競態）→ 第二次 early return，只更新 DB 一次', async () => {
@@ -150,6 +151,22 @@ describe('handleSessionClose', () => {
     await handleSessionClose('meet-1')
 
     expect(mockPrisma.meetingInstance.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('無 in-memory session（重啟後遺失）→ 仍把卡在 ACTIVE 的會議收尾成 ENDED + summary sentinel', async () => {
+    mockPrisma.meetingInstance.updateMany.mockResolvedValue({ count: 1 })
+
+    await handleSessionClose('meet-1')
+
+    expect(mockPrisma.meetingInstance.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'meet-1', status: 'ACTIVE' },
+        data: expect.objectContaining({ status: 'ENDED', summary: '' }),
+      }),
+    )
+    // 沒有 session 就沒有逐字稿來源，不觸發摘要、不動 bot
+    expect(generateSummaryAsync).not.toHaveBeenCalled()
+    expect(mockBotProvider.leave).not.toHaveBeenCalled()
   })
 
   it('正常結束（ENDED）→ 觸發摘要、讓 bot 離開', async () => {
