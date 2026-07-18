@@ -59,6 +59,30 @@ export function useMeetingTranscript(
   })
 }
 
+/**
+ * 會議改名。專案會議走專案端點（需 canMeeting），全局會議走全局端點（限建立者）。
+ */
+export function useRenameMeeting(projectId: string | null, meetingId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) =>
+      projectId
+        ? apiClient.patch<{ id: string; name: string }>(
+            `/projects/${projectId}/meetings/${meetingId}`,
+            { name }
+          )
+        : apiClient.patch<{ id: string; name: string }>(
+            `/meetings/${meetingId}`,
+            { name }
+          ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] })
+      queryClient.invalidateQueries({ queryKey: ['meetings'] })
+      queryClient.invalidateQueries({ queryKey: ['all-meetings'] })
+    },
+  })
+}
+
 export function useBotLeave(projectId: string | null, meetingId: string) {
   const queryClient = useQueryClient()
   return useMutation({
