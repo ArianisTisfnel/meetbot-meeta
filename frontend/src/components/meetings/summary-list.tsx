@@ -9,7 +9,7 @@ interface Props {
 }
 
 /**
- * 會後摘要列表：只列已結束的會議，點整列進入會議詳情（含摘要）。
+ * 會議記錄列表：只列已結束的會議，點整列進入會議詳情（含摘要）。
  * 名稱欄可就地改名，專案欄顯示所屬專案。
  */
 export function SummaryList({ meetings }: Props) {
@@ -18,7 +18,7 @@ export function SummaryList({ meetings }: Props) {
   if (meetings.length === 0) {
     return (
       <p className="text-center text-muted-foreground py-12">
-        尚無會後摘要，會議結束後會自動出現在這裡
+        尚無會議記錄，會議結束後會自動出現在這裡
       </p>
     )
   }

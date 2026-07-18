@@ -5,7 +5,7 @@ import { SummaryList } from '@/components/meetings/summary-list'
 import { MeetingFilterBar } from '@/components/meetings/meeting-filter-bar'
 
 /**
- * 會後摘要頁：跨專案列出所有已結束（ENDED）的會議，
+ * 會議記錄頁：跨專案列出所有已結束（ENDED）的會議，
  * 點列進入原本的會議詳情頁（摘要＋逐字稿）。
  */
 export default function SummariesPage() {
@@ -23,7 +23,7 @@ export default function SummariesPage() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="font-display text-2xl font-bold">會後摘要</h1>
+        <h1 className="font-display text-2xl font-bold">會議記錄</h1>
       </div>
 
       <MeetingFilterBar

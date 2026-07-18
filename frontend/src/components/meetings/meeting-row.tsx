@@ -7,6 +7,7 @@ import { EndMeetingButton } from './end-meeting-button'
 import { CancelMeetingButton } from './cancel-meeting-button'
 import { ReinviteBotButton } from './reinvite-bot-button'
 import { DeleteMeetingButton } from './delete-meeting-button'
+import { EditableMeetingName } from './editable-meeting-name'
 import { formatDate } from '@/lib/utils'
 import type { MeetingListItem } from '@/types/api'
 
@@ -63,7 +64,13 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
       <td className="py-3 px-4">
         <BotStatusIndicator status={meeting.status} href={href} showHint={false} />
       </td>
-      <td className="py-3 px-4 font-medium">{meeting.name}</td>
+      <td className="py-3 px-4 font-medium">
+        <EditableMeetingName
+          meetingId={meeting.id}
+          projectId={projectId ?? meeting.projectId}
+          name={meeting.name}
+        />
+      </td>
       {!projectId && (
         <td className="py-3 px-4 text-muted-foreground">
           {meeting.projectName ?? '（無關聯專案）'}

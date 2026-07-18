@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils'
 const NAV_ITEMS = [
   { href: '/projects', label: '專案', icon: FolderIcon },
   { href: '/meetings', label: '會議', icon: MeetingIcon },
-  { href: '/summaries', label: '會後摘要', icon: DocIcon },
+  { href: '/summaries', label: '會議記錄', icon: DocIcon },
 ]
 
 const COLLAPSED_KEY = 'mb-sidebar-collapsed'
