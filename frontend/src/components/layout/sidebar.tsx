@@ -8,6 +8,7 @@ import { CreateMeetingDialog } from '@/components/meetings/create-meeting-dialog
 import { InboxButton } from '@/components/inbox/inbox-button'
 import { MeetaMark } from '@/components/landing/meeta-mark'
 import {
+  DocIcon,
   FolderIcon,
   MeetingIcon,
   PanelLeftIcon,
@@ -19,6 +20,7 @@ import { cn } from '@/lib/utils'
 const NAV_ITEMS = [
   { href: '/projects', label: '專案', icon: FolderIcon },
   { href: '/meetings', label: '會議', icon: MeetingIcon },
+  { href: '/summaries', label: '會後摘要', icon: DocIcon },
 ]
 
 const COLLAPSED_KEY = 'mb-sidebar-collapsed'
