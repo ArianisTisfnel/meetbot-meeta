@@ -42,6 +42,7 @@ export function CreateMeetingDialog(props: Props) {
   const [name, setName] = useState('')
   const [meetUrl, setMeetUrl] = useState('')
   const [projectId, setProjectId] = useState('')
+  const [quietMode, setQuietMode] = useState(false)
   const [creatingMeet, setCreatingMeet] = useState(false)
   const { data: session } = useSession()
 
@@ -66,18 +67,21 @@ export function CreateMeetingDialog(props: Props) {
         await createProjectMeeting.mutateAsync({
           googleMeetUrl: url,
           name: name || undefined,
+          quietMode: quietMode || undefined,
         })
       } else {
         await createGlobalMeeting.mutateAsync({
           googleMeetUrl: url,
           name: name || undefined,
           projectId: projectId || undefined,
+          quietMode: quietMode || undefined,
         })
       }
       toast.success('會議已建立，蜜塔加入中…')
       setName('')
       setMeetUrl('')
       setProjectId('')
+      setQuietMode(false)
       props.onOpenChange(false)
       props.onSuccess?.()
     } catch (err: any) {
@@ -208,6 +212,20 @@ export function CreateMeetingDialog(props: Props) {
               onChange={(e) => setMeetUrl(e.target.value)}
             />
           </div>
+          <label className="flex cursor-pointer items-start gap-2">
+            <input
+              type="checkbox"
+              checked={quietMode}
+              onChange={(e) => setQuietMode(e.target.checked)}
+              className="mt-0.5 size-4 accent-primary"
+            />
+            <span>
+              <span className="text-sm font-medium">🔇 安靜模式</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                蜜塔不主動插話、不破冰，只在被點名（「蜜塔」）時回應。適合一對一或敏感議題會議；會中可隨時說「蜜塔，恢復正常」解除。
+              </span>
+            </span>
+          </label>
         </div>
         <DialogFooter>
           <Button

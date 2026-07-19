@@ -61,6 +61,7 @@ function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     difyDatasetId: 'dataset-abc',
     creatorVexaToken: 'tok-123',
     isSpeaking: false,
+    quietMode: false,
     lastWakeAt: 0,
     processedSegmentIds: new Set(),
     botSession: fakeBotSession(),

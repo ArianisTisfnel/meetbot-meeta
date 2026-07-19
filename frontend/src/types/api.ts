@@ -187,6 +187,8 @@ export interface MeetingDetail {
   name: string
   googleMeetUrl: string
   status: MeetingStatus
+  /** 安靜模式：蜜塔不主動插話/破冰，只在被點名時回應。 */
+  quietMode: boolean
   vexaMeetingId?: number | null
   projectId?: string | null
   projectName?: string | null

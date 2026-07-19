@@ -21,10 +21,13 @@ const PLATFORM = 'google_meet'
 
 // ── 歡迎訊息 ───────────────────────────────────────────────────────────────────
 
-function welcomeMessage(difyDatasetId: string | null): string {
-  return difyDatasetId
+function welcomeMessage(difyDatasetId: string | null, quietMode: boolean): string {
+  const base = difyDatasetId
     ? '嗨大家好！我是蜜塔（Meeta），你們今天的會議小幫手 🎉\n\n你可以用語音或聊天室呼叫我：\n  語音：說「蜜塔」或「小幫手」，再接上你的問題\n  聊天室：輸入「蜜塔」或「小幫手」，再接上你的問題\n\n我會根據此專案上傳的資料來回答問題，例如：\n「蜜塔，請問去年 Q3 目標是什麼？」\n\n有問題就找我！'
     : '嗨大家好！我是蜜塔（Meeta），你們今天的會議小幫手 🎉\n\n你可以用語音或聊天室呼叫我：\n  語音：說「蜜塔」或「小幫手」，再接上你的問題\n  聊天室：輸入「蜜塔」或「小幫手」，再接上你的問題\n\n我會根據本次會議的逐字稿記錄來回答問題，例如：\n「蜜塔，剛才提到的時程安排是什麼？」\n\n有問題就找我！'
+  return quietMode
+    ? `${base}\n\n🔇 本場為安靜模式：我不會主動插話，只在被點名時回應（說「蜜塔，恢復正常」可解除）。`
+    : base
 }
 
 // ── 知識庫內容卡 ──────────────────────────────────────────────────────────────
@@ -80,6 +83,8 @@ export async function startBotSession(params: {
   nativeMeetingId: string
   difyDatasetId: string | null
   creatorVexaToken: string
+  /** 安靜模式（DB quiet_mode）：只在被點名時回應，停用插話/破冰。 */
+  quietMode?: boolean
   initialProcessedIds?: Set<string>
 }): Promise<void> {
   const { meetingInstanceId, googleMeetUrl, nativeMeetingId, difyDatasetId, creatorVexaToken } = params
@@ -93,6 +98,7 @@ export async function startBotSession(params: {
     difyDatasetId,
     creatorVexaToken,
     isSpeaking: false,
+    quietMode: params.quietMode ?? false,
     lastWakeAt: 0,
     wakePendingUntil: 0,
     wakePendingSpeaker: null,
@@ -219,7 +225,7 @@ export async function startBotSession(params: {
     // 歡迎訊息（best-effort；provider 不支援聊天室時容錯）。
     if (botSession.adapter.sendChat) {
       botSession.adapter
-        .sendChat(botSession, welcomeMessage(difyDatasetId))
+        .sendChat(botSession, welcomeMessage(difyDatasetId, still.quietMode))
         .catch((err) => logger.warn({ err, meetingInstanceId }, 'welcome chat failed (best-effort)'))
     }
 
@@ -390,6 +396,7 @@ export async function restoreActiveSessions(): Promise<void> {
         nativeMeetingId: meeting.vexaNativeMeetingId,
         difyDatasetId: meeting.project?.difyDatasetId ?? null,
         creatorVexaToken: tokenRows[0].token,
+        quietMode: meeting.quietMode,
       })
       restored++
     } catch (err) {

@@ -30,7 +30,7 @@ export function useMeetings(
 export function useCreateMeeting(projectId: string) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: { googleMeetUrl: string; name?: string }) =>
+    mutationFn: (data: { googleMeetUrl: string; name?: string; quietMode?: boolean }) =>
       apiClient.post<MeetingDetail>(
         `/projects/${projectId}/meetings`,
         data

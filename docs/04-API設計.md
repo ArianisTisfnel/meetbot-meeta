@@ -943,6 +943,27 @@ interface PaginatedResponse<T> {
 
 ---
 
+### `PATCH /meetings/:meetingId/quiet-mode`
+
+切換會議的**安靜模式**（蜜塔不主動插話/破冰，只在被喚醒詞點名時回應）。
+**需要：建立者本人，或關聯專案的會議權（Owner / `canMeeting`）**——由 `setQuietMode` service 內部驗證。
+
+- 會議 **ACTIVE** 時即時生效（後端同步更新 in-memory session 旗標，並在會議聊天室通知與會者）。
+- 非 ACTIVE 時只更新 DB（下次邀請蜜塔時生效）。
+- 會中也可用口頭指令切換：「蜜塔，安靜一點／不要插話」開啟、「蜜塔，恢復正常」解除（見 06-後端架構）。
+
+**Request**：`{ "enabled": true }`
+
+**Response 200**：`{ "id": "uuid", "quietMode": true }`
+
+**Error cases**：`404 NOT_FOUND`、`403 PERMISSION_DENIED`。
+
+> 專案版：`PATCH /projects/:projectId/meetings/:meetingId/quiet-mode`（先驗證會議屬於該專案且可存取，再走相同 service）。
+> `quietMode` 欄位會在 `GET /meetings/:meetingId`、`GET /projects/:projectId/meetings/:meetingId` 回傳；
+> 建立會議（全局/專案版 `POST`）皆可帶選填 `"quietMode": true` 讓蜜塔以安靜模式進場。
+
+---
+
 ### `GET /meetings/:meetingId/transcriptions`
 
 取得無關聯專案會議的逐字稿。**需要：建立者本人**。

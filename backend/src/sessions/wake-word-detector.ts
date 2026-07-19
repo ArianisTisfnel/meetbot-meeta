@@ -316,6 +316,63 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
   }
 }
 
+// ── 安靜模式（quiet mode）─────────────────────────────────────────────────────
+//
+// 「蜜塔，安靜一點／不要插話」→ 停用主動插話與破冰，只在被點名時回應；
+// 「蜜塔，恢復正常」→ 解除。指令走喚醒詞管線（dispatchQuestion 最前面攔截），
+// 語音/聊天室都可下。旗標即時生效（interjection.ts 讀 session.quietMode），
+// 並 best-effort 回寫 DB（重啟復原/重新邀請時保留設定）。
+
+export type QuietCommand = 'on' | 'off'
+
+/** 超過此長度視為一般問題，不做指令比對（避免長問句裡剛好含「安靜」誤觸）。 */
+const QUIET_COMMAND_MAX_CHARS = 15
+const QUIET_ON_REGEX = /安靜|低調|(不要|別|不用)(再)?(主動)?(插話|說話|講話|發言|開口)/
+const QUIET_OFF_REGEX = /(恢復|取消|解除|關閉)(安靜|低調|靜音)|恢復(正常|發言)|可以(說話|插話|發言)了|正常模式/
+
+export const QUIET_ON_ACK = '好的，我會保持安靜、不主動插話，需要我時再叫我。'
+export const QUIET_OFF_ACK = '好的，我恢復正常模式，會適時主動補充。'
+
+/** 解析喚醒後的內容是否為安靜模式指令。純函式，可測。off 先比對（「取消安靜模式」含「安靜」）。 */
+export function parseQuietCommand(question: string): QuietCommand | null {
+  const t = question.trim()
+  if (!t || t.length > QUIET_COMMAND_MAX_CHARS) return null
+  if (QUIET_OFF_REGEX.test(t)) return 'off'
+  if (QUIET_ON_REGEX.test(t)) return 'on'
+  return null
+}
+
+async function applyQuietCommand(
+  session: MeetingSession,
+  cmd: QuietCommand,
+  source: 'voice' | 'chat',
+): Promise<void> {
+  session.quietMode = cmd === 'on'
+  logger.info(
+    { meetingInstanceId: session.meetingInstanceId, quietMode: session.quietMode, source },
+    'quiet mode toggled by in-meeting command',
+  )
+
+  // best-effort 落 DB：失敗只影響「重啟後的設定保留」，會中行為靠 in-memory 旗標即可
+  try {
+    const { prisma } = await import('../lib/prisma.js')
+    await prisma.meetingInstance.update({
+      where: { id: session.meetingInstanceId },
+      data: { quietMode: session.quietMode },
+    })
+  } catch (err) {
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'quiet mode DB persist failed (best-effort)')
+  }
+
+  const ack = cmd === 'on' ? QUIET_ON_ACK : QUIET_OFF_ACK
+  if (source === 'voice') {
+    const spoken = await speakProactive(session, ack)
+    if (!spoken) await sendChatBestEffort(session, ack)
+  } else {
+    await sendChatBestEffort(session, ack)
+  }
+}
+
 // ── 意圖分流（Dify RAG 前）────────────────────────────────────────────────────
 //
 // 「你覺得這方案如何」直接丟 Dify RAG 會答「資料沒提到」→ 先用便宜的 LLM 四分類：
@@ -480,6 +537,13 @@ async function dispatchQuestion(
   source: 'voice' | 'chat',
   opts?: { skipPendingPrompt?: boolean; speaker?: string },
 ): Promise<void> {
+  // 安靜模式指令（「安靜一點」「恢復正常」）不是問題，攔在查詢管線之前
+  const quietCmd = parseQuietCommand(question)
+  if (quietCmd) {
+    await applyQuietCommand(session, quietCmd, source)
+    return
+  }
+
   const pendingVoice = session.difyDatasetId ? PENDING_VOICE_KB : PENDING_VOICE_TRANSCRIPT
   const pendingChat = session.difyDatasetId
     ? '收到你的問題，正在查詢資料中……'

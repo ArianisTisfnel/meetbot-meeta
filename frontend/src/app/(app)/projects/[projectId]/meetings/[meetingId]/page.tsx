@@ -9,6 +9,7 @@ import { MeetingTranscript } from '@/components/meetings/meeting-transcript'
 import { DeleteMeetingButton } from '@/components/meetings/delete-meeting-button'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
 import { CancelMeetingButton } from '@/components/meetings/cancel-meeting-button'
+import { QuietModeToggle } from '@/components/meetings/quiet-mode-toggle'
 import { ReinviteBotButton } from '@/components/meetings/reinvite-bot-button'
 import { Button } from '@/components/ui/button'
 import { CopyIcon, WarningIcon } from '@/components/ui/icons'
@@ -78,13 +79,20 @@ export default function MeetingDetailPage({ params }: Props) {
           )}
         </div>
         {meeting.status === 'ACTIVE' && permissions.canMeeting && (
-          <Button
-            variant="destructive"
-            onClick={handleLeave}
-            disabled={botLeave.isPending}
-          >
-            結束會議
-          </Button>
+          <div className="flex items-center gap-2">
+            <QuietModeToggle
+              projectId={projectId}
+              meetingId={meetingId}
+              quietMode={meeting.quietMode}
+            />
+            <Button
+              variant="destructive"
+              onClick={handleLeave}
+              disabled={botLeave.isPending}
+            >
+              結束會議
+            </Button>
+          </div>
         )}
         {meeting.status === 'PENDING' && permissions.canMeeting && (
           <CancelMeetingButton projectId={projectId} meetingId={meetingId} />

@@ -35,6 +35,12 @@ export interface MeetingSession {
   /** 邀請者 Vexa token：供 transcription.service / 重啟復原的 Vexa REST fallback 使用。 */
   creatorVexaToken: string
   isSpeaking: boolean
+  /**
+   * 安靜模式：true 時停用主動插話與沉默破冰，只在被喚醒詞點名時回應。
+   * 來源：建會議時的設定（DB quiet_mode）、會中口頭指令（「蜜塔，安靜一點」）、
+   * 前端切換（PATCH quiet-mode）。讓路（barge-in）與停止指令不受影響。
+   */
+  quietMode: boolean
   lastWakeAt: number
   /**
    * 喚醒待命窗（epoch ms）：說話者只叫了名字（「蜜塔」）沒接問題時開窗，

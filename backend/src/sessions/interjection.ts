@@ -104,6 +104,8 @@ export function recordConversation(session: MeetingSession, entry: ConversationE
   if (s.timer) clearTimeout(s.timer)
   // bot 自己的訊息不該觸發「有人講完話」的評估
   if (entry.fromBot) return
+  // 安靜模式：不排評估計時（省下 EOU 推論與決策 LLM）；對話窗照記，解除後脈絡不斷
+  if (session.quietMode) return
 
   if (env.INTERJECTION_TURN_DETECTOR === 'livekit') {
     // 兩段式：短暫靜默後先問 EOU 模型，講完就提早評估
@@ -156,15 +158,17 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
 
   const now = Date.now()
   // 跳過時必留 log：這些防護原本靜默 return，實測「破冰沒出來」時完全無從診斷是哪條擋的
-  const skipReason = session.isSpeaking
-    ? 'bot-speaking'
-    : now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS
-      ? 'cooldown'
-      : // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
-        // 寬限取 max(沉默門檻, 45s 查詢鏈上限)，避免破冰搶在遲到的答案前面
-        now - session.lastWakeAt < Math.max(env.ICEBREAKER_SILENCE_MS, ICEBREAKER_WAKE_QUERY_GRACE_MS)
-        ? 'wake-grace'
-        : null
+  const skipReason = session.quietMode
+    ? 'quiet-mode'
+    : session.isSpeaking
+      ? 'bot-speaking'
+      : now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS
+        ? 'cooldown'
+        : // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
+          // 寬限取 max(沉默門檻, 45s 查詢鏈上限)，避免破冰搶在遲到的答案前面
+          now - session.lastWakeAt < Math.max(env.ICEBREAKER_SILENCE_MS, ICEBREAKER_WAKE_QUERY_GRACE_MS)
+          ? 'wake-grace'
+          : null
   if (skipReason) {
     logger.info(
       { meetingInstanceId, skipReason, sinceWakeMs: now - session.lastWakeAt, sinceLastIcebreakerMs: now - s.lastIcebreakerAt },
@@ -270,7 +274,9 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   // 硬性防護：呼叫模型前先擋（省 token、避免搶話）。
   // 跳過時必留 log：原本靜默 return，實測「都不插話」時無從診斷是哪條擋的。
   const last = s.window[s.window.length - 1]
-  const skipReason = session.isSpeaking
+  const skipReason = session.quietMode
+    ? 'quiet-mode' // 旗標可能在計時器排定後才切換，這裡要再擋一次
+    : session.isSpeaking
     ? 'bot-speaking'
     : now - session.lastWakeAt < WAKE_GRACE_MS
       ? 'wake-grace'
