@@ -104,6 +104,8 @@ export function recordConversation(session: MeetingSession, entry: ConversationE
   if (s.timer) clearTimeout(s.timer)
   // bot 自己的訊息不該觸發「有人講完話」的評估
   if (entry.fromBot) return
+  // 安靜模式：不排評估計時（省下 EOU 推論與決策 LLM）；對話窗照記，解除後脈絡不斷
+  if (session.quietMode) return
 
   if (env.INTERJECTION_TURN_DETECTOR === 'livekit') {
     // 兩段式：短暫靜默後先問 EOU 模型，講完就提早評估
@@ -156,6 +158,7 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
 
   const now = Date.now()
   if (
+    session.quietMode || // 安靜模式：不破冰，但監看不斷（解除後恢復）
     session.isSpeaking ||
     now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS ||
     // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
@@ -264,6 +267,8 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   if (now - s.lastInterjectionAt < env.INTERJECTION_COOLDOWN_MS) return
   const last = s.window[s.window.length - 1]
   if (!last || last.fromBot) return
+  // 安靜模式：旗標可能在計時器排定後才切換，這裡要再擋一次
+  if (session.quietMode) return
 
   s.evaluating = true
   try {

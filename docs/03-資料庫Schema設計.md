@@ -259,6 +259,9 @@ model MeetingInstance {
   /// Google Meet URL（使用者輸入或從 meet.new 取得）
   googleMeetUrl        String        @map("google_meet_url")
   status               MeetingStatus @default(PENDING)
+  /// 安靜模式：蜜塔不主動插話/破冰，只在被喚醒詞點名時回應。
+  /// 建會議時可設，會中可切（口頭指令「蜜塔，安靜一點/恢復正常」或 PATCH quiet-mode）
+  quietMode            Boolean       @default(false) @map("quiet_mode")
   /// 邀請 Bot 的使用者 ID（邏輯關聯 public.users.id）
   createdByVexaUserId  Int           @map("created_by_vexa_user_id")
   /// 邀請 Bot 時所使用的 API token 記錄 ID（邏輯關聯 public.api_tokens.id）

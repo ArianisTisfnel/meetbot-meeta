@@ -11,7 +11,10 @@ const createMeetingSchema = z.object({
   googleMeetUrl: z.string().min(1),
   name: z.string().min(1).optional(),
   projectId: z.string().uuid().optional().nullable(),
+  quietMode: z.boolean().optional(),
 })
+
+const quietModeSchema = z.object({ enabled: z.boolean() })
 
 const updateMeetingSchema = z.object({ name: z.string().min(1) })
 
@@ -20,7 +23,7 @@ const updateMeetingSchema = z.object({ name: z.string().min(1) })
 // POST /meetings — 全局建立（projectId 選填）
 app.post('/meetings', async (c) => {
   const body = await c.req.json().catch(() => ({}))
-  const { googleMeetUrl, name, projectId } = createMeetingSchema.parse(body)
+  const { googleMeetUrl, name, projectId, quietMode } = createMeetingSchema.parse(body)
   const result = await meetingService.createMeeting({
     vexaUserId: c.get('vexaUserId'),
     vexaApiTokenId: c.get('vexaApiTokenId'),
@@ -30,6 +33,7 @@ app.post('/meetings', async (c) => {
     googleMeetUrl,
     name,
     projectId,
+    quietMode,
   })
   return c.json(result, 201)
 })
@@ -101,6 +105,18 @@ app.post('/meetings/:meetingId/bot/reinvite', async (c) => {
   return c.json(result)
 })
 
+// PATCH /meetings/:meetingId/quiet-mode — 切換安靜模式（建立者或專案 canMeeting，service 內驗證）
+app.patch('/meetings/:meetingId/quiet-mode', async (c) => {
+  const body = await c.req.json().catch(() => ({}))
+  const { enabled } = quietModeSchema.parse(body)
+  const result = await meetingService.setQuietMode(
+    c.req.param('meetingId'),
+    c.get('vexaUserId'),
+    enabled,
+  )
+  return c.json(result)
+})
+
 // GET /meetings/:meetingId/transcriptions — 全局逐字稿
 app.get('/meetings/:meetingId/transcriptions', async (c) => {
   const meetingId = c.req.param('meetingId')
@@ -154,8 +170,12 @@ app.get('/meetings/:meetingId/transcript', async (c) => {
 // POST /projects/:projectId/meetings
 app.post('/projects/:projectId/meetings', async (c) => {
   const body = await c.req.json().catch(() => ({}))
-  const { googleMeetUrl, name } = z
-    .object({ googleMeetUrl: z.string().min(1), name: z.string().min(1).optional() })
+  const { googleMeetUrl, name, quietMode } = z
+    .object({
+      googleMeetUrl: z.string().min(1),
+      name: z.string().min(1).optional(),
+      quietMode: z.boolean().optional(),
+    })
     .parse(body)
   const result = await meetingService.createMeeting({
     vexaUserId: c.get('vexaUserId'),
@@ -165,6 +185,7 @@ app.post('/projects/:projectId/meetings', async (c) => {
     vexaTokenScopes: c.get('vexaTokenScopes'),
     googleMeetUrl,
     name,
+    quietMode,
     projectId: c.req.param('projectId'),
   })
   return c.json(result, 201)
@@ -251,6 +272,24 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/reinvite', async (c) => {
     vexaToken: c.get('vexaToken'),
     vexaTokenScopes: c.get('vexaTokenScopes'),
   })
+  return c.json(result)
+})
+
+// PATCH /projects/:projectId/meetings/:meetingId/quiet-mode — 切換安靜模式
+app.patch('/projects/:projectId/meetings/:meetingId/quiet-mode', async (c) => {
+  // 先確認會議屬於此專案且使用者可存取；細部權限（canMeeting）由 setQuietMode 內驗證
+  await meetingService.getProjectMeeting(
+    c.req.param('projectId'),
+    c.req.param('meetingId'),
+    c.get('vexaUserId'),
+  )
+  const body = await c.req.json().catch(() => ({}))
+  const { enabled } = quietModeSchema.parse(body)
+  const result = await meetingService.setQuietMode(
+    c.req.param('meetingId'),
+    c.get('vexaUserId'),
+    enabled,
+  )
   return c.json(result)
 })
 

@@ -111,6 +111,25 @@ export function useDeleteMeeting(projectId: string | null, meetingId: string) {
   })
 }
 
+export function useSetQuietMode(projectId: string | null, meetingId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (enabled: boolean) =>
+      projectId
+        ? apiClient.patch<{ id: string; quietMode: boolean }>(
+            `/projects/${projectId}/meetings/${meetingId}/quiet-mode`,
+            { enabled }
+          )
+        : apiClient.patch<{ id: string; quietMode: boolean }>(
+            `/meetings/${meetingId}/quiet-mode`,
+            { enabled }
+          ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] })
+    },
+  })
+}
+
 export function useBotReinvite(projectId: string | null, meetingId: string) {
   const queryClient = useQueryClient()
   return useMutation({

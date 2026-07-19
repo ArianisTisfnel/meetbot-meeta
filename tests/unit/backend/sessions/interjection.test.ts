@@ -75,6 +75,7 @@ function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     difyDatasetId: 'dataset-abc',
     creatorVexaToken: 'tok-123',
     isSpeaking: false,
+    quietMode: false,
     lastWakeAt: 0,
     wakePendingUntil: 0,
     wakePendingSpeaker: null,
@@ -472,5 +473,52 @@ describe('interjection — livekit EOU 時機層', () => {
     recordConversation(session, humanEntry('報名截止日是？'))
     await vi.advanceTimersByTimeAsync(1_000)
     expect(llm.completeText).not.toHaveBeenCalled() // 作廢，沒有評估
+  })
+})
+
+// ── 安靜模式 quiet mode ───────────────────────────────────────────────────────
+
+describe('quiet mode — 安靜模式（停用插話與破冰）', () => {
+  beforeEach(() => {
+    mockEnv.INTERJECTION_ENABLED = true
+    mockEnv.ICEBREAKER_ENABLED = true
+  })
+
+  it('quietMode：發言後靜默 → 不排評估計時、決策器不被呼叫（EOU 也不推論）', async () => {
+    const session = putSession({ quietMode: true })
+    recordConversation(session, humanEntry('報名截止日是什麼時候？有人知道嗎'))
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(llm.completeText).not.toHaveBeenCalled()
+    expect(eou.isEndOfTurn).not.toHaveBeenCalled()
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+    expect(wwd.sendChatBestEffort).not.toHaveBeenCalled()
+  })
+
+  it('quietMode：沉默 40s → 破冰跳過但持續監看；會中解除後下一輪恢復破冰', async () => {
+    const session = putSession({ quietMode: true })
+    startIcebreaker(session)
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+    session.quietMode = false // 口頭指令/API 解除
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+  })
+
+  it('評估計時器排定後才開啟 quietMode → 到點時在防護鏈被擋', async () => {
+    const session = putSession()
+    recordConversation(session, humanEntry('報名費多少？'))
+    session.quietMode = true // 2.5s 倒數期間被切換
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(llm.completeText).not.toHaveBeenCalled()
+  })
+
+  it('quietMode 期間對話窗照記：解除後的評估帶有安靜期間的脈絡', async () => {
+    const session = putSession({ quietMode: true })
+    recordConversation(session, humanEntry('先記著：預算上限 50 萬'))
+    session.quietMode = false
+    recordConversation(session, humanEntry('那報名費是多少？', '小華'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(llm.completeText).toHaveBeenCalledTimes(1)
+    expect(llm.completeText.mock.calls[0][0].prompt).toContain('預算上限 50 萬')
   })
 })

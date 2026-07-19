@@ -159,6 +159,8 @@ model MeetingInstance {
   name                  String
   googleMeetUrl         String        @map("google_meet_url")
   status                MeetingStatus @default(PENDING)
+  /// 安靜模式：蜜塔不主動插話/破冰，只在被點名時回應。建會議時可設，會中可切（口頭指令或前端）。
+  quietMode             Boolean       @default(false) @map("quiet_mode")
   createdByVexaUserId   Int           @map("created_by_vexa_user_id")
   creatorApiTokenId     Int           @map("creator_api_token_id")
   startedAt             DateTime?     @map("started_at")

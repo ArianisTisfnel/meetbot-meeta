@@ -30,6 +30,7 @@ export function useCreateGlobalMeeting() {
       googleMeetUrl: string
       name?: string
       projectId?: string
+      quietMode?: boolean
     }) => apiClient.post<MeetingDetail>('/meetings', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['all-meetings'] })

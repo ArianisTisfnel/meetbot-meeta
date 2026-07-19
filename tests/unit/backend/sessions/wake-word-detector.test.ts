@@ -1,4 +1,5 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest'
+import { mockPrisma } from '../../../mocks/prisma.mock'
 
 // 喚醒詞偵測現在透過 provider 抽象層說話 / 發聊天室訊息（不再直接呼叫 vexaClient）。
 const mockBotProvider = vi.hoisted(() => ({
@@ -9,6 +10,8 @@ const mockBotProvider = vi.hoisted(() => ({
 }))
 
 vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
+// 安靜模式指令會 best-effort 回寫 DB（dynamic import lib/prisma）
+vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('../../../../backend/src/lib/dify', () => ({
   askQuestion: vi.fn().mockResolvedValue({ answer: '測試回答', conversationId: 'conv-1' }),
   DIFY_NO_RESULT_SENTINEL: '抱歉 沒有檢索到相關資訊',
@@ -42,7 +45,10 @@ import {
   handleChatMessage,
   handleBargeIn,
   parseIntent,
+  parseQuietCommand,
   speechTiming,
+  QUIET_ON_ACK,
+  QUIET_OFF_ACK,
 } from '../../../../backend/src/sessions/wake-word-detector'
 
 // 語音播放估時歸零：測試裡 speak 是即時 mock，不能真等「開場白唸完」的 3-6 秒
@@ -70,6 +76,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     difyDatasetId: 'dataset-abc',
     creatorVexaToken: 'tok-123',
     isSpeaking: false,
+    quietMode: false,
     lastWakeAt: 0,
     wakePendingUntil: 0,
     wakePendingSpeaker: null,
@@ -402,6 +409,103 @@ describe('answerFromTranscript — 純文字會議的脈絡來源', () => {
 
   // 註：「chatLog 完全為空」的防禦分支在聊天流程中實際到不了——
   // dispatchQuestion 會先把「收到你的問題…」ack 記進 chatLog，context 永遠至少有一句。
+})
+
+describe('quiet mode — 安靜模式口頭指令', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('parseQuietCommand：開啟/解除/非指令 正確解析', () => {
+    expect(parseQuietCommand('安靜一點')).toBe('on')
+    expect(parseQuietCommand('這場安靜一點')).toBe('on')
+    expect(parseQuietCommand('安靜模式')).toBe('on')
+    expect(parseQuietCommand('低調一點')).toBe('on')
+    expect(parseQuietCommand('不要插話')).toBe('on')
+    expect(parseQuietCommand('別主動說話')).toBe('on')
+    expect(parseQuietCommand('恢復正常')).toBe('off')
+    expect(parseQuietCommand('取消安靜模式')).toBe('off') // 含「安靜」但 off 先比對
+    expect(parseQuietCommand('解除安靜')).toBe('off')
+    expect(parseQuietCommand('可以說話了')).toBe('off')
+    // 非指令：一般問題、超長句（就算含關鍵字）
+    expect(parseQuietCommand('請問報名日期是什麼時候')).toBe(null)
+    expect(parseQuietCommand('剛才會議室怎麼突然安靜下來大家都去哪了')).toBe(null)
+    expect(parseQuietCommand('')).toBe(null)
+  })
+
+  it('語音「蜜塔，安靜一點」→ quietMode 開啟、口頭確認、回寫 DB', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-quiet-on',
+      text: '蜜塔，安靜一點',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(session.quietMode).toBe(true)
+    expect(mockBotProvider.speak).toHaveBeenCalledWith(expect.anything(), QUIET_ON_ACK)
+    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith({
+      where: { id: 'meet-1' },
+      data: { quietMode: true },
+    })
+  })
+
+  it('語音「蜜塔，恢復正常」→ quietMode 解除、口頭確認', async () => {
+    const session = makeSession({ quietMode: true })
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-quiet-off',
+      text: '蜜塔，恢復正常',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(session.quietMode).toBe(false)
+    expect(mockBotProvider.speak).toHaveBeenCalledWith(expect.anything(), QUIET_OFF_ACK)
+    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith({
+      where: { id: 'meet-1' },
+      data: { quietMode: false },
+    })
+  })
+
+  it('聊天室「蜜塔 不要插話」→ quietMode 開啟、聊天室確認（不出聲）', async () => {
+    const session = makeSession()
+    await handleChatMessage(session, {
+      sender: 'User',
+      text: '蜜塔 不要插話',
+      timestamp: Date.now(),
+      is_from_bot: false,
+    })
+    expect(session.quietMode).toBe(true)
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+    expect(mockBotProvider.sendChat).toHaveBeenCalledWith(expect.anything(), QUIET_ON_ACK)
+  })
+
+  it('安靜模式指令不進查詢管線（不打 Dify、不發「👂 收到」確認）', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-quiet-no-query',
+      text: '蜜塔，安靜模式',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    const chatTexts = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
+    expect(chatTexts.some((t) => t.includes('👂'))).toBe(false)
+  })
+
+  it('DB 回寫失敗 → 不影響指令生效（best-effort）', async () => {
+    const session = makeSession()
+    mockPrisma.meetingInstance.update.mockRejectedValueOnce(new Error('db down'))
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-quiet-db-fail',
+      text: '蜜塔，安靜一點',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(session.quietMode).toBe(true)
+    expect(mockBotProvider.speak).toHaveBeenCalledWith(expect.anything(), QUIET_ON_ACK)
+  })
 })
 
 describe('handleChatMessage — 聊天室喚醒詞', () => {

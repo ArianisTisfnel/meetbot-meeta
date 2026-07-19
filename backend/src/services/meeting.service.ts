@@ -85,6 +85,8 @@ export async function createMeeting(params: {
   googleMeetUrl: string
   name?: string
   projectId?: string | null
+  /** 安靜模式：蜜塔只在被點名時回應（停用主動插話/破冰）。 */
+  quietMode?: boolean
 }) {
   const {
     vexaUserId,
@@ -94,6 +96,7 @@ export async function createMeeting(params: {
     vexaTokenScopes,
     googleMeetUrl,
     projectId,
+    quietMode = false,
   } = params
 
   // ① URL 驗證 + scope 檢查
@@ -135,6 +138,7 @@ export async function createMeeting(params: {
       name: meetingName,
       googleMeetUrl,
       status: 'PENDING',
+      quietMode,
       createdByVexaUserId: vexaUserId,
       creatorApiTokenId: vexaApiTokenId,
     },
@@ -159,6 +163,7 @@ export async function createMeeting(params: {
     nativeMeetingId,
     difyDatasetId,
     creatorVexaToken: vexaToken,
+    quietMode,
   })
 
   return formatMeetingResponse(meeting, vexaUserId, projectName)
@@ -401,9 +406,67 @@ export async function reinviteBot(params: {
     nativeMeetingId,
     difyDatasetId: meeting.project?.difyDatasetId ?? null,
     creatorVexaToken: vexaToken,
+    quietMode: meeting.quietMode,
   })
 
   return { id: meetingInstanceId, status: 'PENDING' }
+}
+
+// ── Quiet mode ────────────────────────────────────────────────────────────────
+
+/**
+ * 切換會議的安靜模式（蜜塔只在被點名時回應，停用主動插話/破冰）。
+ * 權限：建立者本人，或關聯專案的擁有者/canMeeting 成員（與 reinviteBot 相同）。
+ * 會議進行中（in-memory session 存在）時即時生效，並在聊天室通知與會者；
+ * 非進行中只更新 DB（下次邀請蜜塔時生效）。
+ */
+export async function setQuietMode(
+  meetingInstanceId: string,
+  vexaUserId: number,
+  enabled: boolean,
+): Promise<{ id: string; quietMode: boolean }> {
+  const meeting = await prisma.meetingInstance.findUnique({
+    where: { id: meetingInstanceId },
+    include: {
+      project: {
+        select: { ownerVexaUserId: true, members: { where: { vexaUserId } } },
+      },
+    },
+  })
+  if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+
+  const isCreator = meeting.createdByVexaUserId === vexaUserId
+  if (!isCreator) {
+    const isOwner = meeting.project?.ownerVexaUserId === vexaUserId
+    const m = meeting.project?.members[0]
+    if (!isOwner && !m?.canMeeting) {
+      throw new AppError('PERMISSION_DENIED', 403, '您沒有調整此會議安靜模式的權限')
+    }
+  }
+
+  await prisma.meetingInstance.update({
+    where: { id: meetingInstanceId },
+    data: { quietMode: enabled },
+  })
+
+  // 進行中的會議：更新 in-memory 旗標即時生效，並在聊天室告知（不然與會者只會覺得蜜塔突然沉默）
+  const { activeSessions } = await import('../sessions/session-store.js')
+  const session = activeSessions.get(meetingInstanceId)
+  if (session && session.quietMode !== enabled) {
+    session.quietMode = enabled
+    logger.info({ meetingInstanceId, quietMode: enabled }, 'quiet mode toggled via API')
+    if (session.botSession) {
+      const { sendChatBestEffort } = await import('../sessions/wake-word-detector.js')
+      void sendChatBestEffort(
+        session,
+        enabled
+          ? '🔇 安靜模式已開啟：我不會主動插話，需要我時再叫我。'
+          : '🔊 安靜模式已解除：我會適時主動補充。',
+      )
+    }
+  }
+
+  return { id: meetingInstanceId, quietMode: enabled }
 }
 
 // ── List / Get meetings ───────────────────────────────────────────────────────
@@ -556,6 +619,7 @@ export async function getMeeting(meetingId: string, vexaUserId: number) {
     name: meeting.name,
     googleMeetUrl: meeting.googleMeetUrl,
     status: meeting.status,
+    quietMode: meeting.quietMode,
     vexaMeetingId: meeting.vexaMeetingId ?? null,
     projectId: meeting.projectId ?? null,
     projectName: meeting.project?.name ?? null,
@@ -598,6 +662,7 @@ export async function getProjectMeeting(
     name: meeting.name,
     googleMeetUrl: meeting.googleMeetUrl,
     status: meeting.status,
+    quietMode: meeting.quietMode,
     vexaMeetingId: meeting.vexaMeetingId ?? null,
     createdBy: { vexaUserId: meeting.createdByVexaUserId, name: creatorRows[0]?.name ?? null },
     startedAt: meeting.startedAt ?? null,
