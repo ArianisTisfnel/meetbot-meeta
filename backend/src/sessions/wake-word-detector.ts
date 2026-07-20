@@ -58,8 +58,8 @@ export async function sendChatBestEffort(
   }
 }
 
-// 字元集涵蓋 STT 常見誤轉：實測 recallai_streaming 會把「蜜塔」轉成「米塔」等。
-const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
+// 字元集涵蓋 STT 常見誤轉：實測 recallai_streaming 會把「蜜塔」轉成「米塔」「蜜桃」等。
+const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達桃]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
 const DEBOUNCE_MS = 2000
 /** 喚醒待命窗長度：只叫名字沒問題後，等後續段落接問題的時間。 */
 const WAKE_PENDING_MS = 8000

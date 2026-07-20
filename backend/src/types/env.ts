@@ -18,6 +18,11 @@ const envSchema = z.object({
   // 設定後，插話決策/無知識庫問答改走 Gemini（AI Studio 免費額度）而非 Anthropic。
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+  // 插話/破冰專用的第二把 Gemini key（另一個帳號的免費額度）。未設定時退回 GEMINI_API_KEY。
+  // 目的：插話決策每輪講話都會打 LLM、最燒額度，用獨立帳號隔離，燒完不拖垮其他功能。
+  GEMINI_INTERJECTION_API_KEY: z.string().optional(),
+  // 新帳號不能用 gemini-2.5-flash（對新用戶停開），預設用 lite 系列 alias。
+  GEMINI_INTERJECTION_MODEL: z.string().default('gemini-flash-lite-latest'),
   VEXA_API_URL: z.string().url(),
   VEXA_WS_URL: z.string().url(),
   // ── Meeting Bot Provider failover ──────────────────────────────────────────
@@ -35,6 +40,13 @@ const envSchema = z.object({
   // recallai_streaming（prioritize_accuracy 模式）的轉錄語言碼：
   // 'auto' = 自動偵測、可中英夾雜（推薦）；或指定如 'zh'（中文）、'en'。'multi' 非合法值。
   RECALL_TRANSCRIBE_LANGUAGE: z.string().default('auto'),
+  // ── Output Media 即時語音 agent（方案 A，見 docs/16）────────────────────────
+  // 'on'：Recall bot 加掛 agent 網頁（耳朵/嘴巴走串流，喚醒 ack 由分鐘級降到秒級）。
+  // 'off'（預設）：完全走現行 webhook + mp3 路徑。
+  // 真正啟用還需 AGENT_PAGE_URL、OPENAI_API_KEY、RECALL_WEBHOOK_URL/TOKEN 齊全。
+  AGENT_MODE: z.enum(['on', 'off']).default('off'),
+  // agent 網頁（前端 /agent）的公開 URL；bot 的雲端瀏覽器會開啟它，需外網可達。
+  AGENT_PAGE_URL: z.string().url().optional(),
   // 主要 bot provider：'recall'（預設，Vexa 被 reCAPTCHA 擋死後的決策）或 'vexa'。
   // 另一個 provider 自動成為 failover secondary（未設定齊全時退化為單一 provider）。
   BOT_PRIMARY_PROVIDER: z.enum(['vexa', 'recall']).default('recall'),

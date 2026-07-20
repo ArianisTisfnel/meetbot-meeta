@@ -8,6 +8,11 @@ export const authMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
     // /internal/：前端伺服器端的信任呼叫（x-internal-secret 各自驗證）
     return next()
   }
+  // Output Media agent 網頁：bot 的雲端瀏覽器直接開啟（無 Bearer）。
+  // 頁面本身無機密；後續 WS 連線由簽名 token（/ws/agent?agent&token）把關。
+  if (c.req.path === '/agent') {
+    return next()
+  }
 
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token) {

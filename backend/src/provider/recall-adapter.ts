@@ -1,5 +1,19 @@
+import { randomUUID } from 'node:crypto'
 import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
+import {
+  isAgentModeEnabled,
+  isAgentLive,
+  buildAgentPageUrl,
+  registerAgentSession,
+  markAgentAnchor,
+} from '../agent/agent-registry.js'
+import {
+  agentSpeak,
+  agentPrimeSpeech,
+  agentStopSpeaking,
+  teardownAgentSession,
+} from '../agent/agent-relay.js'
 import { normalizeRecallTranscript, normalizeRecallRealtimeUtterance } from './normalize.js'
 import {
   BotAdmissionError,
@@ -115,12 +129,17 @@ export function dispatchRecallEvent(event: any): void {
       // bot 自己的語音也要進逐字稿（會後要看得到蜜塔的回覆），
       // 但不轉給 handlers（避免喚醒詞/插話自迴圈）。
       if (reg.segments.length < MAX_REALTIME_SEGMENTS) reg.segments.push(seg)
-      if (!isBot) reg.handlers.onSegment?.(seg)
+      // agent 網頁在線時，喚醒/插話由 relay 的串流 STT 驅動；webhook 的 accuracy 模式
+      // 逐字稿是分鐘級延遲，若仍觸發喚醒，同一句「蜜塔」會在答完幾分鐘後再答一次。
+      // 這裡只保留逐字稿寫入；網頁斷線時（isAgentLive=false）自動恢復 webhook 喚醒 fallback。
+      if (!isBot && !isAgentLive(botId)) reg.handlers.onSegment?.(seg)
     }
     return
   }
 
   if (type === 'transcript.partial_data') {
+    // agent 在線：partial 喚醒/讓路同樣改由 relay 驅動（見上）。
+    if (isAgentLive(botId)) return
     // 未定稿片段：只轉給 onPartialSegment（喚醒快速偵測），不累積進 segments。
     // 同一句會重複推送且內容變動，量大 → 不逐則記 info log；只記第一次（診斷用）。
     if (!reg.sawPartial) {
@@ -167,6 +186,8 @@ interface RecallSessionState extends Record<string, unknown> {
   closed: boolean
   /** realtime webhook 累積的 segment（最終逐字稿未就緒時的回退來源）。 */
   segments: TranscriptSegment[]
+  /** Output Media agent session id（agent 模式未啟用時為 null）。 */
+  agentId: string | null
 }
 
 function getState(session: BotSession): RecallSessionState {
@@ -240,11 +261,31 @@ export class RecallAdapter implements MeetingBotProvider {
         }
       : { transcript: { provider: { meeting_captions: {} } } }
 
+    // 方案 A：agent 模式加掛 Output Media 網頁（bot 瀏覽器開我們的 /agent 頁 → 網頁收音/出聲）。
+    // agentId 先自產放進網頁 URL（bot id 要等 POST 回來才知道，URL 卻要在同一 payload 裡）。
+    // recording_config 原封不動保留：webhook 逐字稿（摘要用）與聊天室事件完全不受影響。
+    const agentEnabled = isAgentModeEnabled()
+    const agentId = agentEnabled ? randomUUID() : null
+
     const bot = await recallFetch<{ id: string }>('POST', '/api/v1/bot/', {
       meeting_url: url,
       bot_name: botName,
       recording_config: recordingConfig,
+      ...(agentId
+        ? {
+            output_media: { camera: { kind: 'webpage', config: { url: buildAgentPageUrl(agentId) } } },
+            // 官方 demo 對 output media 指定 4 核規格：網頁要在 bot 瀏覽器裡跑
+            // 收音＋播放管線，預設規格 CPU 不足會掉幀（實測 2026-07-10：語音斷斷續續、
+            // 收音破碎導致轉錄文字錯亂）。
+            variant: { google_meet: 'web_4_core' },
+          }
+        : {}),
     })
+
+    if (agentId) {
+      registerAgentSession(agentId, bot.id, botName, handlers)
+      logger.info({ botId: bot.id, agentId }, 'RecallAdapter: agent mode on — output media 網頁已掛載')
+    }
 
     // 註冊 realtime handlers（webhook 進來時依 bot.id 找回）。
     // segments 與 session.state 共用同一個 array：webhook 累積、getTranscript 回退讀取。
@@ -269,6 +310,7 @@ export class RecallAdapter implements MeetingBotProvider {
         statusTimer: null,
         closed: false,
         segments,
+        agentId,
       } satisfies RecallSessionState,
     }
 
@@ -281,6 +323,10 @@ export class RecallAdapter implements MeetingBotProvider {
       )
       throw err
     }
+
+    // agent 時間錨點對齊 admitted 時刻（≈ session.sessionStartedAt）：
+    // relay 的 segment startTime 以此錨點換算，barge-in 晚到事件防護才不會誤判。
+    if (agentId) markAgentAnchor(agentId)
 
     // admitted 後即時逐字稿/聊天由 webhook → dispatchRecallEvent → handlers 驅動（不需在此輪詢）。
     return session
@@ -388,6 +434,14 @@ export class RecallAdapter implements MeetingBotProvider {
 
   async speak(session: BotSession, text: string): Promise<void> {
     const state = getState(session)
+    // agent 網頁在線 → 走串流路徑（PCM 快取即推 / TTS 邊合成邊播，首音 ~0.5s）。
+    // 不在線（未啟用 / 網頁當掉）→ 退回現行 mp3 路徑。
+    const spokenViaAgent = await agentSpeak(state.botId, text).catch((err) => {
+      logger.warn({ err, botId: state.botId }, 'RecallAdapter.speak: agentSpeak failed, falling back to mp3')
+      return false
+    })
+    if (spokenViaAgent) return
+
     // Recall 吃 mp3（base64），需自行 TTS（text → mp3）。
     const mp3Base64 = await this.synthesizeMp3(text)
     await recallFetch<void>('POST', `/api/v1/bot/${state.botId}/output_audio/`, {
@@ -396,9 +450,16 @@ export class RecallAdapter implements MeetingBotProvider {
     })
   }
 
-  async primeSpeech(_session: BotSession, texts: string[]): Promise<void> {
+  async primeSpeech(session: BotSession, texts: string[]): Promise<void> {
     // 只合成進快取、不播放：把「我收到了」等固定台詞的 TTS 成本移到 join 後的閒置期，
     // 首次喚醒的回應延遲可省 1–3 秒。
+    const state = getState(session)
+    // agent 模式：預熱 PCM 快取（網頁未連線也可，純 API 呼叫）。mp3 側不重複預熱
+    //（fallback 少見，屆時再 lazily 合成即可，省一倍 TTS 費用）。
+    if (state.agentId) {
+      await agentPrimeSpeech(state.botId, texts)
+      return
+    }
     for (const text of texts) {
       if (this.ttsCache.has(text)) continue
       await this.synthesizeMp3(text).catch((err) =>
@@ -445,6 +506,8 @@ export class RecallAdapter implements MeetingBotProvider {
 
   async stopSpeaking(session: BotSession): Promise<void> {
     const state = getState(session)
+    // agent 網頁在線：推 stop 指令（清播放佇列＋作廢串流中的 TTS），0.5 秒內靜音。
+    if (agentStopSpeaking(state.botId)) return
     // 停止正在播放的 output audio（barge-in 讓路）。
     await recallFetch<void>('DELETE', `/api/v1/bot/${state.botId}/output_audio/`)
   }
@@ -461,6 +524,7 @@ export class RecallAdapter implements MeetingBotProvider {
     if (state.statusTimer) clearInterval(state.statusTimer)
     state.statusTimer = null
     unregisterRealtimeHandlers(state.botId)
+    if (state.agentId) teardownAgentSession(state.agentId)
 
     await recallFetch<void>('POST', `/api/v1/bot/${state.botId}/leave_call/`, {}).catch((err) =>
       logger.warn({ err, botId: state.botId }, 'RecallAdapter.leave: leave_call failed'),

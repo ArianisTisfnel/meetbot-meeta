@@ -130,6 +130,18 @@ describe('handleTranscriptSegment — 喚醒詞偵測', () => {
     expect(mockBotProvider.speak).toHaveBeenCalled()
   })
 
+  it('「蜜桃，請問報名日期」→ 觸發（STT 把「蜜塔」聽成「蜜桃」）', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-peach',
+      text: '蜜桃，請問報名日期',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(mockBotProvider.speak).toHaveBeenCalled()
+  })
+
   it('「mita 今天的議程」→ 觸發（小寫英文）', async () => {
     const session = makeSession()
     await handleTranscriptSegment(session, {

@@ -98,11 +98,64 @@ if (-not $ngrokExe -or -not (Test-Path $ngrokExe)) {
     Write-Host "ngrok started -> $webhookUrl" -ForegroundColor Green
 }
 
-# 6. Start backend + frontend together (Ctrl+C stops both)
+# 6. Start cloudflared quick tunnel for the Output Media agent page (AGENT_MODE, docs/16 Plan A).
+# 為什麼不用 ngrok：免費域名對「瀏覽器導覽」會插 ERR_NGROK_6024 警告頁，bot 的雲端瀏覽器
+# 開不進 agent 網頁；cloudflared quick tunnel 沒有警告頁。網頁與 /ws/agent 同源，一條 tunnel 搞定。
+# quick tunnel 的網址每次啟動都會變 -> 這裡自動抓網址並寫回 backend\.env 的 AGENT_PAGE_URL。
+$agentModeOn = $false
+if (Test-Path $envFile) {
+    $modeLine = Select-String -Path $envFile -Pattern '^\s*AGENT_MODE=' | Select-Object -Last 1
+    if ($modeLine -and (($modeLine.Line -replace '^\s*AGENT_MODE=', '').Trim().Trim('"') -eq 'on')) { $agentModeOn = $true }
+}
+# PATH 上找不到就退回 winget MSI 的預設安裝路徑（裝完當下的舊 shell 還沒有新 PATH）
+$cloudflaredCmd = Get-Command cloudflared -ErrorAction SilentlyContinue
+$cloudflaredExe = if ($cloudflaredCmd) { $cloudflaredCmd.Source } else { "${env:ProgramFiles(x86)}\cloudflared\cloudflared.exe" }
+if (-not (Test-Path $cloudflaredExe)) { $cloudflaredExe = $null }
+if (-not $agentModeOn) {
+    Write-Host "AGENT_MODE is not 'on' -> skipping cloudflared (agent page tunnel)." -ForegroundColor Gray
+} elseif (-not $cloudflaredExe) {
+    Write-Host "Note: cloudflared not found -> agent page has no public URL; falling back to webhook+mp3 path. Install: winget install Cloudflare.cloudflared" -ForegroundColor Yellow
+} else {
+    if (Get-Process cloudflared -ErrorAction SilentlyContinue) {
+        Write-Host "cloudflared already running; restarting to get a fresh URL..." -ForegroundColor Gray
+        Stop-Process -Name cloudflared -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+    Write-Host "Starting cloudflared quick tunnel (agent page)..." -ForegroundColor Cyan
+    $cfLog = "$env:TEMP\meetbot-cloudflared.log"
+    if (Test-Path $cfLog) { Remove-Item $cfLog -Force -ErrorAction SilentlyContinue }
+    # quick tunnel 網址印在 stderr -> 導到檔案再輪詢解析
+    Start-Process -FilePath $cloudflaredExe -ArgumentList 'tunnel', '--url', 'http://localhost:4000' `
+        -WindowStyle Minimized -RedirectStandardError $cfLog
+    $agentUrl = $null
+    foreach ($i in 1..30) {
+        Start-Sleep -Milliseconds 500
+        if (Test-Path $cfLog) {
+            $m = Select-String -Path $cfLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' | Select-Object -First 1
+            if ($m) { $agentUrl = $m.Matches[0].Value; break }
+        }
+    }
+    if ($agentUrl) {
+        # 寫回 backend\.env（backend 啟動時讀取，所以要在 npm start 之前完成）。
+        # 用 .NET API 以 UTF-8(無 BOM) 讀寫：PS 5.1 的 Get/Set-Content 預設編碼會把中文註解弄壞。
+        $envContent = [System.IO.File]::ReadAllText($envFile)
+        if ($envContent -match '(?m)^\s*AGENT_PAGE_URL=') {
+            $envContent = $envContent -replace '(?m)^\s*AGENT_PAGE_URL=.*$', "AGENT_PAGE_URL=`"$agentUrl/agent`""
+        } else {
+            $envContent = $envContent.TrimEnd() + "`nAGENT_PAGE_URL=`"$agentUrl/agent`"`n"
+        }
+        [System.IO.File]::WriteAllText($envFile, $envContent, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "cloudflared started -> AGENT_PAGE_URL=$agentUrl/agent (written to backend\.env)" -ForegroundColor Green
+    } else {
+        Write-Host "Warning: cloudflared URL not detected within 15s; agent page unavailable this run (webhook+mp3 fallback still works). See $cfLog" -ForegroundColor Yellow
+    }
+}
+
+# 7. Start backend + frontend together (Ctrl+C stops both)
 Write-Host ""
 Write-Host "Starting backend (port 4000) and frontend (port 3000)..." -ForegroundColor Cyan
 Write-Host "Press Ctrl+C to stop all services." -ForegroundColor Gray
-Write-Host "(ngrok runs in a separate minimized window; to stop it: Stop-Process -Name ngrok)" -ForegroundColor Gray
+Write-Host "(ngrok/cloudflared run in separate minimized windows; to stop: Stop-Process -Name ngrok,cloudflared)" -ForegroundColor Gray
 Write-Host ""
 Set-Location $rootDir
 npm start
