@@ -144,6 +144,9 @@ function connectOpenAI(session: AgentSession): void {
 
   ws.on('open', () => {
     ws.send(JSON.stringify(buildSessionUpdate()))
+    // 轉錄鏈就緒 → isAgentLive 才回 true、webhook 喚醒才被抑制。
+    // 反之持久連不上（401／額度）時 openaiReady 恆為 false，webhook fallback 自動接手。
+    session.openaiReady = true
     logger.info({ agentId: session.agentId, botId: session.botId }, 'agent relay: OpenAI transcription session opened')
   })
   ws.on('message', (raw) => {
@@ -158,6 +161,7 @@ function connectOpenAI(session: AgentSession): void {
   })
   ws.on('close', () => {
     if (session.openaiWs === ws) session.openaiWs = null
+    session.openaiReady = false // 耳朵斷了：isAgentLive 轉 false → webhook 喚醒 fallback 接手
     // 網頁還在（bot 還在會議中）→ 重連，不能失聰
     if (isPageOpen(session)) {
       setTimeout(() => {

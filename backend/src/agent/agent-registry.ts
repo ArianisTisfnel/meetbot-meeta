@@ -31,6 +31,12 @@ export interface AgentSession {
   pageWs: PageSocketLike | null
   /** relay 對 OpenAI 轉錄 WS 的把手（型別由 relay 管理，registry 只負責存放）。 */
   openaiWs: unknown
+  /**
+   * OpenAI 轉錄鏈是否就緒（WS 連上＝true，斷線／未連＝false，由 relay 維護）。
+   * isAgentLive 一併判斷：網頁在線但轉錄鏈掛掉（持久 401／額度／API 變動）時，
+   * webhook 喚醒抑制自動解除、退回 webhook fallback，避免「網頁連著卻聽不到」的全聾狀態。
+   */
+  openaiReady: boolean
   /** 語音世代計數：stopSpeaking 時 +1，讓串流中的 TTS 轉發知道自己已作廢。 */
   speakEpoch: number
   /** 固定台詞（ack/進度句）與預熱答案的 TTS PCM 快取（24kHz s16le mono）。 */
@@ -93,6 +99,7 @@ export function registerAgentSession(
     handlers,
     pageWs: null,
     openaiWs: null,
+    openaiReady: false,
     speakEpoch: 0,
     pcmCache: new Map(),
     anchorMs: Date.now(),
@@ -125,8 +132,16 @@ export function markAgentAnchor(agentId: string): void {
   if (session) session.anchorMs = Date.now()
 }
 
-/** agent 網頁是否在線（webhook 喚醒抑制與 speak 分流的依據）。 */
+/**
+ * agent「耳朵」是否在線（webhook 喚醒抑制的依據）。
+ * 需同時滿足：網頁 WS 連著 ＋ OpenAI 轉錄鏈就緒。少任一條（網頁斷／轉錄掛）→ false，
+ * webhook 喚醒 fallback 自動接手。注意：speak 分流走 isPageOpen（嘴巴與轉錄無關），不看這裡。
+ */
 export function isAgentLive(botId: string): boolean {
   const session = getAgentSessionByBotId(botId)
-  return Boolean(session?.pageWs && session.pageWs.readyState === session.pageWs.OPEN)
+  return Boolean(
+    session?.pageWs &&
+      session.pageWs.readyState === session.pageWs.OPEN &&
+      session.openaiReady,
+  )
 }

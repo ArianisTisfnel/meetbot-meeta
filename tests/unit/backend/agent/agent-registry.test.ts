@@ -96,15 +96,26 @@ describe('registry', () => {
     expect(getAgentSessionByBotId(BOT_ID)).toBeUndefined()
   })
 
-  it('isAgentLive：未註冊 / 無網頁連線 / 連線關閉 → false；連線開啟 → true', () => {
+  it('isAgentLive：需網頁在線 ＋ 轉錄鏈就緒；未註冊 / 無網頁 / 連線關閉 → false', () => {
     expect(isAgentLive(BOT_ID)).toBe(false)
 
     const session = registerAgentSession(AGENT_ID, BOT_ID, '蜜塔', {})
     expect(isAgentLive(BOT_ID)).toBe(false)
 
+    // 網頁連上但轉錄鏈尚未就緒 → 仍 false（webhook 喚醒 fallback 保持啟用）
     session.pageWs = fakePageWs(true)
+    expect(isAgentLive(BOT_ID)).toBe(false)
+
+    // 網頁在線 ＋ 轉錄鏈就緒 → true
+    session.openaiReady = true
     expect(isAgentLive(BOT_ID)).toBe(true)
 
+    // 轉錄鏈掛掉（網頁仍在）→ false，webhook 喚醒自動接手（本次 follow-up 修復的全聾邊界）
+    session.openaiReady = false
+    expect(isAgentLive(BOT_ID)).toBe(false)
+
+    // 網頁斷線 → false
+    session.openaiReady = true
     session.pageWs = fakePageWs(false)
     expect(isAgentLive(BOT_ID)).toBe(false)
   })
