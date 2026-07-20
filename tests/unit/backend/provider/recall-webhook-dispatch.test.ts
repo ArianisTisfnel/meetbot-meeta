@@ -133,9 +133,10 @@ describe('dispatchRecallEvent × agent 模式（方案 A）', () => {
     unregisterAgentSession(AGENT_ID)
   })
 
-  it('agent 網頁在線 → webhook 語音事件只寫逐字稿、不觸發喚醒（防分鐘級晚到重複回答）', () => {
+  it('agent 網頁在線 ＋ 轉錄鏈就緒 → webhook 語音事件只寫逐字稿、不觸發喚醒（防分鐘級晚到重複回答）', () => {
     const session = registerAgentSession(AGENT_ID, BOT_ID, BOT_NAME, handlers)
     session.pageWs = { readyState: 1, OPEN: 1, send: vi.fn(), close: vi.fn() } satisfies PageSocketLike
+    session.openaiReady = true // 轉錄鏈健康：抑制 webhook 喚醒的前提
 
     const segments: import('../../../../backend/src/provider/types').TranscriptSegment[] = []
     registerRealtimeHandlers(BOT_ID, handlers, BOT_NAME, segments)
@@ -158,5 +159,16 @@ describe('dispatchRecallEvent × agent 模式（方案 A）', () => {
 
     dispatchRecallEvent(transcriptEvent('Wendy', '蜜塔請問'))
     expect(handlers.onSegment).toHaveBeenCalledTimes(1)
+  })
+
+  it('網頁在線但轉錄鏈掛掉（openaiReady=false）→ webhook 喚醒 fallback 接手，不會全聾', () => {
+    // 全聾邊界：OpenAI WS 持久連不上（401／額度／API 變動），但 bot 瀏覽器還開著。
+    // 修復前 isAgentLive 只看網頁 → 喚醒被抑制、串流又聽不到 → 兩條耳朵都不通。
+    const session = registerAgentSession(AGENT_ID, BOT_ID, BOT_NAME, handlers)
+    session.pageWs = { readyState: 1, OPEN: 1, send: vi.fn(), close: vi.fn() } satisfies PageSocketLike
+    session.openaiReady = false // 轉錄鏈未就緒
+
+    dispatchRecallEvent(transcriptEvent('Wendy', '蜜塔請問'))
+    expect(handlers.onSegment).toHaveBeenCalledTimes(1) // webhook 喚醒仍運作
   })
 })
