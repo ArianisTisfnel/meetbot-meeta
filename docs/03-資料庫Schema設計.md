@@ -356,7 +356,9 @@ enum MeetingStatus {
           //   - 使用者主動取消 PENDING（POST .../cancel）也會落入 FAILED
           //   ⚠️ FAILED 與 ENDED 皆不可刪除（保護歷史查詢紀錄）
           //   前端對 FAILED 顯示失敗原因 + 「🔄 重新邀請蜜塔」按鈕（POST .../bot/reinvite，
-          //     轉回 PENDING 重試，不需重建會議）；ENDED 同樣可重邀
+          //     轉回 PENDING 重試，不需重建會議）
+          //   ENDED 同樣可重邀，但因已有摘要/逐字稿等正式資料，reinvite 會**另建新
+          //     MeetingInstance**（原紀錄保留不覆寫）並回傳新 id
 
   @@map("meeting_status")
   @@schema("app")

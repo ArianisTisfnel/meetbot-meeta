@@ -11,7 +11,7 @@ vi.mock('../../../../backend/src/sessions/session-manager', () => ({
 }))
 
 import { parseGoogleMeetUrl } from '../../../../backend/src/lib/vexa'
-import { createMeeting, leaveMeeting } from '../../../../backend/src/services/meeting.service'
+import { createMeeting, leaveMeeting, reinviteBot } from '../../../../backend/src/services/meeting.service'
 import * as sessionManagerMock from '../../../../backend/src/sessions/session-manager'
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -163,3 +163,91 @@ describe('leaveMeeting', () => {
     expect(result.status).toBe('ENDED')
   })
 })
+
+// ── reinviteBot ──────────────────────────────────────────────────────────────
+
+describe('reinviteBot', () => {
+  const REINVITE_PARAMS = {
+    meetingInstanceId: 'meet-uuid-1',
+    vexaUserId: 1,
+    vexaApiTokenId: 42,
+    maxConcurrentBots: 1,
+    vexaToken: 'tok-123',
+    vexaTokenScopes: ['bot', 'browser', 'tx'],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.meetingInstance.count.mockResolvedValue(0)
+  })
+
+  it('ENDED 會議 → 保留原紀錄、另建新 MeetingInstance、回傳新 id', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      status: 'ENDED',
+      summary: '既有摘要',
+      transcriptStoragePath: 'transcripts/meet-uuid-1.md',
+      project: null,
+    })
+    mockPrisma.meetingInstance.create.mockResolvedValue({
+      ...MOCK_MEETING,
+      id: 'meet-uuid-2',
+    })
+
+    const result = await reinviteBot(REINVITE_PARAMS)
+
+    expect(result).toEqual({ id: 'meet-uuid-2', status: 'PENDING' })
+    // 原紀錄不可被覆寫
+    expect(mockPrisma.meetingInstance.update).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        name: MOCK_MEETING.name,
+        googleMeetUrl: MOCK_MEETING.googleMeetUrl,
+        status: 'PENDING',
+        createdByVexaUserId: 1,
+        creatorApiTokenId: 42,
+      }),
+    })
+    // bot 派往新實例
+    expect(sessionManagerMock.startBotSession).toHaveBeenCalledWith(
+      expect.objectContaining({ meetingInstanceId: 'meet-uuid-2' }),
+    )
+  })
+
+  it('FAILED 會議 → 就地重置為 PENDING，不另建實例', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      status: 'FAILED',
+      project: null,
+    })
+    mockPrisma.meetingInstance.update.mockResolvedValue({ ...MOCK_MEETING })
+
+    const result = await reinviteBot(REINVITE_PARAMS)
+
+    expect(result).toEqual({ id: 'meet-uuid-1', status: 'PENDING' })
+    expect(mockPrisma.meetingInstance.create).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith({
+      where: { id: 'meet-uuid-1' },
+      data: expect.objectContaining({ status: 'PENDING' }),
+    })
+    expect(sessionManagerMock.startBotSession).toHaveBeenCalledWith(
+      expect.objectContaining({ meetingInstanceId: 'meet-uuid-1' }),
+    )
+  })
+
+  it('ACTIVE 會議 → 400 INVALID_REQUEST（蜜塔已在會議中）', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      status: 'ACTIVE',
+      project: null,
+    })
+
+    await expect(reinviteBot(REINVITE_PARAMS)).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+      statusCode: 400,
+    })
+    expect(mockPrisma.meetingInstance.create).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.update).not.toHaveBeenCalled()
+  })
+})
+

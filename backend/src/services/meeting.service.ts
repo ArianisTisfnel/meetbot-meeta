@@ -317,6 +317,10 @@ export async function deleteMeeting(
  * 重新邀請蜜塔加入既有會議。
  * 適用情境：Bot 加入失敗（FAILED）、會議已結束（ENDED）後想重新加入、
  * 或 PENDING 卡住想重試。會議若已 ACTIVE 則拒絕（蜜塔已在會議中）。
+ *
+ * ENDED 會議已有正式資料（摘要、逐字稿、起訖時間），重邀**不可覆寫原紀錄**：
+ * 會另建一筆新的 MeetingInstance（沿用名稱/URL/專案）並回傳新 id。
+ * FAILED / 卡住的 PENDING 尚無任何會議資料，沿用就地重置（避免堆積廢棄紀錄）。
  */
 export async function reinviteBot(params: {
   meetingInstanceId: string
@@ -383,27 +387,51 @@ export async function reinviteBot(params: {
   // 防禦：清掉任何殘留的 WS session
   await closeSession(meetingInstanceId)
 
-  // 轉回 PENDING，記錄本次邀請者 token
-  await prisma.meetingInstance.update({
-    where: { id: meetingInstanceId },
-    data: {
-      status: 'PENDING',
-      startedAt: null,
-      endedAt: null,
-      creatorApiTokenId: vexaApiTokenId,
-    },
-  })
+  let targetMeetingId = meetingInstanceId
+  if (meeting.status === 'ENDED') {
+    // 保留原會議紀錄，另建新實例（vexaMeetingId 等由 startBotSession 重新填入）
+    const newMeeting = await prisma.meetingInstance.create({
+      data: {
+        projectId: meeting.projectId,
+        name: meeting.name,
+        googleMeetUrl: meeting.googleMeetUrl,
+        status: 'PENDING',
+        createdByVexaUserId: vexaUserId,
+        creatorApiTokenId: vexaApiTokenId,
+      },
+    })
+    targetMeetingId = newMeeting.id
+    if (meeting.projectId) {
+      await recordActivity({
+        projectId: meeting.projectId,
+        actorVexaUserId: vexaUserId,
+        action: 'MEETING_CREATE',
+        targetLabel: meeting.name,
+      })
+    }
+  } else {
+    // FAILED / 卡住的 PENDING：轉回 PENDING，記錄本次邀請者 token
+    await prisma.meetingInstance.update({
+      where: { id: meetingInstanceId },
+      data: {
+        status: 'PENDING',
+        startedAt: null,
+        endedAt: null,
+        creatorApiTokenId: vexaApiTokenId,
+      },
+    })
+  }
 
   // 透過 provider 抽象層派 bot（含 Vexa→Recall failover），背景等待 admitted。
   void startBotSession({
-    meetingInstanceId,
+    meetingInstanceId: targetMeetingId,
     googleMeetUrl: meeting.googleMeetUrl,
     nativeMeetingId,
     difyDatasetId: meeting.project?.difyDatasetId ?? null,
     creatorVexaToken: vexaToken,
   })
 
-  return { id: meetingInstanceId, status: 'PENDING' }
+  return { id: targetMeetingId, status: 'PENDING' }
 }
 
 // ── List / Get meetings ───────────────────────────────────────────────────────
