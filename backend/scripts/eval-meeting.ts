@@ -93,6 +93,8 @@ interface Row {
   pass: boolean
   failure?: Failure
   note: string
+  /** 未開 --address 時遇到非呼喚句型：規則層無從判斷，不列入計分。 */
+  skipped?: boolean
 }
 
 const FAILURE_LABEL: Record<Failure, string> = {
@@ -123,7 +125,10 @@ async function runScenario(
 
     // 句中提及 → 語意裁決。--address 未開時當作「談論蜜塔」（沉默），
     // 與線上「裁決失敗一律安靜」的退回行為一致。
+    let skipped = false
     if (decision.kind === 'ambiguous') {
+      // 沒開裁決器時，非呼喚句型無從判斷 → 標記略過，不當成回歸失敗
+      if (!arbitrate) skipped = true
       // null = 呼叫失敗；線上此時退回舊行為照常回答，評測必須模擬同一條路
       if (arbitrate && DELAY_MS) await sleep(DELAY_MS)
       const verdict = arbitrate ? await arbitrate(turn.text, turn.speaker, history) : false
@@ -179,7 +184,7 @@ async function runScenario(
       note = `沉默（${decision.reason}）`
     }
 
-    rows.push({ scenario: s.name, turn, pass, failure, note })
+    rows.push({ scenario: s.name, turn, pass, failure: skipped ? undefined : failure, note, skipped })
   }
   return rows
 }
@@ -214,12 +219,13 @@ async function main() {
     const scenarioRows = await runScenario(s, classify, arbitrate)
     rows.push(...scenarioRows)
 
-    const failed = scenarioRows.filter((r) => !r.pass)
+    const failed = scenarioRows.filter((r) => !r.pass && !r.skipped)
     const head = failed.length ? `✗ ${s.name}（${failed.length}/${scenarioRows.length} 不符）` : `✓ ${s.name}`
     console.log(head)
     for (const r of scenarioRows) {
       if (r.pass && !VERBOSE) continue
-      const mark = r.pass ? '  ✓' : r.turn.knownFail ? '  ⊘' : '  ✗'
+      if (r.skipped && !VERBOSE) continue
+      const mark = r.pass ? '  ✓' : r.skipped ? '  －' : r.turn.knownFail ? '  ⊘' : '  ✗'
       console.log(`${mark} [${r.turn.speaker}] ${r.turn.text}`)
       console.log(`      ${r.note}`)
       if (!r.pass && r.turn.why) console.log(`      理由：${r.turn.why}`)
@@ -229,15 +235,21 @@ async function main() {
   // ── 總結 ───────────────────────────────────────────────────────────────────
   // 「已知缺口」（knownFail）與「回歸失敗」分開統計：前者是等語意層來修的待辦，
   // 後者是本來會過卻被改壞的——只有後者該擋住 commit。
-  const knownGap = rows.filter((r) => !r.pass && r.turn.knownFail)
-  const regressions = rows.filter((r) => !r.pass && !r.turn.knownFail)
+  // 略過的案例（未開 --address 的非呼喚句型）完全不計分：規則層本來就無從判斷，
+  // 算它失敗只會製造假訊號，讓人以為改壞了什麼。
+  const skippedRows = rows.filter((r) => r.skipped && !r.pass)
+  const knownGap = rows.filter((r) => !r.pass && !r.skipped && r.turn.knownFail)
+  const regressions = rows.filter((r) => !r.pass && !r.skipped && !r.turn.knownFail)
   const unexpectedPass = rows.filter((r) => r.pass && r.turn.knownFail)
-  const scored = rows.length
+  const scored = rows.length - skippedRows.length
 
   console.log('\n════════ 總結 ════════')
-  console.log(`案例總數 ${scored}｜通過 ${rows.filter((r) => r.pass).length}`)
+  console.log(`計分案例 ${scored}｜通過 ${rows.filter((r) => r.pass).length}`)
+  if (skippedRows.length) {
+    console.log(`略過 ${skippedRows.length}（非呼喚句型，規則層無從判斷）——加 --address 才測得到`)
+  }
   console.log(`回歸失敗 ${regressions.length}（本來該過的壞掉了，必須修）`)
-  console.log(`已知缺口 ${knownGap.length}（規則層做不到，等語意層）`)
+  console.log(`已知缺口 ${knownGap.length}（目前做不到，等後續實作）`)
   if (unexpectedPass.length) {
     console.log(`意外通過 ${unexpectedPass.length}（knownFail 標記可以拿掉了）：`)
     for (const r of unexpectedPass) console.log(`  · ${r.scenario} — ${r.turn.text}`)

@@ -7,9 +7,13 @@
     "之後若要把某場真會議補進來也貼得上。",
     "",
     "跑法（backend/ 目錄）：",
-    "  npx tsx scripts/eval-meeting.ts                    # 規則層（現行版），零 LLM 成本",
-    "  npx tsx --env-file .env scripts/eval-meeting.ts --layer policy   # A 的合併決策層",
-    "  npx tsx scripts/eval-meeting.ts --only 代詞        # 只跑名稱含「代詞」的劇本",
+    "  npx tsx scripts/eval-meeting.ts                            # 規則層，零 LLM 成本",
+    "  npx tsx --env-file .env scripts/eval-meeting.ts --address  # 加上語意定址裁決（打 LLM）",
+    "  npx tsx --env-file .env scripts/eval-meeting.ts --intent   # 加上意圖分流評測（打 LLM）",
+    "  npx tsx scripts/eval-meeting.ts --only 代詞                # 只跑名稱含「代詞」的劇本",
+    "",
+    "不加 --address 時，非呼喚句型（「蜜塔你好」「蜜塔這個功能…」）會標成『略過』不計分——",
+    "規則層本來就無從判斷那些句子，算它失敗只會製造假訊號。",
     "",
     "expect 欄位：",
     "  respond: true/false  —— 蜜塔該不該對這句做出回應",
@@ -17,8 +21,9 @@
     "  question: 字串 —— 期待擷取出的問題須包含此子字串（驗證問題擷取的忠實度，可省略）",
     "  gapMs: 距離上一句的毫秒數（預設 5000）。用來測 debounce 與待命窗這類時間相關行為。",
     "",
-    "knownFail: 標記『現行規則層必定失敗、要等語意層才會過』的案例。",
-    "  評測會分開統計，讓回歸失敗（本來會過的壞掉了）與已知缺口不混在一起。"
+    "knownFail: 標記『目前已知做不到、等後續實作才會過』的案例（如 A.3 連續追問）。",
+    "  評測分開統計：回歸失敗（本來會過的壞掉了）／已知缺口／略過，不混在一起。",
+    "  某案例修好後會被列為『意外通過』，提醒把標記拿掉。"
   ],
   "scenarios": [
     {
@@ -30,22 +35,19 @@
           "speaker": "小華",
           "text": "蜜塔這個功能是不是有點難做啊",
           "expect": { "respond": false },
-          "knownFail": true,
-          "why": "在跟同事討論蜜塔這個產品，不是在問蜜塔。正則只看到名字就觸發。"
+                    "why": "在跟同事討論蜜塔這個產品，不是在問蜜塔。正則只看到名字就觸發。"
         },
         {
           "speaker": "Arianis",
           "text": "對啊，我覺得蜜塔現在的判斷太死板了",
           "expect": { "respond": false },
-          "knownFail": true,
-          "why": "抱怨蜜塔，更不該讓她跳出來回答"
+                    "why": "抱怨蜜塔，更不該讓她跳出來回答"
         },
         {
           "speaker": "小華",
           "text": "剛剛那個 Meeta 的回應真的很怪",
           "expect": { "respond": false },
-          "knownFail": true,
-          "why": "英文名同樣是討論而非呼叫"
+                    "why": "英文名同樣是討論而非呼叫"
         }
       ]
     },
@@ -58,8 +60,7 @@
           "speaker": "小華",
           "text": "蜜塔剛才說截止日是六月三十號對吧",
           "expect": { "respond": false },
-          "knownFail": true,
-          "why": "在向『其他人』確認蜜塔說過的話，不是在問蜜塔"
+                    "why": "在向『其他人』確認蜜塔說過的話，不是在問蜜塔"
         }
       ]
     },
