@@ -356,19 +356,43 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
     mockEnv.REPLY_TAGS = 'on'
   })
 
-  it('ack 不再宣稱「正在查詢資料」——分類前還不知道要走哪條路', async () => {
+  // ack 在意圖分類前就送出，所以既不能宣稱要查什麼，也不能斷定對方是在提問。
+  // 兩者都踩過：07-28 是「正在查詢資料中」，07-29 是對「哈囉」寫「收到…的問題」。
+  it('ack 措辭中性：不宣稱查詢、也不預設對方在提問', async () => {
     const session = makeSession()
     await handleTranscriptSegment(session, {
       segment_id: 'seg-ack',
-      text: '蜜塔，你好',
-      speaker: 'A',
+      text: '蜜塔，哈囉',
+      speaker: 'Arianis',
       start_time: 1,
       end_time: 2,
     })
     const ack = String(mockBotProvider.sendChat.mock.calls[0][1])
-    expect(ack).toContain('【收到提問】')
+    expect(ack).toContain('【收到】')
+    expect(ack).toContain('Arianis')
+    expect(ack).toContain('哈囉')
     expect(ack).not.toContain('查詢資料')
     expect(ack).not.toContain('查閱會議記錄')
+    expect(ack).not.toContain('問題') // 「哈囉」不是提問
+  })
+
+  it('檢索沒中時，送出的是人話而不是內部哨兵句', async () => {
+    const dify = await import('../../../../backend/src/lib/dify')
+    ;(dify.askQuestion as any).mockResolvedValueOnce({
+      answer: '抱歉 沒有檢索到相關資訊',
+      conversationId: 'c1',
+    })
+    const session = makeSession()
+    await handleChatMessage(session, {
+      sender: 'User',
+      text: '蜜塔 報名費是多少',
+      timestamp: Date.now(),
+      is_from_bot: false,
+    })
+    const texts = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
+    // 哨兵句沒有標點，是給程式精確比對用的內部訊號，不該原樣呈現給使用者
+    expect(texts.some((t) => t.includes('抱歉 沒有檢索到相關資訊'))).toBe(false)
+    expect(texts.some((t) => t.includes('找不到相關內容'))).toBe(true)
   })
 
   it('走 Dify RAG 的答案 → 聊天室標【資料檢索】，但語音不唸標籤', async () => {

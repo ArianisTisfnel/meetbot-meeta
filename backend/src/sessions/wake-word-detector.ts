@@ -39,6 +39,22 @@ export const PROGRESS_VOICE = '等等喔，我正在頭腦風暴！'
 const PROGRESS_NOTICE_MS = 10_000
 
 /**
+ * 檢索沒中時給人看/聽的說法。
+ *
+ * Dify 那側回的是哨兵字串 `抱歉 沒有檢索到相關資訊`——**沒有標點是刻意的**，
+ * 它是拿來做精確字串比對的內部訊號（interjection 靠 `answer === SENTINEL` 判斷
+ * 「沒東西可補充就閉嘴」）。但直接唸出來或貼進聊天室，使用者只會覺得蜜塔壞了
+ * （回報 2026-07-29）。所以哨兵句只在送出的最後一刻換成正常句子，
+ * **內部流通的仍是原字串**，不動 interjection 的判斷。
+ */
+export const NO_RESULT_REPLY = '抱歉，我在專案資料裡找不到相關內容。'
+
+/** 送出前把內部哨兵句換成人話。只用於喚醒詞問答（主動插話遇到哨兵是直接放棄不送）。 */
+function presentAnswer(answer: string): string {
+  return answer === dify.DIFY_NO_RESULT_SENTINEL ? NO_RESULT_REPLY : answer
+}
+
+/**
  * 語音播放速度估算參數（speak() 送出即返回，播放進度只能用估的）。
  * 匯出供測試歸零（單元測試不能真等 3-6 秒）。
  */
@@ -585,15 +601,17 @@ async function dispatchQuestion(
   opts?: { skipPendingPrompt?: boolean; speaker?: string },
 ): Promise<void> {
   const pendingVoice = PENDING_VOICE
-  // ack 在意圖分類**之前**送出，此時還不知道會走 RAG／逐字稿／閒聊哪條路
-  // → 措辭必須中性。舊版一律寫「正在查詢資料中……」，跟蜜塔打聲招呼也被宣告要去查
-  // 資料庫（回報 2026-07-28 A.2）；實際結果由答案自己的功能標籤說明。
-  const pendingChat = '收到你的問題，稍等一下～'
+  // ack 在意圖分類**之前**送出，此時還不知道會走 RAG／逐字稿／閒聊哪條路，
+  // 也還不知道對方到底是不是在提問 → 措辭必須中性。踩過兩次：
+  //   舊版寫「正在查詢資料中……」→ 跟蜜塔打招呼也被宣告要去查資料庫（回報 07-28 A.2）
+  //   接著寫「收到…的問題」→ 對「哈囉」硬把打招呼講成提問（回報 07-29）
+  // 實際走哪條路由答案自己的功能標籤說明，ack 只負責「我聽到了，等我一下」。
+  const pendingChat = '收到，稍等一下～'
   // 講者未知時不可留著「的」：舊版模板無條件插「的」，混音轉錄拿不到人名時
   // 就印出「👂 收到的問題」這種破碎中文（回報 2026-07-28 A.4 的表面症狀）。
   const ackChat = opts?.speaker
-    ? `👂 收到 ${opts.speaker} 的問題：「${question.slice(0, 40)}」，稍等一下～`
-    : `👂 收到問題：「${question.slice(0, 40)}」，稍等一下～`
+    ? `👂 收到 ${opts.speaker}：「${question.slice(0, 40)}」，稍等一下～`
+    : `👂 收到：「${question.slice(0, 40)}」，稍等一下～`
 
   if (source === 'voice') {
     // 嘴巴被佔用（正在回答上一題）→ 這題不丟棄，改走聊天室
@@ -605,7 +623,7 @@ async function dispatchQuestion(
       await sendChatBestEffort(session, ackChat, 'chat', 'ack')
       try {
         const { answer, route } = await resolveAnswerRouted(session, question, 'chat')
-        await sendChatBestEffort(session, answer, 'chat', route)
+        await sendChatBestEffort(session, presentAnswer(answer), 'chat', route)
       } catch (err) {
         logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'voice→chat fallback failed')
         await sendChatBestEffort(session, ERROR_VOICE, 'chat', 'error')
@@ -641,7 +659,9 @@ async function dispatchQuestion(
         session.speechEndsAt = Date.now() + promptEstimatedMs
       }
 
-      const { answer: rawAnswer, route } = await answerPromise
+      const { answer: resolved, route } = await answerPromise
+      // 哨兵句在這裡就換成人話：後面的截斷、朗讀、聊天室鏡像全部沿用同一份文字
+      const rawAnswer = presentAnswer(resolved)
       clearTimeout(progressTimer)
 
       // 開場白／查詢期間有人開口（barge-in）→ 不再出聲，完整答案貼聊天室
@@ -722,7 +742,7 @@ async function dispatchQuestion(
 
     try {
       const { answer, route } = await resolveAnswerRouted(session, question, 'chat')
-      await sendChatBestEffort(session, answer, 'chat', route)
+      await sendChatBestEffort(session, presentAnswer(answer), 'chat', route)
     } catch (err) {
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion chat failed')
       await sendChatBestEffort(session, '抱歉，查詢時發生錯誤，請稍後再試。', 'chat', 'error')

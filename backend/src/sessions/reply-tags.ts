@@ -28,7 +28,11 @@ export type ReplyTag =
   | 'interjection'
   /** 沉默破冰：全場靜默觸發 */
   | 'icebreaker'
-  /** 收到提問的即時確認（此時還沒分類，不宣稱要查什麼） */
+  /**
+   * 收到發言的即時確認。此時還沒分類，**不宣稱要查什麼、也不宣稱那是個問題**——
+   * 實測 2026-07-29：對蜜塔說「哈囉」，ack 卻寫「收到…的問題：「哈囉」」，
+   * 明明是打招呼不是提問。
+   */
   | 'ack'
   /** 被 barge-in 打斷、改用文字把答案補完 */
   | 'deferred'
@@ -41,7 +45,7 @@ const LABELS: Record<ReplyTag, string> = {
   chitchat: '【閒聊】',
   interjection: '【冷場插話】',
   icebreaker: '【破冰】',
-  ack: '【收到提問】',
+  ack: '【收到】',
   deferred: '【接續回覆】',
   error: '【錯誤】',
 }
