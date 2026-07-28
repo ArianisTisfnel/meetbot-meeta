@@ -83,6 +83,11 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   ICEBREAKER_SILENCE_MS: z.coerce.number().default(40_000),
   ICEBREAKER_COOLDOWN_MS: z.coerce.number().default(300_000),
+  // ── 回覆功能標籤（reply tags）────────────────────────────────────────────────
+  // 'on'（預設）：蜜塔的聊天室訊息前面標【資料檢索】【冷場插話】【破冰】等，
+  // 讓每則回覆可歸因到觸發它的子系統（除錯與回應品質評估的前提）。
+  // 'off'：正式對外會議不想露出除錯資訊時關閉。語音永遠不唸標籤，不受此開關影響。
+  REPLY_TAGS: z.enum(['on', 'off']).default('on'),
   // 內部信任端點（前端 NextAuth 登入鑄 token）共享密鑰；未設定＝端點停用（退回 docker exec 舊路）。
   INTERNAL_AUTH_SECRET: z.string().min(16).optional(),
   APP_PORT: z.coerce.number().default(4000),

@@ -11,6 +11,7 @@ import {
   PCM_CACHE_MAX,
   type AgentSession,
 } from './agent-registry.js'
+import { resolveSpeakerAt } from './speaker-timeline.js'
 
 /**
  * Agent relay — Output Media 網頁 ⇄ OpenAI 串流轉錄的橋（方案 A 的「耳朵和嘴巴」）。
@@ -83,6 +84,18 @@ function elapsedSec(session: AgentSession): number {
   return Math.max(0, (Date.now() - session.anchorMs) / 1000)
 }
 
+/**
+ * 混音轉錄沒有講者標記 → 用 Recall 的 speech_on/off 時間軸反查（回報 2026-07-28 A.4）。
+ * 查不到就維持 null，行為與改動前完全相同（喚醒／待命窗對未知講者本就寬鬆處理）。
+ *
+ * 用 `Date.now()` 而非 segment 的 startTime：兩者在此刻是同一個時間點
+ * （startTime 就是這一刻算出來的 elapsedSec），但 epoch 免去座標換算，
+ * 也免去 anchorMs 與 Recall 錄製起點是否同刻的疑慮。
+ */
+function resolveSpeaker(session: AgentSession): string | null {
+  return resolveSpeakerAt(session.botId, Date.now())
+}
+
 // ── OpenAI 轉錄事件 → 既有 LiveHandlers ──────────────────────────────────────
 
 /**
@@ -103,7 +116,7 @@ export function handleTranscriptionEvent(
     session.handlers.onPartialSegment?.({
       segmentId: `agent-partial:${itemId}`,
       text: acc,
-      speaker: null, // 混音轉錄沒有講者標記；喚醒/待命窗對未知講者本就寬鬆處理
+      speaker: resolveSpeaker(session),
       startTime: elapsedSec(session),
       endTime: elapsedSec(session),
       language: null,
@@ -119,7 +132,7 @@ export function handleTranscriptionEvent(
     session.handlers.onSegment?.({
       segmentId: `agent:${itemId}`,
       text,
-      speaker: null,
+      speaker: resolveSpeaker(session),
       startTime: elapsedSec(session),
       endTime: elapsedSec(session),
       language: null,

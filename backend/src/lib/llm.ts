@@ -15,6 +15,35 @@ import { logger } from '../middleware/logger.js'
 
 let anthropic: Anthropic | null = null
 
+/**
+ * 組出 Gemini 的 generationConfig。獨立成純函式是為了可單元測試——
+ * 這裡踩過一個只在特定 env 組合下才炸、且只寫進 warn log 的坑。
+ *
+ * thinkingConfig 必須**依模型世代分流**：
+ *   Gemini 2.5 系列預設會「思考」，思考 token 會吃掉 maxOutputTokens 導致空回覆
+ *     → 必須送 thinkingConfig: { thinkingBudget: 0 } 關掉。
+ *   Gemini 3.x 系列（gemini-3-*、gemini-flash-lite-latest 等 alias）**拒收**
+ *     thinkingBudget: 0，直接回 HTTP 400 "Request contains an invalid argument"；
+ *     而且它預設就不思考（實測 thoughtsTokenCount=0），根本不需要關
+ *     → 整個 thinkingConfig 省略。
+ *
+ * 實測 2026-07-28：GEMINI_INTERJECTION_MODEL 預設是 3.x 的 gemini-flash-lite-latest，
+ * 所以只要一設定 GEMINI_INTERJECTION_API_KEY（.env.example 與文件都建議設，用來隔離額度），
+ * 插話決策／沉默破冰／定址裁決會同時全部 400 陣亡，症狀只是「蜜塔安靜了」。
+ */
+export function buildGeminiGenerationConfig(params: {
+  model: string
+  maxTokens: number
+  temperature?: number
+}): Record<string, unknown> {
+  const isThinkingBudgetSupported = /2\.5/.test(params.model)
+  return {
+    maxOutputTokens: params.maxTokens,
+    ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+    ...(isThinkingBudgetSupported ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+  }
+}
+
 export async function completeText(params: {
   system: string
   prompt: string
@@ -34,12 +63,11 @@ export async function completeText(params: {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: params.system }] },
         contents: [{ role: 'user', parts: [{ text: params.prompt }] }],
-        generationConfig: {
-          maxOutputTokens: params.maxTokens,
-          ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
-          // 2.5 系列預設會「思考」，會吃掉輸出額度導致空回覆 → 關閉（低延遲也更適合即時場景）
-          thinkingConfig: { thinkingBudget: 0 },
-        },
+        generationConfig: buildGeminiGenerationConfig({
+          model: geminiModel,
+          maxTokens: params.maxTokens,
+          temperature: params.temperature,
+        }),
       }),
     })
     if (!res.ok) {
