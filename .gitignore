@@ -47,6 +47,10 @@ prisma/migrations/
 coverage/
 .nyc_output/
 
+# 個人本機檔案（勿入版控）
+蜜塔的資料.txt
+prompt.md
+
 # Logs
 logs/
 *.log
@@ -61,6 +65,8 @@ docs/01-RAG_API_串接文件*.md
 # docs 附件（二進位素材，不納入版控；如需分享請透過其他管道）
 docs/*.zip
 docs/*.zip/
+docs/env*
+docs/.env*
 
 # Vite cache
 .vite/
