@@ -244,6 +244,16 @@ async function main() {
   const scored = rows.length - skippedRows.length
 
   console.log('\n════════ 總結 ════════')
+  // 裁決失敗的警告必須在數字**之前**印：失敗時線上退回「照常回答」，
+  // 評測照做，於是所有 ambiguous 案例都變成「回應」→ 誤觸發與回歸失敗憑空暴增，
+  // 看起來完全像 prompt 被改壞（實測 2026-07-28 又踩一次：429 造成假的 3 個回歸失敗）。
+  if (unknownCount > 0) {
+    console.log(`\n⚠️  語意裁決有 ${unknownCount} 次呼叫失敗（多半是 Gemini 免費層 429）。`)
+    console.log('    失敗時退回「照常回答」，因此下列數字**不可信**——誤觸發／回歸失敗會被灌水。')
+    console.log('    換一把不同額度池的 key 重跑，或等額度重置（太平洋午夜＝台灣下午 3-4 點）。')
+    console.log('    不改 .env 的換 key 跑法（shell 環境變數優先於 --env-file）：')
+    console.log('      GEMINI_API_KEY=<另一把> npx tsx --env-file .env scripts/eval-meeting.ts --address\n')
+  }
   console.log(`計分案例 ${scored}｜通過 ${rows.filter((r) => r.pass).length}`)
   if (skippedRows.length) {
     console.log(`略過 ${skippedRows.length}（非呼喚句型，規則層無從判斷）——加 --address 才測得到`)
@@ -269,7 +279,8 @@ async function main() {
 
   console.log('\n提醒：誤觸發（沒在叫她卻插嘴）比漏回應更傷體驗，權重放在壓低誤觸發。')
   // 回歸失敗才給非零退出碼，方便之後掛進 CI；已知缺口不擋。
-  process.exit(regressions.length ? 1 : 0)
+  // 裁決失敗同樣給非零：這種跑法沒有產出可信基準，等同於沒跑，不該被當成綠燈放行。
+  process.exit(regressions.length || unknownCount ? 1 : 0)
 }
 
 main().catch((err) => {
