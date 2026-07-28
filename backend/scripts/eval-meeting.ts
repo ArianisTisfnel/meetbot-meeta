@@ -67,8 +67,12 @@ const DEFAULT_GAP_MS = 5_000
 /**
  * LLM 呼叫之間的間隔（ms）。Gemini 免費層有每分鐘額度，連續打會 429——
  * 而 429 會被吞成「裁決失敗」，讓評測結果看起來像 prompt 變差（實測踩過）。
+ *
+ * 為什麼是 12 秒而不是原本的 5 秒：2026-07-29 實測，5 秒間隔下**每次跑都剛好 1 次
+ * 429**，換三把不同的 key（含全新未用的）都一樣——是每分鐘速率上限，不是每日額度。
+ * 12 秒同一份劇本可跑出零失敗。整份跑完約多花一分鐘，換一個可信的基準很划算。
  */
-const DELAY_MS = Number(flag('delay-ms') ?? (WITH_ADDRESS || WITH_INTENT ? 5_000 : 0))
+const DELAY_MS = Number(flag('delay-ms') ?? (WITH_ADDRESS || WITH_INTENT ? 12_000 : 0))
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** 裁決呼叫失敗次數：>0 代表本次結果不可信（多半是額度用完）。 */
 let unknownCount = 0
