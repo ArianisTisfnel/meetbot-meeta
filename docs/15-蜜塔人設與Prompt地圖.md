@@ -36,7 +36,7 @@
 | 檢索過濾（閾值/長度） | Dify「edu2-v3」Code 節點 | 知識庫「召回測試」看分數 |
 | **語意定址裁決（對她說 vs 談論她）** | `backend/src/sessions/response-policy.ts` `ADDRESS_ARBITER_SYSTEM` | `npx tsx --env-file .env scripts/eval-meeting.ts --address` |
 | 意圖四分類（chitchat/factual/context/hybrid） | `backend/src/sessions/wake-word-detector.ts` `classifyIntent` | `scripts/eval-meeting.ts --intent`＋log `intent classified` |
-| 插話決策器 | `backend/src/sessions/interjection-prompts.ts` | `npx tsx --env-file .env scripts/eval-interjection.ts`（16 劇本基準 100%） |
+| 插話決策器 | `backend/src/sessions/interjection-prompts.ts` | `npx tsx --env-file .env scripts/eval-interjection.ts --variant live`（16 劇本，聊天室提問那題不穩定，見第六節） |
 | 破冰文案（罐頭＋會中總結） | 同上 `interjection-prompts.ts` | 真會議觀察＋26 個時序測試 |
 | 閒聊直答／逐字稿 QA／hybrid 合成 | `wake-word-detector.ts` 內各函式 | 真會議抽驗 |
 | 會議摘要 | Dify 會議摘要 Workflow（獨立 app） | 會後檢查四欄位（已知問題：QA 型會議的問答會被列成決議） |
@@ -70,6 +70,18 @@
     看到 eval 總結印出「語意裁決有 N 次呼叫失敗」就代表該次數字不可信，等額度重置（台灣下午 3-4 點）再跑。
   - 因此 `arbitrateAddress` 的失敗一律**退回舊行為照常回答**，不可當成「沒在叫我」——
     否則額度枯竭時蜜塔會對所有非逗號句型全聾，比偶爾多嘴嚴重得多。
+- **叫停指令走純規則、不進語意層**（2026-07-29）：`addressing.ts` 的 `STOP_COMMAND_REGEX`
+  與 barge-in 共用同一份詞表（原本只有 barge-in 查，導致「蜜塔 不用了」被當成新問題送去檢索）。
+  判定順序刻意排在 debounce 與 ambiguous **之前**：叫停幾乎必然落在 debounce 窗內，
+  且不該為了「這是不是在跟我說話」再花一次 LLM。
+  整句錨定（`^...$`）：「不用了，我們改用別的方案」是討論內容，不可靜音。
+  措辭鬆散的叫停（「你先不用查了」）留給語意層。
+- **講者歸屬（A.4）走時間軸反查，不靠轉錄本身**（2026-07-29）：AGENT_MODE 單軌混音轉錄
+  沒有講者標記，改由 Recall 的 `participant_events.speech_on/off` 建時間軸
+  （`backend/src/agent/speaker-timeline.ts`），轉錄定稿時反查。兩個反直覺的實作決定寫在該檔開頭：
+  用 epoch ms 而非 Recall 的 `timestamp.relative`（座標原點不同）、
+  查詢是「回看 15 秒窗取重疊最大者」而非點查詢（agent 的 `startTime` 其實是轉錄**完成**時刻）。
+  同時發言時回 null 而非硬猜——標錯人比不標更傷。
 - 定址判斷的成本分界（`addressing.ts`）：句首呼喚「蜜塔，X」純規則定案、零成本零延遲；
   只有非呼喚句型（「蜜塔這個功能…」「我覺得蜜塔…」）才送語意裁決。
   partial 片段的判準刻意較寬（只看位置不要求標點），因為 STT 的標點要到定稿才補上。
