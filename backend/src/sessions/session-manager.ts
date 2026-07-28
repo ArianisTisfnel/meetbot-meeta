@@ -8,8 +8,7 @@ import {
   handlePartialSegment,
   handleChatMessage,
   handleBargeIn,
-  PENDING_VOICE_KB,
-  PENDING_VOICE_TRANSCRIPT,
+  PENDING_VOICE,
   ERROR_VOICE,
   PROGRESS_VOICE,
 } from './wake-word-detector.js'
@@ -114,7 +113,75 @@ export async function startBotSession(params: {
   // 內容卡 v0：背景載入知識庫文件名稱清單供意圖分類器參考（失敗不影響開會）
   if (difyDatasetId) void loadKbContentCard(session, difyDatasetId)
 
-  const handlers: LiveHandlers = {
+  const handlers = buildLiveHandlers(meetingInstanceId)
+
+  try {
+    const botSession = await botProvider.join(
+      googleMeetUrl,
+      { platform: PLATFORM, nativeMeetingId, vexaToken: creatorVexaToken, difyDatasetId },
+      handlers,
+    )
+
+    // 可能在等待期間已被取消（closeSession 從 Map 移除）→ 立即收掉剛 admitted 的 bot。
+    const still = activeSessions.get(meetingInstanceId)
+    if (!still) {
+      await botProvider.leave(botSession).catch(() => {})
+      return
+    }
+    still.botSession = botSession
+    still.sessionStartedAt = Date.now()
+
+    // Vexa 用數字 meeting id；Recall 用字串 bot id（不寫進 Vexa 專用欄位）。
+    const vexaMeetingId =
+      typeof botSession.providerMeetingId === 'number' ? botSession.providerMeetingId : null
+    still.vexaMeetingId = vexaMeetingId
+
+    await prisma.meetingInstance.update({
+      where: { id: meetingInstanceId },
+      data: {
+        status: 'ACTIVE',
+        startedAt: new Date(),
+        vexaNativeMeetingId: nativeMeetingId,
+        ...(vexaMeetingId !== null ? { vexaMeetingId } : {}),
+      },
+    })
+
+    logger.info({ meetingInstanceId, provider: botSession.provider }, 'Bot admitted → meeting ACTIVE')
+
+    // 歡迎訊息（best-effort；provider 不支援聊天室時容錯）。
+    if (botSession.adapter.sendChat) {
+      botSession.adapter
+        .sendChat(botSession, welcomeMessage(difyDatasetId))
+        .catch((err) => logger.warn({ err, meetingInstanceId }, 'welcome chat failed (best-effort)'))
+    }
+
+    // 預熱固定台詞的 TTS（fire-and-forget）：把「我收到了」等句的合成成本
+    // 移到 join 後閒置期，首次喚醒的回應延遲省 1–3 秒。
+    botSession.adapter
+      .primeSpeech?.(botSession, [PENDING_VOICE, ERROR_VOICE, PROGRESS_VOICE])
+      ?.catch((err) => logger.warn({ err, meetingInstanceId }, 'primeSpeech failed (best-effort)'))
+
+    // 沉默破冰：進場即開始監看（開場沒人講話也會觸發）
+    startIcebreaker(still)
+  } catch (err) {
+    // 兩個 provider 都無法讓 bot 進會議。
+    logger.warn({ err, meetingInstanceId }, 'startBotSession: all providers failed to admit bot')
+    activeSessions.delete(meetingInstanceId)
+    await prisma.meetingInstance
+      .update({ where: { id: meetingInstanceId }, data: { status: 'FAILED', endedAt: new Date() } })
+      .catch((e) => logger.error({ e, meetingInstanceId }, 'failed to mark meeting FAILED'))
+  }
+}
+
+/**
+ * Live stream 事件 → 喚醒／插話／逐字稿留痕的接線。
+ *
+ * 獨立成函式的理由：離線會議模擬器（scripts/simulate-meeting.ts）要用**完全相同**的
+ * 接線去餵腳本，否則模擬的行為會跟線上悄悄分岔（例如漏接 barge-in 或 recordConversation，
+ * 模擬就測不到破冰計時）。
+ */
+export function buildLiveHandlers(meetingInstanceId: string): LiveHandlers {
+  return {
     onSegment: (seg) => {
       const s = activeSessions.get(meetingInstanceId)
       if (!s || !s.botSession) return
@@ -181,63 +248,6 @@ export async function startBotSession(params: {
         )
       }
     },
-  }
-
-  try {
-    const botSession = await botProvider.join(
-      googleMeetUrl,
-      { platform: PLATFORM, nativeMeetingId, vexaToken: creatorVexaToken, difyDatasetId },
-      handlers,
-    )
-
-    // 可能在等待期間已被取消（closeSession 從 Map 移除）→ 立即收掉剛 admitted 的 bot。
-    const still = activeSessions.get(meetingInstanceId)
-    if (!still) {
-      await botProvider.leave(botSession).catch(() => {})
-      return
-    }
-    still.botSession = botSession
-    still.sessionStartedAt = Date.now()
-
-    // Vexa 用數字 meeting id；Recall 用字串 bot id（不寫進 Vexa 專用欄位）。
-    const vexaMeetingId =
-      typeof botSession.providerMeetingId === 'number' ? botSession.providerMeetingId : null
-    still.vexaMeetingId = vexaMeetingId
-
-    await prisma.meetingInstance.update({
-      where: { id: meetingInstanceId },
-      data: {
-        status: 'ACTIVE',
-        startedAt: new Date(),
-        vexaNativeMeetingId: nativeMeetingId,
-        ...(vexaMeetingId !== null ? { vexaMeetingId } : {}),
-      },
-    })
-
-    logger.info({ meetingInstanceId, provider: botSession.provider }, 'Bot admitted → meeting ACTIVE')
-
-    // 歡迎訊息（best-effort；provider 不支援聊天室時容錯）。
-    if (botSession.adapter.sendChat) {
-      botSession.adapter
-        .sendChat(botSession, welcomeMessage(difyDatasetId))
-        .catch((err) => logger.warn({ err, meetingInstanceId }, 'welcome chat failed (best-effort)'))
-    }
-
-    // 預熱固定台詞的 TTS（fire-and-forget）：把「我收到了」等句的合成成本
-    // 移到 join 後閒置期，首次喚醒的回應延遲省 1–3 秒。
-    botSession.adapter
-      .primeSpeech?.(botSession, [PENDING_VOICE_KB, PENDING_VOICE_TRANSCRIPT, ERROR_VOICE, PROGRESS_VOICE])
-      ?.catch((err) => logger.warn({ err, meetingInstanceId }, 'primeSpeech failed (best-effort)'))
-
-    // 沉默破冰：進場即開始監看（開場沒人講話也會觸發）
-    startIcebreaker(still)
-  } catch (err) {
-    // 兩個 provider 都無法讓 bot 進會議。
-    logger.warn({ err, meetingInstanceId }, 'startBotSession: all providers failed to admit bot')
-    activeSessions.delete(meetingInstanceId)
-    await prisma.meetingInstance
-      .update({ where: { id: meetingInstanceId }, data: { status: 'FAILED', endedAt: new Date() } })
-      .catch((e) => logger.error({ e, meetingInstanceId }, 'failed to mark meeting FAILED'))
   }
 }
 
