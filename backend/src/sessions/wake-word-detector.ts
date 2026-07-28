@@ -5,7 +5,16 @@ import type { BotSession } from '../provider/types.js'
 import * as dify from '../lib/dify.js'
 import { toTraditional } from '../lib/zh.js'
 import { completeText } from '../lib/llm.js'
-import { recordConversation } from './interjection.js'
+import { recordConversation, getConversationWindow } from './interjection.js'
+import { arbitrateAddress } from './response-policy.js'
+import { withReplyTag, type AnswerRoute, type ReplyTag } from './reply-tags.js'
+import {
+  decideAddressing,
+  decideChatAddressing,
+  isVocativeWake,
+  DEBOUNCE_MS,
+  WAKE_PENDING_MS,
+} from './addressing.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
 
 /** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
@@ -17,8 +26,12 @@ function requireBotSession(session: MeetingSession): BotSession {
 }
 
 // 固定台詞（匯出供 session-manager 在 join 後 primeSpeech 預熱 TTS）。
-export const PENDING_VOICE_KB = '好的，我收到了，正在查詢資料，請稍候。'
-export const PENDING_VOICE_TRANSCRIPT = '好的，我收到了，正在查閱會議記錄，請稍候。'
+/**
+ * 收到提問的口頭確認。**措辭必須中性**：這句在意圖分類前就唸出去，
+ * 此時還不知道會走 RAG／逐字稿／閒聊。舊版分成「正在查詢資料」「正在查閱會議記錄」
+ * 兩句，結果跟蜜塔打招呼也被宣告要去查資料庫（回報 2026-07-28 A.2）。
+ */
+export const PENDING_VOICE = '好的，我收到了，請稍候。'
 export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
 export const PROGRESS_VOICE = '等等喔，我正在頭腦風暴！'
 /** 說完「我收到了」後自己計時：查詢還沒回來就說進度句（不然使用者會以為沒收到而重問）。 */
@@ -41,14 +54,17 @@ function estimateSpeechMs(text: string): number {
 /**
  * 在聊天室發訊息（best-effort：provider 不支援聊天室時記 warn 不中斷）。
  * channel='voice'：這則是語音發言的文字鏡像 → 逐字稿標「（語音）」而非「（聊天室）」。
+ * tag：功能標籤（【資料檢索】等），**只前綴在送進會議聊天室的那一份**——
+ * chatLog 與插話對話窗一律存原文，否則標籤會污染 LLM 輸入與會後逐字稿/摘要。
  */
 export async function sendChatBestEffort(
   session: MeetingSession,
   text: string,
   channel: 'chat' | 'voice' = 'chat',
+  tag?: ReplyTag,
 ): Promise<void> {
   try {
-    await botProvider.sendChat?.(requireBotSession(session), text)
+    await botProvider.sendChat?.(requireBotSession(session), withReplyTag(text, tag))
     // 蜜塔自己的聊天回覆也記進 chatLog（webhook 會過濾 bot 訊息，只能在送出端記錄）
     session.chatLog?.push({ speaker: '蜜塔', text, at: Date.now(), channel })
     // 也記進插話引擎的對話窗：決策層才知道「這個問題已經有人（蜜塔）回答過了」
@@ -58,11 +74,9 @@ export async function sendChatBestEffort(
   }
 }
 
-// 字元集涵蓋 STT 常見誤轉：實測 recallai_streaming 會把「蜜塔」轉成「米塔」「蜜桃」等。
-const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達桃]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
-const DEBOUNCE_MS = 2000
-/** 喚醒待命窗長度：只叫名字沒問題後，等後續段落接問題的時間。 */
-const WAKE_PENDING_MS = 8000
+// 定址判斷（「這句是不是在對蜜塔說話」）已抽到 addressing.ts——它是語意層的接縫，
+// 也是 scripts/eval-meeting.ts 離線評測的對象。本檔只負責依 decision 施加狀態與 I/O。
+
 /**
  * partial 快速喚醒的銜接窗：partial ack 後多久內到達的 final 段落
  * 視為同一次喚醒（跳過開場白）。同時也是 partial 重複 ack 的抑制期。
@@ -126,7 +140,7 @@ export async function handleBargeIn(
 
   // 被打斷的回答改走聊天室，內容不遺失；明確叫停（閉嘴/安靜）則不轉貼
   if (interrupted && !isStopCommand) {
-    await sendChatBestEffort(session, `（先讓大家討論～完整回覆放這裡）${interrupted}`)
+    await sendChatBestEffort(session, `（先讓大家討論～完整回覆放這裡）${interrupted}`, 'chat', 'deferred')
   }
 }
 
@@ -140,7 +154,9 @@ export async function handlePartialSegment(
   session: MeetingSession,
   partial: { text: string; speaker: string },
 ): Promise<void> {
-  if (!partial.text || !WAKE_WORD_REGEX.test(partial.text)) return
+  // 只有句首呼喚才提早 ack：句中提及要等語意裁決，
+  // 不然「我覺得蜜塔這個功能…」講到一半蜜塔就插嘴說「我收到了」。
+  if (!partial.text || !isVocativeWake(partial.text)) return
 
   const now = Date.now()
   if (session.isSpeaking) return
@@ -150,7 +166,7 @@ export async function handlePartialSegment(
   if (now - session.partialAckAt < PARTIAL_ACK_WINDOW_MS) return
   session.partialAckAt = now
 
-  const pendingVoice = session.difyDatasetId ? PENDING_VOICE_KB : PENDING_VOICE_TRANSCRIPT
+  const pendingVoice = PENDING_VOICE
   logger.info(
     { meetingInstanceId: session.meetingInstanceId, speaker: partial.speaker, text: partial.text.slice(0, 40) },
     'partial wake detected, speaking pending prompt early',
@@ -180,62 +196,81 @@ export async function handleTranscriptSegment(
   session.processedSegmentIds.add(segment.segment_id)
 
   const now = Date.now()
-  const match = WAKE_WORD_REGEX.exec(segment.text)
+  const decision = decideAddressing(session, { text: segment.text, speaker: segment.speaker, now })
 
-  if (!match) {
-    // 喚醒待命窗：前一段只叫了名字，這段（同說話者）直接視為問題。
-    if (
-      session.wakePendingUntil > 0 &&
-      now <= session.wakePendingUntil &&
-      (!session.wakePendingSpeaker || session.wakePendingSpeaker === segment.speaker)
-    ) {
-      const question = segment.text.trim()
-      if (!question) return
+  switch (decision.kind) {
+    case 'ignore':
+    case 'debounced':
+      return
+
+    // 句中提及蜜塔：規則分不出「對她說」還是「談論她」→ 花一次便宜的 LLM 呼叫裁決。
+    // 只有這一小撮案例付這個成本，句首呼喚仍是零成本零延遲。
+    case 'ambiguous': {
+      const verdict = await arbitrateAddress({
+        text: segment.text,
+        speaker: segment.speaker,
+        recent: getConversationWindow(session.meetingInstanceId),
+      })
+      logger.info(
+        {
+          meetingInstanceId: session.meetingInstanceId,
+          verdict,
+          wakeWord: decision.wakeWord,
+          text: segment.text.slice(0, 60),
+          speaker: segment.speaker,
+        },
+        'addressing: mid-utterance mention arbitrated',
+      )
+      // mention = 模型判定在談論蜜塔 → 安靜（這正是回報 A.1 的病灶）。
+      // unknown = 呼叫失敗（Gemini 免費層 429 是常態，見 docs/15）→ **退回舊行為照常回答**。
+      // 「判不出來」絕不能等同「沒在叫我」：那會讓額度一枯竭蜜塔就對所有非逗號句型全聾，
+      // 比偶爾多嘴嚴重得多。
+      if (verdict === 'mention') return
+      if (!decision.candidate) {
+        session.wakePendingUntil = now + WAKE_PENDING_MS
+        session.wakePendingSpeaker = segment.speaker || null
+        return
+      }
+      session.wakePendingUntil = 0
+      session.wakePendingSpeaker = null
+      session.lastWakeAt = now
+      await dispatchQuestion(session, decision.candidate, 'voice', {
+        skipPendingPrompt: consumePartialAck(session, now),
+        speaker: segment.speaker,
+      })
+      return
+    }
+
+    // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
+    //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
+    case 'wake-pending':
+      session.wakePendingUntil = now + WAKE_PENDING_MS
+      session.wakePendingSpeaker = segment.speaker || null
+      logger.info(
+        { meetingInstanceId: session.meetingInstanceId, wakeWord: decision.wakeWord, speaker: segment.speaker },
+        'wake word matched without question, opening pending window',
+      )
+      return
+
+    case 'question':
       session.wakePendingUntil = 0
       session.wakePendingSpeaker = null
       session.lastWakeAt = now
       logger.info(
-        { meetingInstanceId: session.meetingInstanceId, question: question.slice(0, 60), speaker: segment.speaker },
-        'wake pending window: follow-up segment taken as question',
+        {
+          meetingInstanceId: session.meetingInstanceId,
+          reason: decision.reason,
+          viaPendingWindow: decision.viaPendingWindow,
+          question: decision.question.slice(0, 60),
+          speaker: segment.speaker,
+        },
+        'addressing: taking segment as a question, dispatching',
       )
-      await dispatchQuestion(session, question, 'voice', {
+      await dispatchQuestion(session, decision.question, 'voice', {
         skipPendingPrompt: consumePartialAck(session, now),
         speaker: segment.speaker,
       })
-    }
-    return
   }
-
-  if (now - session.lastWakeAt < DEBOUNCE_MS) return
-
-  const question = segment.text
-    .slice(match.index + match[0].length)
-    .replace(/^[\s，。！？、…]+/, '')
-    .trim()
-
-  // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
-  //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
-  if (!question) {
-    session.wakePendingUntil = now + WAKE_PENDING_MS
-    session.wakePendingSpeaker = segment.speaker || null
-    logger.info(
-      { meetingInstanceId: session.meetingInstanceId, wakeWord: match[0], speaker: segment.speaker },
-      'wake word matched without question, opening pending window',
-    )
-    return
-  }
-
-  session.lastWakeAt = now
-  session.wakePendingUntil = 0
-  session.wakePendingSpeaker = null
-  logger.info(
-    { meetingInstanceId: session.meetingInstanceId, wakeWord: match[0], question: question.slice(0, 60), speaker: segment.speaker },
-    'wake word matched (voice), dispatching question',
-  )
-  await dispatchQuestion(session, question, 'voice', {
-    skipPendingPrompt: consumePartialAck(session, now),
-    speaker: segment.speaker,
-  })
 }
 
 /** partial 快速喚醒已說過開場白？（一次性消耗，窗內的 final 派發跳過開場白） */
@@ -253,17 +288,28 @@ export async function handleChatMessage(
 ): Promise<void> {
   if (chatMsg.is_from_bot) return
 
-  const match = WAKE_WORD_REGEX.exec(chatMsg.text)
-  if (!match) return
-
   const now = Date.now()
-  if (now - session.lastWakeAt < DEBOUNCE_MS) return
+  const decision = decideChatAddressing(session, { text: chatMsg.text, speaker: chatMsg.sender, now })
 
-  const question = chatMsg.text
-    .slice(match.index + match[0].length)
-    .replace(/^[\s，。！？、…]+/, '')
-    .trim()
-  if (!question) return
+  let question: string
+  if (decision.kind === 'question') {
+    question = decision.question
+  } else if (decision.kind === 'ambiguous') {
+    // 句中提及（「我覺得蜜塔這功能…」打在聊天室）→ 與語音同一套語意裁決
+    const verdict = await arbitrateAddress({
+      text: chatMsg.text,
+      speaker: chatMsg.sender,
+      recent: getConversationWindow(session.meetingInstanceId),
+    })
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, verdict, text: chatMsg.text.slice(0, 60) },
+      'addressing: mid-message mention arbitrated (chat)',
+    )
+    if (verdict === 'mention') return // unknown（呼叫失敗）→ 退回舊行為照常回答，見語音路徑註解
+    question = decision.candidate
+  } else {
+    return
+  }
 
   // debounce 在確認有問題內容後才消耗，避免空喚醒吃掉緊接著的真問題。
   session.lastWakeAt = now
@@ -275,7 +321,11 @@ export async function handleChatMessage(
 // 與喚醒回答共用 isSpeaking/currentSpeech/barge-in 機制；超過 100 字自動截斷
 // （語音唸太長很煩），語音失敗退回聊天室。
 
-export async function speakProactive(session: MeetingSession, text: string): Promise<boolean> {
+export async function speakProactive(
+  session: MeetingSession,
+  text: string,
+  tag?: ReplyTag,
+): Promise<boolean> {
   if (session.isSpeaking) return false
 
   let speech = text
@@ -301,7 +351,7 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
     recordConversation(session, { speaker: '蜜塔', text: speech, source: 'voice', fromBot: true, at: Date.now() })
     if (speech !== text) {
       // 截斷過的長內容補完整版到聊天室（同時留逐字稿紀錄，標「（語音）」）
-      await sendChatBestEffort(session, text, 'voice')
+      await sendChatBestEffort(session, text, 'voice', tag)
     } else {
       // 沒發聊天室訊息也要留逐字稿紀錄（bot 聲音不進 STT，這裡是唯一留痕點）
       session.chatLog?.push({ speaker: '蜜塔', text: speech, at: Date.now(), channel: 'voice' })
@@ -311,7 +361,7 @@ export async function speakProactive(session: MeetingSession, text: string): Pro
     session.isSpeaking = false
     session.currentSpeech = null
     logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'speakProactive failed, falling back to chat')
-    await sendChatBestEffort(session, text)
+    await sendChatBestEffort(session, text, 'chat', tag)
     return true
   }
 }
@@ -336,7 +386,19 @@ export function parseIntent(raw: string): QuestionIntent {
   return 'factual'
 }
 
-async function classifyIntent(question: string, kbContentCard: string | null): Promise<QuestionIntent> {
+/**
+ * 意圖 → 實際走的資料來源。**路由的唯一真相**：resolveAnswerRouted 與
+ * scripts/eval-meeting.ts 都用這一份，避免評測跟線上判不一樣。
+ */
+export function routeForIntent(intent: QuestionIntent, hasKb: boolean): AnswerRoute {
+  if (!hasKb) return 'transcript'
+  if (intent === 'chitchat') return 'chitchat'
+  if (intent === 'context') return 'transcript'
+  return 'rag' // factual / hybrid 都要先做 Dify 檢索
+}
+
+/** 匯出供 scripts/eval-meeting.ts 離線評測（線上與評測共用同一份 prompt）。 */
+export async function classifyIntent(question: string, kbContentCard: string | null): Promise<QuestionIntent> {
   try {
     const raw = await completeText({
       system: [
@@ -373,27 +435,34 @@ async function classifyIntent(question: string, kbContentCard: string | null): P
 
 // ── 問答路由 ───────────────────────────────────────────────────────────────────
 
-export async function resolveAnswer(
+/**
+ * 回答一題，並回報實際走到的資料來源。
+ * route 供呼叫端標記功能標籤（【資料檢索】／【會議記錄】／【閒聊】）——
+ * 沒有它就無法從聊天室分辨這句答案是查了知識庫還是只看逐字稿掰的。
+ */
+export async function resolveAnswerRouted(
   session: MeetingSession,
   question: string,
   mode: 'voice' | 'chat',
-): Promise<string> {
+): Promise<{ answer: string; route: AnswerRoute }> {
   if (!session.difyDatasetId) {
     logger.info(
       { meetingInstanceId: session.meetingInstanceId, route: 'transcript' },
       'resolveAnswer: no difyDatasetId, answering from transcript',
     )
     const { answer } = await answerFromTranscript(session, question)
-    return answer
+    return { answer, route: 'transcript' }
   }
 
   // 意圖分流：意見/脈絡型不走 RAG（會答「資料沒提到」）
   const classifyStart = Date.now()
   const intent = await classifyIntent(question, session.kbContentCard)
+  const route = routeForIntent(intent, true)
   logger.info(
     {
       meetingInstanceId: session.meetingInstanceId,
       intent,
+      route,
       mode,
       question: question.slice(0, 40),
       classifyMs: Date.now() - classifyStart,
@@ -402,12 +471,12 @@ export async function resolveAnswer(
   )
 
   if (intent === 'chitchat') {
-    return answerChitchat(question)
+    return { answer: await answerChitchat(question), route }
   }
 
   if (intent === 'context') {
     const { answer } = await answerFromTranscript(session, question)
-    return answer
+    return { answer, route }
   }
 
   // factual / hybrid 都先做 Dify 檢索
@@ -441,7 +510,7 @@ export async function resolveAnswer(
     factAnswer = answer
   }
 
-  if (intent !== 'hybrid') return factAnswer
+  if (intent !== 'hybrid') return { answer: factAnswer, route }
 
   // hybrid：把檢索到的事實與近期對話脈絡合成（合成失敗退回純檢索答案）
   try {
@@ -458,11 +527,23 @@ export async function resolveAnswer(
       prompt: `資料查詢結果：\n${factAnswer}\n\n會議近期對話：\n${context}\n\n請回答：${question}`,
       maxTokens: 512,
     })
-    return toTraditional(composed || factAnswer)
+    return { answer: toTraditional(composed || factAnswer), route }
   } catch (err) {
     logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'hybrid compose failed, using fact answer')
-    return factAnswer
+    return { answer: factAnswer, route }
   }
+}
+
+/**
+ * 只要答案的薄包裝（主動插話用——插話的標籤固定是【冷場插話】，不需要資料來源）。
+ */
+export async function resolveAnswer(
+  session: MeetingSession,
+  question: string,
+  mode: 'voice' | 'chat',
+): Promise<string> {
+  const { answer } = await resolveAnswerRouted(session, question, mode)
+  return answer
 }
 
 // ── 回答通道與優先權 ──────────────────────────────────────────────────────────
@@ -480,13 +561,12 @@ async function dispatchQuestion(
   source: 'voice' | 'chat',
   opts?: { skipPendingPrompt?: boolean; speaker?: string },
 ): Promise<void> {
-  const pendingVoice = session.difyDatasetId ? PENDING_VOICE_KB : PENDING_VOICE_TRANSCRIPT
-  const pendingChat = session.difyDatasetId
-    ? '收到你的問題，正在查詢資料中……'
-    : '收到你的問題，正在查閱會議記錄……'
-  const ackChat = `👂 收到${opts?.speaker ? ` ${opts.speaker} ` : ''}的問題：「${question.slice(0, 40)}」，${
-    session.difyDatasetId ? '正在查詢資料中……' : '正在查閱會議記錄……'
-  }`
+  const pendingVoice = PENDING_VOICE
+  // ack 在意圖分類**之前**送出，此時還不知道會走 RAG／逐字稿／閒聊哪條路
+  // → 措辭必須中性。舊版一律寫「正在查詢資料中……」，跟蜜塔打聲招呼也被宣告要去查
+  // 資料庫（回報 2026-07-28 A.2）；實際結果由答案自己的功能標籤說明。
+  const pendingChat = '收到你的問題，稍等一下～'
+  const ackChat = `👂 收到${opts?.speaker ? ` ${opts.speaker} ` : ''}的問題：「${question.slice(0, 40)}」，稍等一下～`
 
   if (source === 'voice') {
     // 嘴巴被佔用（正在回答上一題）→ 這題不丟棄，改走聊天室
@@ -495,18 +575,18 @@ async function dispatchQuestion(
         { meetingInstanceId: session.meetingInstanceId, question: question.slice(0, 40) },
         'dispatchQuestion voice: bot is speaking, routing this question to chat',
       )
-      await sendChatBestEffort(session, ackChat)
+      await sendChatBestEffort(session, ackChat, 'chat', 'ack')
       try {
-        const answer = await resolveAnswer(session, question, 'chat')
-        await sendChatBestEffort(session, answer)
+        const { answer, route } = await resolveAnswerRouted(session, question, 'chat')
+        await sendChatBestEffort(session, answer, 'chat', route)
       } catch (err) {
         logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'voice→chat fallback failed')
-        await sendChatBestEffort(session, ERROR_VOICE)
+        await sendChatBestEffort(session, ERROR_VOICE, 'chat', 'error')
       }
       return
     }
     // 聊天室即時確認（標明是誰的哪一題）：唯一 <1 秒的回饋通道
-    void sendChatBestEffort(session, ackChat)
+    void sendChatBestEffort(session, ackChat, 'chat', 'ack')
     // partial 快速喚醒已先說過開場白 → 跳過，直接查詢
     const speakPending = !opts?.skipPendingPrompt
     const promptEstimatedMs = speakPending ? estimateSpeechMs(pendingVoice) : 0
@@ -526,7 +606,7 @@ async function dispatchQuestion(
     try {
       const botSession = requireBotSession(session)
       // 查詢與開場白並行：不等開場白唸完才開始查（省下開場白的 3-5 秒）
-      const answerPromise = resolveAnswer(session, question, 'voice')
+      const answerPromise = resolveAnswerRouted(session, question, 'voice')
       answerPromise.catch(() => {}) // 先掛 handler：開場白 throw 時查詢的 rejection 才不會變 unhandled
       if (speakPending) {
         session.currentSpeech = pendingVoice
@@ -534,7 +614,7 @@ async function dispatchQuestion(
         session.speechEndsAt = Date.now() + promptEstimatedMs
       }
 
-      const rawAnswer = await answerPromise
+      const { answer: rawAnswer, route } = await answerPromise
       clearTimeout(progressTimer)
 
       // 開場白／查詢期間有人開口（barge-in）→ 不再出聲，完整答案貼聊天室
@@ -542,9 +622,9 @@ async function dispatchQuestion(
         clearTimeout(lockTimer)
         session.isSpeaking = false
         session.currentSpeech = null
-        await sendChatBestEffort(session, rawAnswer)
+        await sendChatBestEffort(session, rawAnswer, 'chat', route)
         logger.info(
-          { meetingInstanceId: session.meetingInstanceId },
+          { meetingInstanceId: session.meetingInstanceId, route },
           'dispatchQuestion voice: interrupted during query, answer delivered via chat',
         )
         return
@@ -570,9 +650,9 @@ async function dispatchQuestion(
         clearTimeout(lockTimer)
         session.isSpeaking = false
         session.currentSpeech = null
-        await sendChatBestEffort(session, rawAnswer)
+        await sendChatBestEffort(session, rawAnswer, 'chat', route)
         logger.info(
-          { meetingInstanceId: session.meetingInstanceId },
+          { meetingInstanceId: session.meetingInstanceId, route },
           'dispatchQuestion voice: interrupted while waiting for prompt to finish, answer via chat',
         )
         return
@@ -592,9 +672,9 @@ async function dispatchQuestion(
       recordConversation(session, { speaker: '蜜塔', text: answer, source: 'voice', fromBot: true, at: Date.now() })
       // 語音回答同步貼聊天室：留下文字紀錄（會後隨 chatLog 併入逐字稿，標「（語音）」），
       // 長答案被截短唸出時，完整版也在這裡補上
-      await sendChatBestEffort(session, rawAnswer, 'voice')
+      await sendChatBestEffort(session, rawAnswer, 'voice', route)
       logger.info(
-        { meetingInstanceId: session.meetingInstanceId, answerPreview: answer.slice(0, 60) },
+        { meetingInstanceId: session.meetingInstanceId, route, answerPreview: answer.slice(0, 60) },
         'dispatchQuestion voice: answer spoken',
       )
     } catch (err) {
@@ -607,18 +687,18 @@ async function dispatchQuestion(
       try {
         await botProvider.speak(requireBotSession(session), ERROR_VOICE)
       } catch {
-        await sendChatBestEffort(session, ERROR_VOICE)
+        await sendChatBestEffort(session, ERROR_VOICE, 'chat', 'error')
       }
     }
   } else {
-    await sendChatBestEffort(session, pendingChat)
+    await sendChatBestEffort(session, pendingChat, 'chat', 'ack')
 
     try {
-      const answer = await resolveAnswer(session, question, 'chat')
-      await sendChatBestEffort(session, answer)
+      const { answer, route } = await resolveAnswerRouted(session, question, 'chat')
+      await sendChatBestEffort(session, answer, 'chat', route)
     } catch (err) {
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion chat failed')
-      await sendChatBestEffort(session, '抱歉，查詢時發生錯誤，請稍後再試。')
+      await sendChatBestEffort(session, '抱歉，查詢時發生錯誤，請稍後再試。', 'chat', 'error')
     }
   }
 }

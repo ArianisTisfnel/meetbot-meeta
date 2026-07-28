@@ -78,6 +78,14 @@ function getOrCreateState(meetingInstanceId: string): InterjectionState {
   return s
 }
 
+/**
+ * 取近期對話窗（唯讀複本）。語意定址裁決層要靠它判斷受話者——
+ * 同一段討論串裡的第二句提及，多半延續前一句的性質。
+ */
+export function getConversationWindow(meetingInstanceId: string, limit = DECISION_CONTEXT_ENTRIES): ConversationEntry[] {
+  return (states.get(meetingInstanceId)?.window ?? []).slice(-limit)
+}
+
 /** session 結束時清理（session-manager 的 closeSession / handleSessionClose 呼叫）。 */
 export function clearInterjection(meetingInstanceId: string): void {
   const s = states.get(meetingInstanceId)
@@ -221,7 +229,7 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
 
   s.lastIcebreakerAt = Date.now()
   logger.info({ meetingInstanceId, text: text.slice(0, 60) }, 'icebreaker: breaking silence via voice')
-  await speakProactive(session, text)
+  await speakProactive(session, text, 'icebreaker')
   armIcebreaker(meetingInstanceId)
 }
 
@@ -342,10 +350,10 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
     const someoneSpoke = Boolean(nowLast && nowLast.at !== lastAtBeforeAnswer && !nowLast.fromBot)
     if (someoneSpoke || session.isSpeaking) {
       logger.info({ meetingInstanceId }, 'interjection: delivering via chat (people talking)')
-      await sendChatBestEffort(session, `💡 ${answer}`)
+      await sendChatBestEffort(session, `💡 ${answer}`, 'chat', 'interjection')
     } else {
       logger.info({ meetingInstanceId }, 'interjection: room still silent, delivering via voice')
-      await speakProactive(session, `我補充一下：${answer}`)
+      await speakProactive(session, `我補充一下：${answer}`, 'interjection')
     }
 
     s.window.push({ speaker: '蜜塔', text: answer, source: 'chat', fromBot: true, at: Date.now() })

@@ -1,0 +1,192 @@
+/**
+ * 定址判斷（addressing）——「這句話是不是在對蜜塔說話？」
+ *
+ * 為什麼獨立成檔（兩個理由，都跟這一層之後要被替換有關）：
+ *   1. **這是語意層的接縫**。目前是純字串比對；回報 2026-07-28 A.1 指出它會被
+ *      「單純討論到蜜塔」誤觸發，A.3 指出沒喊名字的連續追問接不上。之後的語意層
+ *      只要換掉本檔的實作，喚醒流程（debounce／待命窗／派發）一行都不用動。
+ *   2. **離線可評測**。`scripts/eval-meeting.ts` 直接 import 同一份判斷跑劇本，
+ *      不必開真會議。線上跑的與評測的永遠是同一份（沿用 eval-interjection 的做法）。
+ *
+ * 本檔是**純函式**：不碰 session、不做 I/O、不看時鐘（now 由呼叫端傳入）。
+ * 狀態變更由呼叫端依回傳的 decision 施加。
+ */
+
+// 字元集涵蓋 STT 常見誤轉：實測 recallai_streaming 會把「蜜塔」轉成「米塔」「蜜桃」等。
+export const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達桃]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
+
+/** 同一次喚醒的重複觸發抑制期。 */
+export const DEBOUNCE_MS = 2000
+/** 喚醒待命窗長度：只叫名字沒問題後，等後續段落接問題的時間。 */
+export const WAKE_PENDING_MS = 8000
+
+/**
+ * 剝除喚醒詞後殘留的開頭標點與空白。
+ * 全形半形都要清：AGENT_MODE 走 OpenAI 轉錄，輸出的是**半形** `,` `.` `?`，
+ * 舊的全形字元集清不掉 → 實測 2026-07-28 蜜塔覆誦出「,可以告訴我…」，
+ * 而且這個逗號會一路帶進 Dify 的檢索查詢字串裡。
+ */
+export function stripLeadingPunct(text: string): string {
+  return text.replace(/^[\s，。！？、…,.!?;:；：~～\-—]+/, '')
+}
+
+/**
+ * 呼喚前綴：句首的發語詞／填充詞，出現在喚醒詞前面**不影響**它是呼喚。
+ * 「那個蜜塔，幫我查一下」「欸蜜塔你可以查嗎」都是正常的叫人方式。
+ */
+const VOCATIVE_PREFIX_REGEX =
+  /^(?:[\s，。！？、…,.!?~～-]|那個|欸|欵|唉|喂|嗯|好|所以|然後|請問|不好意思|抱歉|[Hh]ey|[Hh]i|[Oo][Kk])*/
+
+/**
+ * 喚醒詞是「句首呼喚」還是「句中提及」？
+ *
+ * 這是整個定址判斷的關鍵分界，也是成本分界：
+ *   句首呼喚（蜜塔，X）→ 幾乎不可能誤判，純規則定案、零 LLM 成本、零延遲。
+ *   句中提及（我覺得蜜塔X）→ 表面特徵分不出「對她說話」與「談論她」，
+ *     必須看語意（回報 2026-07-28 A.1 的四個誤觸發全屬此類）。
+ *
+ * 實測反例（都是句中提及、都不該回應）：
+ *   「我覺得蜜塔這個功能是不是有點難做啊」
+ *   「對啊，我覺得蜜塔現在的判斷太死板了」
+ *   「剛剛那個 Meeta 的回應真的很怪」
+ *   「蜜塔剛才說截止日是六月三十號對吧」← 注意這句喚醒詞在句首，靠語意才分得出來
+ */
+function isVocativePosition(text: string, matchIndex: number): boolean {
+  const prefix = VOCATIVE_PREFIX_REGEX.exec(text)?.[0] ?? ''
+  return matchIndex <= prefix.length
+}
+
+/**
+ * 呼喚語後面必然有停頓（「蜜塔，X」「蜜塔 X」），談論則直接黏下去（「蜜塔這個功能」）。
+ * 這是分辨句首呼喚與句首提及的關鍵——兩者位置相同，只有這個分隔符不同：
+ *   「蜜塔，請問這份規則…」→ 呼喚
+ *   「蜜塔這個功能是不是有點難做」→ 談論（主題是蜜塔的功能）
+ *   「蜜塔剛才說截止日是六月三十號對吧」→ 轉述（在向他人求證）
+ * STT 實務上確實會在呼喚後插入逗號（回報 2026-07-28 那個「,可以告訴我」就是證據）。
+ */
+const POST_WAKE_SEPARATOR_REGEX = /^[\s，。！？、…,.!?;:；：~～]/
+
+/**
+ * partial 片段是否值得先 ack？**只看位置，不要求後面的分隔符**。
+ *
+ * 為什麼與定稿的判準不同：partial 是講到一半就推送的未定稿片段，
+ * STT 的標點多半要到定稿才補上（「蜜塔請問」此刻還沒有那個逗號）。
+ * 若比照定稿要求分隔符，agent 模式最重要的秒級 ack 會幾乎失效。
+ *
+ * 取捨：以「蜜塔」開頭的討論句（蜜塔這個功能…）仍會誤 ack 一句「我收到了」，
+ * 但定稿階段會被語意裁決攔下、不會真的answer。
+ * 相對地，句中提及（我覺得蜜塔…）在這裡就擋掉了——那才是回報 A.1 的大宗。
+ */
+export function isVocativeWake(text: string): boolean {
+  const match = WAKE_WORD_REGEX.exec(text)
+  return Boolean(match && isVocativePosition(text, match.index))
+}
+
+/** 定址判斷需要看的 session 狀態（MeetingSession 的子集，方便離線構造）。 */
+export interface AddressingState {
+  lastWakeAt: number
+  wakePendingUntil: number
+  wakePendingSpeaker: string | null
+}
+
+export interface Utterance {
+  text: string
+  speaker: string
+  /** epoch ms。純函式不讀時鐘，由呼叫端提供。 */
+  now: number
+}
+
+export type AddressingDecision =
+  /** 不是在跟蜜塔說話 → 什麼都不做。 */
+  | { kind: 'ignore'; reason: string }
+  /** 剛回應過，這句視為同一次喚醒的殘響 → 不重複回應。 */
+  | { kind: 'debounced'; reason: string }
+  /** 只叫了名字沒接問題 → 開待命窗等下一段。 */
+  | { kind: 'wake-pending'; wakeWord: string; reason: string }
+  /**
+   * 句中提及了蜜塔，但分不出是「對她說話」還是「談論她」→ 交給語意層裁決。
+   * candidate 是「若真的是提問，問題會是什麼」，語意層判定為提問時直接拿去用。
+   */
+  | { kind: 'ambiguous'; wakeWord: string; candidate: string; reason: string }
+  /** 確定在問蜜塔，且問題內容已擷取出來 → 派發。 */
+  | { kind: 'question'; question: string; reason: string; viaPendingWindow: boolean }
+
+/**
+ * 語音段落的定址判斷（現行規則版）。
+ *
+ * 已知限制（正是回報 A 要解決的，先寫在這裡當作語意層的驗收清單）：
+ *   - 「蜜塔這功能好像有點難做」這種**談論**蜜塔的句子會被判成提問（A.1）
+ *   - 沒喊名字的連續追問（「那它呢」）只有在 8 秒待命窗內才接得上（A.3）
+ *   - 多人會議中無法分辨這題是誰問的、針對哪個議題（A.4）
+ */
+export function decideAddressing(state: AddressingState, u: Utterance): AddressingDecision {
+  const match = WAKE_WORD_REGEX.exec(u.text)
+
+  if (!match) {
+    // 喚醒待命窗：前一段只叫了名字，這段（同說話者）直接視為問題。
+    const inWindow =
+      state.wakePendingUntil > 0 &&
+      u.now <= state.wakePendingUntil &&
+      (!state.wakePendingSpeaker || state.wakePendingSpeaker === u.speaker)
+    if (!inWindow) return { kind: 'ignore', reason: 'no wake word' }
+
+    const question = stripLeadingPunct(u.text).trim()
+    if (!question) return { kind: 'ignore', reason: 'pending window but empty text' }
+    return { kind: 'question', question, reason: 'wake pending window', viaPendingWindow: true }
+  }
+
+  if (u.now - state.lastWakeAt < DEBOUNCE_MS) {
+    return { kind: 'debounced', reason: 'within debounce window' }
+  }
+
+  const after = u.text.slice(match.index + match[0].length)
+  const question = stripLeadingPunct(after).trim()
+
+  // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
+  //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
+  // 這個判斷不需要語意——後面根本沒有內容可以談論。
+  if (!question) {
+    return { kind: 'wake-pending', wakeWord: match[0], reason: 'wake word without question' }
+  }
+
+  // 不是呼喚句型 → 不自行定案，交給語意裁決（純規則在這裡必錯，見上方反例）
+  if (!isVocativePosition(u.text, match.index) || !POST_WAKE_SEPARATOR_REGEX.test(after)) {
+    return {
+      kind: 'ambiguous',
+      wakeWord: match[0],
+      candidate: question,
+      reason: 'wake word not in vocative form (mention vs address unclear)',
+    }
+  }
+
+  return { kind: 'question', question, reason: `vocative「${match[0]}」`, viaPendingWindow: false }
+}
+
+/**
+ * 聊天室訊息的定址判斷。
+ * 比語音簡單：沒有 STT 斷句問題，故沒有待命窗；打字時人一定會把問題打完。
+ */
+export function decideChatAddressing(
+  state: Pick<AddressingState, 'lastWakeAt'>,
+  u: Utterance,
+): AddressingDecision {
+  const match = WAKE_WORD_REGEX.exec(u.text)
+  if (!match) return { kind: 'ignore', reason: 'no wake word' }
+  if (u.now - state.lastWakeAt < DEBOUNCE_MS) {
+    return { kind: 'debounced', reason: 'within debounce window' }
+  }
+  const after = u.text.slice(match.index + match[0].length)
+  const question = stripLeadingPunct(after).trim()
+  // debounce 在確認有問題內容後才消耗，避免空喚醒吃掉緊接著的真問題。
+  if (!question) return { kind: 'ignore', reason: 'wake word without question (chat)' }
+  // 聊天室同樣有「打字討論蜜塔」的情形，判斷準則與語音一致
+  if (!isVocativePosition(u.text, match.index) || !POST_WAKE_SEPARATOR_REGEX.test(after)) {
+    return {
+      kind: 'ambiguous',
+      wakeWord: match[0],
+      candidate: question,
+      reason: 'wake word mid-message (mention vs address unclear)',
+    }
+  }
+  return { kind: 'question', question, reason: `vocative「${match[0]}」`, viaPendingWindow: false }
+}

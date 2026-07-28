@@ -18,14 +18,15 @@ vi.mock('../../../../backend/src/lib/dify', () => ({
 vi.mock('../../../../backend/src/lib/llm', () => ({
   completeText: vi.fn().mockResolvedValue('Claude 回答'),
 }))
-vi.mock('../../../../backend/src/types/env', () => ({
-  env: {
-    ANTHROPIC_API_KEY: 'sk-ant-test',
-    DIFY_API_BASE: 'http://dify.test',
-    DIFY_WORKFLOW_API_KEY: 'app-test',
-    DIFY_CHATFLOW_TIMEOUT_MS: 45000,
-  },
+// hoisted：REPLY_TAGS 要能在個別測試裡切換（標籤開關）
+const mockEnv = vi.hoisted(() => ({
+  ANTHROPIC_API_KEY: 'sk-ant-test',
+  DIFY_API_BASE: 'http://dify.test',
+  DIFY_WORKFLOW_API_KEY: 'app-test',
+  DIFY_CHATFLOW_TIMEOUT_MS: 45000,
+  REPLY_TAGS: 'on' as 'on' | 'off',
 }))
+vi.mock('../../../../backend/src/types/env', () => ({ env: mockEnv }))
 vi.mock('@anthropic-ai/sdk', () => ({
   default: vi.fn().mockImplementation(() => ({
     messages: {
@@ -44,6 +45,7 @@ import {
   parseIntent,
   speechTiming,
 } from '../../../../backend/src/sessions/wake-word-detector'
+import { completeText } from '../../../../backend/src/lib/llm'
 
 // 語音播放估時歸零：測試裡 speak 是即時 mock，不能真等「開場白唸完」的 3-6 秒
 speechTiming.msPerChar = 0
@@ -299,6 +301,142 @@ describe('語音問題但嘴巴被佔用 → 改走聊天室', () => {
     expect(mockBotProvider.sendChat.mock.calls.length).toBeGreaterThanOrEqual(2)
     expect(mockBotProvider.sendChat.mock.calls[0][1]).toContain('👂')
     expect(mockBotProvider.sendChat.mock.calls[0][1]).toContain('B')
+  })
+})
+
+describe('喚醒詞剝除後的開頭標點清理', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  // AGENT_MODE 走 OpenAI 轉錄，輸出半形標點；舊版只清全形 → 蜜塔覆誦出「,可以…」
+  // 且逗號一路帶進 Dify 檢索字串（回報 2026-07-28）。
+  it('半形逗號開頭（OpenAI 轉錄）→ 問題不含前置逗號', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-halfwidth',
+      text: '蜜塔, 可以告訴我我們的資料中有什麼內容嗎?',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 3,
+    })
+    const ack = String(mockBotProvider.sendChat.mock.calls[0][1])
+    expect(ack).toContain('「可以告訴我')
+    expect(ack).not.toContain('「,')
+  })
+
+  it('聊天室的半形標點同樣清乾淨', async () => {
+    const session = makeSession()
+    await handleChatMessage(session, {
+      sender: 'User',
+      text: 'Meeta. 報名費多少?',
+      timestamp: Date.now(),
+      is_from_bot: false,
+    })
+    // 第一則是 ack，答案在後面；檢查送進 Dify 的問題不帶前置句點
+    const dify = await import('../../../../backend/src/lib/dify')
+    expect((dify.askQuestion as any).mock.calls[0][0].question).toBe('報名費多少?')
+  })
+
+  it('只叫名字＋標點（「蜜塔，」）→ 仍視為沒問題，開待命窗而不派發', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-name-only-punct',
+      text: '蜜塔,',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+    expect(session.wakePendingUntil).toBeGreaterThan(0)
+  })
+})
+
+describe('回覆功能標籤（REPLY_TAGS）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockEnv.REPLY_TAGS = 'on'
+  })
+
+  it('ack 不再宣稱「正在查詢資料」——分類前還不知道要走哪條路', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-ack',
+      text: '蜜塔，你好',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    const ack = String(mockBotProvider.sendChat.mock.calls[0][1])
+    expect(ack).toContain('【收到提問】')
+    expect(ack).not.toContain('查詢資料')
+    expect(ack).not.toContain('查閱會議記錄')
+  })
+
+  it('走 Dify RAG 的答案 → 聊天室標【資料檢索】，但語音不唸標籤', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-tag-rag',
+      text: '蜜塔，報名費是多少',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
+    expect(chats.some((t) => t.startsWith('【資料檢索】') && t.includes('測試回答'))).toBe(true)
+    const spoken = mockBotProvider.speak.mock.calls.map((c: any[]) => String(c[1]))
+    expect(spoken.every((t) => !t.includes('【'))).toBe(true)
+  })
+
+  it('閒聊路徑 → 標【閒聊】（分類器回 chitchat）', async () => {
+    const session = makeSession()
+    ;(completeText as any).mockResolvedValueOnce('chitchat').mockResolvedValueOnce('我在喔！')
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-tag-chitchat',
+      text: '蜜塔，你好啊',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
+    expect(chats.some((t) => t.startsWith('【閒聊】'))).toBe(true)
+  })
+
+  it('無知識庫 → 標【會議記錄】', async () => {
+    const session = makeSession({ difyDatasetId: null })
+    await handleChatMessage(session, {
+      sender: 'User',
+      text: '蜜塔，我們剛剛的結論是什麼',
+      timestamp: Date.now(),
+      is_from_bot: false,
+    })
+    const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
+    expect(chats.some((t) => t.startsWith('【會議記錄】'))).toBe(true)
+  })
+
+  it('REPLY_TAGS=off → 完全沒有標籤', async () => {
+    mockEnv.REPLY_TAGS = 'off'
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-tag-off',
+      text: '蜜塔，報名費是多少',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
+    expect(chats.every((t) => !t.includes('【'))).toBe(true)
+  })
+
+  it('標籤不進 chatLog／對話窗：留存的是未加標籤的原文', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-tag-log',
+      text: '蜜塔，報名費是多少',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(session.chatLog.length).toBeGreaterThan(0)
+    expect(session.chatLog.every((m) => !m.text.includes('【'))).toBe(true)
   })
 })
 

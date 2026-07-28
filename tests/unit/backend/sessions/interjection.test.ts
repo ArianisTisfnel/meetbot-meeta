@@ -132,7 +132,7 @@ describe('icebreaker — 沉默破冰', () => {
     await vi.advanceTimersByTimeAsync(39_999)
     expect(wwd.speakProactive).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
-    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_WITH_KB)
+    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_WITH_KB, 'icebreaker')
     expect(llm.completeText).not.toHaveBeenCalled() // 罐頭台詞不走 LLM
   })
 
@@ -140,7 +140,7 @@ describe('icebreaker — 沉默破冰', () => {
     const session = putSession({ difyDatasetId: null })
     startIcebreaker(session)
     await vi.advanceTimersByTimeAsync(40_000)
-    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_NO_KB)
+    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_NO_KB, 'icebreaker')
   })
 
   it('任何發言都重置沉默計時（39s 時有人講話 → 從那刻重新起算 40s）', async () => {
@@ -169,6 +169,7 @@ describe('icebreaker — 沉默破冰', () => {
     expect(wwd.speakProactive).toHaveBeenCalledWith(
       session,
       '目前聊到 A 方案預算 50 萬。大家覺得要先確認資金來源嗎？',
+      'icebreaker',
     )
   })
 
@@ -326,7 +327,7 @@ describe('interjection — 主動插話（silence 時機層）', () => {
     recordConversation(session, humanEntry('報名截止日是什麼時候？有人知道嗎'))
     await vi.advanceTimersByTimeAsync(2_500)
     expect(wwd.resolveAnswer).toHaveBeenCalledWith(session, '報名截止日是什麼時候', 'chat')
-    expect(wwd.speakProactive).toHaveBeenCalledWith(session, '我補充一下：報名截止日是 6 月 30 日。')
+    expect(wwd.speakProactive).toHaveBeenCalledWith(session, '我補充一下：報名截止日是 6 月 30 日。', 'interjection')
     expect(wwd.sendChatBestEffort).not.toHaveBeenCalled()
   })
 
@@ -340,7 +341,7 @@ describe('interjection — 主動插話（silence 時機層）', () => {
     })
     recordConversation(session, humanEntry('隊伍人數上限是多少？'))
     await vi.advanceTimersByTimeAsync(2_500)
-    expect(wwd.sendChatBestEffort).toHaveBeenCalledWith(session, '💡 每隊最多 5 人。')
+    expect(wwd.sendChatBestEffort).toHaveBeenCalledWith(session, '💡 每隊最多 5 人。', 'chat', 'interjection')
     expect(wwd.speakProactive).not.toHaveBeenCalled()
   })
 
