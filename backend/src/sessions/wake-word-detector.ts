@@ -14,6 +14,7 @@ import {
   isVocativeWake,
   DEBOUNCE_MS,
   WAKE_PENDING_MS,
+  STOP_COMMAND_REGEX,
 } from './addressing.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
 
@@ -92,8 +93,9 @@ const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 
 /** 短於此長度的內容視為附和（嗯、好的），不觸發讓路。 */
 const BARGE_IN_MIN_CHARS = 4
-/** 明確停止指令：再短也觸發讓路，且不再轉貼被打斷的內容（使用者就是不想聽）。 */
-const STOP_COMMAND_REGEX = /^(閉嘴|安靜|住嘴|停|停止|別說了|不用了|不用說了|夠了)[。！!～~]*$/
+// 明確停止指令（再短也觸發讓路，且不再轉貼被打斷的內容）的詞表定義在 addressing.ts，
+// 與定址判斷共用同一份——這兩處對「什麼算叫停」的認定分岔的話，
+// 會出現「打斷得了、卻同時被當成新問題送去查資料」這種自相矛盾的行為。
 
 export async function handleBargeIn(
   session: MeetingSession,
@@ -241,6 +243,19 @@ export async function handleTranscriptSegment(
       return
     }
 
+    // 明確叫停：收掉待命窗，並吃掉喚醒寬限讓插話引擎安靜一陣子。
+    // 真正的「閉嘴」動作不在這裡做——handleBargeIn 對同一段語音先跑，
+    // 蜜塔正在說話時它已經停了語音；這裡負責的是「不要把叫停當成新問題去查資料」。
+    case 'stop':
+      session.wakePendingUntil = 0
+      session.wakePendingSpeaker = null
+      session.lastWakeAt = now
+      logger.info(
+        { meetingInstanceId: session.meetingInstanceId, reason: decision.reason, speaker: segment.speaker },
+        'addressing: stop command, staying quiet',
+      )
+      return
+
     // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
     //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
     case 'wake-pending':
@@ -294,6 +309,14 @@ export async function handleChatMessage(
   let question: string
   if (decision.kind === 'question') {
     question = decision.question
+  } else if (decision.kind === 'stop') {
+    // 聊天室打「蜜塔 不用了」：同樣吃掉喚醒寬限，讓插話引擎別接著補一句
+    session.lastWakeAt = now
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, reason: decision.reason },
+      'addressing: stop command in chat, staying quiet',
+    )
+    return
   } else if (decision.kind === 'ambiguous') {
     // 句中提及（「我覺得蜜塔這功能…」打在聊天室）→ 與語音同一套語意裁決
     const verdict = await arbitrateAddress({
@@ -566,7 +589,11 @@ async function dispatchQuestion(
   // → 措辭必須中性。舊版一律寫「正在查詢資料中……」，跟蜜塔打聲招呼也被宣告要去查
   // 資料庫（回報 2026-07-28 A.2）；實際結果由答案自己的功能標籤說明。
   const pendingChat = '收到你的問題，稍等一下～'
-  const ackChat = `👂 收到${opts?.speaker ? ` ${opts.speaker} ` : ''}的問題：「${question.slice(0, 40)}」，稍等一下～`
+  // 講者未知時不可留著「的」：舊版模板無條件插「的」，混音轉錄拿不到人名時
+  // 就印出「👂 收到的問題」這種破碎中文（回報 2026-07-28 A.4 的表面症狀）。
+  const ackChat = opts?.speaker
+    ? `👂 收到 ${opts.speaker} 的問題：「${question.slice(0, 40)}」，稍等一下～`
+    : `👂 收到問題：「${question.slice(0, 40)}」，稍等一下～`
 
   if (source === 'voice') {
     // 嘴巴被佔用（正在回答上一題）→ 這題不丟棄，改走聊天室

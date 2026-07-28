@@ -115,6 +115,46 @@ describe('decideAddressing — 待命窗與 debounce', () => {
   })
 })
 
+describe('decideAddressing — 叫停指令', () => {
+  it('「蜜塔 不用了」→ stop，不可當成新問題', () => {
+    // 回報 2026-07-28 定址基準裡唯一殘留的誤觸發：叫停反而觸發一次資料檢索
+    expect(decide('蜜塔 不用了').kind).toBe('stop')
+  })
+
+  it('其餘叫停詞同樣涵蓋', () => {
+    for (const t of ['蜜塔，閉嘴', '蜜塔 安靜', '蜜塔，停', '蜜塔 夠了！', '蜜塔，別說了～']) {
+      expect(decide(t).kind).toBe('stop')
+    }
+  })
+
+  it('叫停判定先於 debounce：她才剛開口就喊停也要收到', () => {
+    // 叫停幾乎必然落在 debounce 窗內（她 2 秒前才被喚醒）。
+    // 若讓 debounce 先攔，這句會整個被丟掉。
+    const state: AddressingState = { lastWakeAt: NOW, wakePendingUntil: 0, wakePendingSpeaker: null }
+    expect(decide('蜜塔 閉嘴', state, NOW + 500).kind).toBe('stop')
+  })
+
+  it('叫停判定先於 ambiguous：不花 LLM 去問「這是不是在跟我說話」', () => {
+    // 「蜜塔不用了」沒有停頓標點，照原路會被判 ambiguous 送語意裁決
+    expect(decide('蜜塔不用了').kind).toBe('stop')
+  })
+
+  it('整句錨定：叫停詞出現在句中不算叫停', () => {
+    // 「不用了」後面還有內容 → 是討論不是叫停，不可靜音
+    expect(decide('蜜塔，不用了我們改用另一個方案好嗎').kind).not.toBe('stop')
+    expect(decide('蜜塔，停車場在哪裡').kind).toBe('question')
+  })
+
+  it('待命窗內回一句叫停 → stop（收回上一個呼喚，不是要問「不用了」）', () => {
+    const state: AddressingState = { lastWakeAt: 0, wakePendingUntil: NOW + WAKE_PENDING_MS, wakePendingSpeaker: 'A' }
+    expect(decide('不用了', state, NOW + 3000, 'A').kind).toBe('stop')
+  })
+
+  it('聊天室打叫停 → stop（與語音同一份詞表）', () => {
+    expect(decideChatAddressing({ lastWakeAt: 0 }, { text: '蜜塔 不用了', speaker: 'U', now: NOW }).kind).toBe('stop')
+  })
+})
+
 describe('decideChatAddressing — 聊天室', () => {
   it('句首呼喚 → 派發', () => {
     const d = decideChatAddressing({ lastWakeAt: 0 }, { text: '蜜塔 這份文件是什麼？', speaker: 'U', now: NOW })

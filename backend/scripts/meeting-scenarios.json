@@ -316,8 +316,21 @@
           "text": "蜜塔 不用了",
           "gapMs": 9000,
           "expect": { "respond": false },
-          "knownFail": true,
           "why": "「不用了」是叫停，不是新問題"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "不用了，我們用另一個方案好了",
+          "gapMs": 5000,
+          "expect": { "respond": false },
+          "why": "叫停後的一般討論不該把蜜塔喚回來（叫停詞表本身的整句錨定由單元測試涵蓋）"
+        },
+        {
+          "speaker": "小華",
+          "text": "蜜塔，那報名網址是哪個",
+          "gapMs": 5000,
+          "expect": { "respond": true, "route": "rag" },
+          "why": "叫停之後再問新問題必須照常回應——叫停不是把蜜塔關掉"
         }
       ]
     }

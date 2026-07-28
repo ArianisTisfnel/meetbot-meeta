@@ -21,6 +21,19 @@ export const DEBOUNCE_MS = 2000
 export const WAKE_PENDING_MS = 8000
 
 /**
+ * 明確的叫停指令。**定義在本檔而非 wake-word-detector**：兩個呼叫點要共用同一份詞表——
+ *   ① barge-in（蜜塔正在說話時打斷，見 handleBargeIn）
+ *   ② 定址判斷（本檔）：「蜜塔 不用了」曾被當成新問題送去查資料（回報 2026-07-28 唯一殘留的誤觸發）
+ * 只有 ② 缺這個查表，症狀是叫停反而觸發一次檢索。
+ *
+ * `^...$` 錨定是刻意的：只認整句就是叫停的情形。
+ * 「不用了，我們用另一個方案」是討論內容不是叫停，錨定讓它不會誤命中。
+ * 措辭鬆散的叫停（「你先不用查了」）本層放過，留給語意決策層——
+ * 這裡不追求覆蓋率，只求零延遲擋掉最常見、最刺眼的那幾句。
+ */
+export const STOP_COMMAND_REGEX = /^(閉嘴|安靜|住嘴|停|停止|別說了|不用了|不用說了|夠了)[。！!～~]*$/
+
+/**
  * 剝除喚醒詞後殘留的開頭標點與空白。
  * 全形半形都要清：AGENT_MODE 走 OpenAI 轉錄，輸出的是**半形** `,` `.` `?`，
  * 舊的全形字元集清不掉 → 實測 2026-07-28 蜜塔覆誦出「,可以告訴我…」，
@@ -103,6 +116,8 @@ export type AddressingDecision =
   | { kind: 'debounced'; reason: string }
   /** 只叫了名字沒接問題 → 開待命窗等下一段。 */
   | { kind: 'wake-pending'; wakeWord: string; reason: string }
+  /** 明確叫停（蜜塔 不用了／閉嘴）→ 閉嘴並收掉待命窗，**不可**當成新問題。 */
+  | { kind: 'stop'; reason: string }
   /**
    * 句中提及了蜜塔，但分不出是「對她說話」還是「談論她」→ 交給語意層裁決。
    * candidate 是「若真的是提問，問題會是什麼」，語意層判定為提問時直接拿去用。
@@ -132,15 +147,26 @@ export function decideAddressing(state: AddressingState, u: Utterance): Addressi
 
     const question = stripLeadingPunct(u.text).trim()
     if (!question) return { kind: 'ignore', reason: 'pending window but empty text' }
+    // 待命窗裡回一句「不用了」是收回上一個呼喚，不是要問「不用了」
+    if (STOP_COMMAND_REGEX.test(question)) {
+      return { kind: 'stop', reason: 'stop command in pending window' }
+    }
     return { kind: 'question', question, reason: 'wake pending window', viaPendingWindow: true }
+  }
+
+  const after = u.text.slice(match.index + match[0].length)
+  const question = stripLeadingPunct(after).trim()
+
+  // 叫停先於 debounce 判定：「蜜塔閉嘴」多半緊接在她開口後 2 秒內，
+  // 若讓 debounce 先攔下，這句就整個被丟掉、該有的閉嘴動作也不會發生。
+  // 也先於 ambiguous：叫停不必花一次 LLM 去問「這是不是在跟我說話」。
+  if (STOP_COMMAND_REGEX.test(question)) {
+    return { kind: 'stop', reason: `stop command「${question}」` }
   }
 
   if (u.now - state.lastWakeAt < DEBOUNCE_MS) {
     return { kind: 'debounced', reason: 'within debounce window' }
   }
-
-  const after = u.text.slice(match.index + match[0].length)
-  const question = stripLeadingPunct(after).trim()
 
   // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
   //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
@@ -179,6 +205,8 @@ export function decideChatAddressing(
   const question = stripLeadingPunct(after).trim()
   // debounce 在確認有問題內容後才消耗，避免空喚醒吃掉緊接著的真問題。
   if (!question) return { kind: 'ignore', reason: 'wake word without question (chat)' }
+  // 聊天室打「蜜塔 不用了」同樣是叫停（語音路徑同一套詞表）
+  if (STOP_COMMAND_REGEX.test(question)) return { kind: 'stop', reason: `stop command「${question}」` }
   // 聊天室同樣有「打字討論蜜塔」的情形，判斷準則與語音一致
   if (!isVocativePosition(u.text, match.index) || !POST_WAKE_SEPARATOR_REGEX.test(after)) {
     return {
