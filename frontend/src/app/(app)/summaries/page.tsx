@@ -1,24 +1,29 @@
 'use client'
 import { useState } from 'react'
 import { useAllMeetings } from '@/hooks/use-all-meetings'
-import { MeetingList } from '@/components/meetings/meeting-list'
+import { SummaryList } from '@/components/meetings/summary-list'
 import { MeetingFilterBar } from '@/components/meetings/meeting-filter-bar'
-import { CreateMeetingDialog } from '@/components/meetings/create-meeting-dialog'
-import { Button } from '@/components/ui/button'
 
-export default function AllMeetingsPage() {
+/**
+ * 會議記錄頁：跨專案列出所有已結束（ENDED）的會議，
+ * 點列進入原本的會議詳情頁（摘要＋逐字稿）。
+ */
+export default function SummariesPage() {
   const [search, setSearch] = useState('')
   const [since, setSince] = useState<number | undefined>()
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
-  const [createOpen, setCreateOpen] = useState(false)
 
-  const { data, isLoading } = useAllMeetings({ search, since, order })
+  const { data, isLoading } = useAllMeetings({
+    search,
+    since,
+    order,
+    status: 'ENDED',
+  })
 
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="font-display text-2xl font-bold">會議</h1>
-        <Button onClick={() => setCreateOpen(true)}>+ 建立會議</Button>
+        <h1 className="font-display text-2xl font-bold">會議記錄</h1>
       </div>
 
       <MeetingFilterBar
@@ -33,14 +38,8 @@ export default function AllMeetingsPage() {
       {isLoading ? (
         <p className="text-muted-foreground">載入中…</p>
       ) : (
-        <MeetingList meetings={data?.items ?? []} canEnd />
+        <SummaryList meetings={data?.items ?? []} />
       )}
-
-      <CreateMeetingDialog
-        mode="global"
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-      />
     </div>
   )
 }

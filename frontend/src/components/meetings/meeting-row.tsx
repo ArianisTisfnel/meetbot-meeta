@@ -1,12 +1,13 @@
 'use client'
 import { useRouter } from 'next/navigation'
-import { useState, type CSSProperties, type MouseEvent } from 'react'
+import { useRef, useState, type CSSProperties, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { BotStatusIndicator, statusHint } from './bot-status-indicator'
 import { EndMeetingButton } from './end-meeting-button'
 import { CancelMeetingButton } from './cancel-meeting-button'
 import { ReinviteBotButton } from './reinvite-bot-button'
 import { DeleteMeetingButton } from './delete-meeting-button'
+import { EditableMeetingName } from './editable-meeting-name'
 import { formatDate } from '@/lib/utils'
 import type { MeetingListItem } from '@/types/api'
 
@@ -28,29 +29,48 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
   const isFinished = meeting.status === 'FAILED' || meeting.status === 'ENDED'
 
   // 整列 hover 顯示狀態提示（tooltip 用 portal 固定定位，不被表格 overflow 裁切）。
+  // 提示框跟著游標走：enter 時以 state 掛載，move 時直接寫 DOM style，避免每個 pixel 都 re-render。
   const hint = statusHint(meeting.status)
+  const tipRef = useRef<HTMLSpanElement>(null)
   const [tipStyle, setTipStyle] = useState<CSSProperties | null>(null)
-  const showTip = (e: MouseEvent<HTMLTableRowElement>) => {
-    const r = e.currentTarget.getBoundingClientRect()
-    const left = Math.max(8, Math.min(r.left + 16, window.innerWidth - TOOLTIP_WIDTH - 8))
-    if (window.innerHeight - r.bottom < 120) {
-      setTipStyle({ position: 'fixed', left, top: r.top - 6, transform: 'translateY(-100%)' })
-    } else {
-      setTipStyle({ position: 'fixed', left, top: r.bottom + 6 })
+
+  const cursorTipStyle = (e: MouseEvent<HTMLTableRowElement>): CSSProperties => {
+    const left = Math.max(8, Math.min(e.clientX + 14, window.innerWidth - TOOLTIP_WIDTH - 8))
+    // 靠近視窗底部時翻到游標上方，避免被裁切
+    if (window.innerHeight - e.clientY < 140) {
+      return { position: 'fixed', left, top: e.clientY - 12, transform: 'translateY(-100%)' }
     }
+    return { position: 'fixed', left, top: e.clientY + 18, transform: '' }
+  }
+
+  const showTip = (e: MouseEvent<HTMLTableRowElement>) => setTipStyle(cursorTipStyle(e))
+  const moveTip = (e: MouseEvent<HTMLTableRowElement>) => {
+    const el = tipRef.current
+    if (!el) return
+    const s = cursorTipStyle(e)
+    el.style.left = `${s.left}px`
+    el.style.top = `${s.top}px`
+    el.style.transform = String(s.transform)
   }
 
   return (
     <tr
       onClick={() => router.push(href)}
       onMouseEnter={showTip}
+      onMouseMove={moveTip}
       onMouseLeave={() => setTipStyle(null)}
       className="cursor-pointer border-b transition-colors hover:bg-muted/50"
     >
       <td className="py-3 px-4">
         <BotStatusIndicator status={meeting.status} href={href} showHint={false} />
       </td>
-      <td className="py-3 px-4 font-medium">{meeting.name}</td>
+      <td className="py-3 px-4 font-medium">
+        <EditableMeetingName
+          meetingId={meeting.id}
+          projectId={projectId ?? meeting.projectId}
+          name={meeting.name}
+        />
+      </td>
       {!projectId && (
         <td className="py-3 px-4 text-muted-foreground">
           {meeting.projectName ?? '（無關聯專案）'}
@@ -107,6 +127,7 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
           hint &&
           createPortal(
             <span
+              ref={tipRef}
               role="tooltip"
               style={tipStyle}
               className="pointer-events-none z-50 block w-64 rounded-md bg-hive px-3 py-2 text-xs leading-relaxed text-hive-fg shadow-lg"

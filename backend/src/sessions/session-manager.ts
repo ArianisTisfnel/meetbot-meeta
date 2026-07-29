@@ -278,7 +278,35 @@ export async function handleSessionClose(
   reason?: 'completed' | 'failed',
 ): Promise<void> {
   const session = activeSessions.get(meetingInstanceId)
-  if (!session) return
+  if (!session) {
+    // in-memory session 不在（多半是後端重啟後遺失，restore 又接不回 Recall 會議）：
+    // DB 仍要收尾，否則會議永久卡 ACTIVE——前端按「結束」顯示成功但狀態不變、摘要無限輪詢。
+    // 沒有 session 就沒有 chatLog / provider 識別碼可取逐字稿 → summary 直接落 ''（前端停止輪詢）。
+    //
+    // where 兩個條件都是必要的，少一個就會吃掉摘要：
+    //   status: 'ACTIVE' —— 擋掉正常結束路徑的雙重觸發（Map 已刪、DB 已轉 ENDED）。
+    //   summary: null    —— 擋掉一個更窄的競態：正常路徑的順序是
+    //     Map.delete → await prisma.update 轉 ENDED → 背景 generateSummaryAsync。
+    //     第二次觸發若落在 Map.delete 之後、update 完成之前，DB 還是 ACTIVE，
+    //     上面那個條件會通過，於是把 summary 寫成 '' 這個哨兵；真摘要稍後才寫回，
+    //     但前端看到哨兵已經停止輪詢，使用者要重整才看得到（WS close 與使用者按
+    //     「結束會議」同時發生就會踩到——雙重觸發正是這個原子鎖存在的理由）。
+    const finalized = await prisma.meetingInstance.updateMany({
+      where: { id: meetingInstanceId, status: 'ACTIVE', summary: null },
+      data: {
+        status: reason === 'failed' ? 'FAILED' : 'ENDED',
+        endedAt: new Date(),
+        summary: '',
+      },
+    })
+    if (finalized.count > 0) {
+      logger.warn(
+        { meetingInstanceId },
+        'handleSessionClose: no in-memory session (lost on restart?), finalized dangling ACTIVE meeting',
+      )
+    }
+    return
+  }
 
   // 原子鎖：先從 Map 移除，防止雙重觸發。
   activeSessions.delete(meetingInstanceId)
@@ -315,8 +343,9 @@ export async function handleSessionClose(
 // ── restoreActiveSessions ─────────────────────────────────────────────────────
 //
 // ⚠️ 已知限制（v1，受「不改 DB schema」約束）：DB 只持久化 Vexa 識別碼，
-// 因此重啟後只能復原跑在 Vexa 上的 session。當時若已 failover 到 Recall 的會議，
-// 重啟後無法重新接上 live stream（會在下方因缺 vexaMeetingId 而 skip，並由 stale 清理收尾）。
+// 因此重啟後只能復原跑在 Vexa 上的 session。跑在 Recall 上的會議（缺 vexaMeetingId）
+// 無法重接 live stream 也拿不到逐字稿 → 直接收尾成 ENDED + summary=''，
+// 避免永久卡 ACTIVE。完整解法（重接 + 補摘要）需 DB 加 provider/provider_meeting_id 欄位（見 roadmap）。
 
 export async function restoreActiveSessions(): Promise<void> {
   // 階段一：清理 zombie PENDING（超過 5 分鐘仍 PENDING 者標為 FAILED）
@@ -340,7 +369,16 @@ export async function restoreActiveSessions(): Promise<void> {
   let restored = 0
   for (const meeting of activeMeetings) {
     if (!meeting.vexaMeetingId || !meeting.vexaNativeMeetingId) {
-      logger.warn({ meetingInstanceId: meeting.id }, 'missing vexa IDs (likely Recall), skipping restore')
+      logger.warn(
+        { meetingInstanceId: meeting.id },
+        'missing vexa IDs (likely Recall), cannot restore → finalizing as ENDED',
+      )
+      await prisma.meetingInstance
+        .update({
+          where: { id: meeting.id },
+          data: { status: 'ENDED', endedAt: new Date(), summary: '' },
+        })
+        .catch((e) => logger.error({ e, meetingInstanceId: meeting.id }, 'failed to finalize unrestorable meeting'))
       continue
     }
 
