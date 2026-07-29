@@ -159,13 +159,24 @@ describe('handleSessionClose', () => {
 
     expect(mockPrisma.meetingInstance.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'meet-1', status: 'ACTIVE' },
+        // summary: null 是必要條件，不是可有可無的保險——見下一個案例
+        where: { id: 'meet-1', status: 'ACTIVE', summary: null },
         data: expect.objectContaining({ status: 'ENDED', summary: '' }),
       }),
     )
     // 沒有 session 就沒有逐字稿來源，不觸發摘要、不動 bot
     expect(generateSummaryAsync).not.toHaveBeenCalled()
     expect(mockBotProvider.leave).not.toHaveBeenCalled()
+  })
+
+  // 正常路徑是 Map.delete → await update 轉 ENDED → 背景生摘要。第二次觸發若落在
+  // Map.delete 之後、update 完成之前，DB 還是 ACTIVE，只鎖 status 會把 summary 寫成
+  // '' 哨兵；真摘要稍後才寫回，但前端看到哨兵已經停止輪詢 → 使用者以為摘要不見了。
+  it('雙重觸發卡在 Map 已刪、DB 未轉 ENDED 之間 → 不可寫入 summary 哨兵', async () => {
+    await handleSessionClose('meet-1')
+
+    const where = mockPrisma.meetingInstance.updateMany.mock.calls[0][0].where
+    expect(where).toHaveProperty('summary', null)
   })
 
   it('正常結束（ENDED）→ 觸發摘要、讓 bot 離開', async () => {

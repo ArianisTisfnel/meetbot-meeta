@@ -282,9 +282,17 @@ export async function handleSessionClose(
     // in-memory session 不在（多半是後端重啟後遺失，restore 又接不回 Recall 會議）：
     // DB 仍要收尾，否則會議永久卡 ACTIVE——前端按「結束」顯示成功但狀態不變、摘要無限輪詢。
     // 沒有 session 就沒有 chatLog / provider 識別碼可取逐字稿 → summary 直接落 ''（前端停止輪詢）。
-    // status 鎖 ACTIVE：正常結束路徑的雙重觸發（Map 已刪、DB 已轉 ENDED）不會被重複改寫。
+    //
+    // where 兩個條件都是必要的，少一個就會吃掉摘要：
+    //   status: 'ACTIVE' —— 擋掉正常結束路徑的雙重觸發（Map 已刪、DB 已轉 ENDED）。
+    //   summary: null    —— 擋掉一個更窄的競態：正常路徑的順序是
+    //     Map.delete → await prisma.update 轉 ENDED → 背景 generateSummaryAsync。
+    //     第二次觸發若落在 Map.delete 之後、update 完成之前，DB 還是 ACTIVE，
+    //     上面那個條件會通過，於是把 summary 寫成 '' 這個哨兵；真摘要稍後才寫回，
+    //     但前端看到哨兵已經停止輪詢，使用者要重整才看得到（WS close 與使用者按
+    //     「結束會議」同時發生就會踩到——雙重觸發正是這個原子鎖存在的理由）。
     const finalized = await prisma.meetingInstance.updateMany({
-      where: { id: meetingInstanceId, status: 'ACTIVE' },
+      where: { id: meetingInstanceId, status: 'ACTIVE', summary: null },
       data: {
         status: reason === 'failed' ? 'FAILED' : 'ENDED',
         endedAt: new Date(),
