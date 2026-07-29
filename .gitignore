@@ -16,6 +16,7 @@ yarn-error.log*
 
 # Environment variables (NEVER commit)
 .env
+.env.bak*
 .env.local
 .env.*.local
 !.env.example
@@ -47,6 +48,10 @@ prisma/migrations/
 coverage/
 .nyc_output/
 
+# 個人本機檔案（勿入版控）
+蜜塔的資料.txt
+prompt.md
+
 # Logs
 logs/
 *.log
@@ -61,6 +66,8 @@ docs/01-RAG_API_串接文件*.md
 # docs 附件（二進位素材，不納入版控；如需分享請透過其他管道）
 docs/*.zip
 docs/*.zip/
+docs/env*
+docs/.env*
 
 # Vite cache
 .vite/
@@ -79,3 +86,6 @@ backend/models/
 
 # 插話決策評測的執行紀錄（本機產物）
 backend/eval-log-*.txt
+
+# 對外簡報／組員說明的草稿（本機產物，刻意不進版控）
+簡報素材/

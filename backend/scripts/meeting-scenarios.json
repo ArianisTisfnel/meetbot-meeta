@@ -1,0 +1,335 @@
+{
+  "_readme": [
+    "蜜塔「定址判斷」的離線劇本集——不開真會議就能評估『這句該不該回應、該走哪條路』。",
+    "",
+    "劇本一律**手寫假設情境**：我們的真實會議場次少，靠真會議長案例覆蓋不了多少問題，",
+    "要靠設計過的情境去打各種失敗模式。格式刻意與真實逐字稿相容（speaker/text 序列），",
+    "之後若要把某場真會議補進來也貼得上。",
+    "",
+    "跑法（backend/ 目錄）：",
+    "  npx tsx scripts/eval-meeting.ts                            # 規則層，零 LLM 成本",
+    "  npx tsx --env-file .env scripts/eval-meeting.ts --address  # 加上語意定址裁決（打 LLM）",
+    "  npx tsx --env-file .env scripts/eval-meeting.ts --intent   # 加上意圖分流評測（打 LLM）",
+    "  npx tsx scripts/eval-meeting.ts --only 代詞                # 只跑名稱含「代詞」的劇本",
+    "",
+    "不加 --address 時，非呼喚句型（「蜜塔你好」「蜜塔這個功能…」）會標成『略過』不計分——",
+    "規則層本來就無從判斷那些句子，算它失敗只會製造假訊號。",
+    "",
+    "expect 欄位：",
+    "  respond: true/false  —— 蜜塔該不該對這句做出回應",
+    "  route: rag|transcript|chitchat —— respond=true 時，期待走哪條資料來源（可省略）",
+    "  question: 字串 —— 期待擷取出的問題須包含此子字串（驗證問題擷取的忠實度，可省略）",
+    "  gapMs: 距離上一句的毫秒數（預設 5000）。用來測 debounce 與待命窗這類時間相關行為。",
+    "",
+    "knownFail: 標記『目前已知做不到、等後續實作才會過』的案例。目前沒有任何案例掛這個標記",
+    "  評測分開統計：回歸失敗（本來會過的壞掉了）／已知缺口／略過，不混在一起。",
+    "  某案例修好後會被列為『意外通過』，提醒把標記拿掉。"
+  ],
+  "scenarios": [
+    {
+      "name": "A.1 討論蜜塔本身，不是在對她說話",
+      "kb": true,
+      "turns": [
+        { "speaker": "Arianis", "text": "我認為我們的專案需要語意層", "expect": { "respond": false } },
+        {
+          "speaker": "小華",
+          "text": "蜜塔這個功能是不是有點難做啊",
+          "expect": { "respond": false },
+                    "why": "在跟同事討論蜜塔這個產品，不是在問蜜塔。正則只看到名字就觸發。"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "對啊，我覺得蜜塔現在的判斷太死板了",
+          "expect": { "respond": false },
+                    "why": "抱怨蜜塔，更不該讓她跳出來回答"
+        },
+        {
+          "speaker": "小華",
+          "text": "剛剛那個 Meeta 的回應真的很怪",
+          "expect": { "respond": false },
+                    "why": "英文名同樣是討論而非呼叫"
+        }
+      ]
+    },
+    {
+      "name": "A.1b 引用蜜塔說過的話",
+      "kb": true,
+      "turns": [
+        { "speaker": "小明", "text": "我們先確認一下時程", "expect": { "respond": false } },
+        {
+          "speaker": "小華",
+          "text": "蜜塔剛才說截止日是六月三十號對吧",
+          "expect": { "respond": false },
+                    "why": "在向『其他人』確認蜜塔說過的話，不是在問蜜塔"
+        }
+      ]
+    },
+    {
+      "name": "A.2 打招呼不該走資料檢索",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔你好",
+          "expect": { "respond": true, "route": "chitchat", "question": "你好" },
+          "why": "該回應，但不該拿「你好」去查知識庫"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔在嗎",
+          "gapMs": 9000,
+          "expect": { "respond": true, "route": "chitchat" }
+        },
+        {
+          "speaker": "小華",
+          "text": "蜜塔你是誰啊",
+          "gapMs": 9000,
+          "expect": { "respond": true, "route": "chitchat" }
+        }
+      ]
+    },
+    {
+      "name": "A.3 沒喊名字的連續追問",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，報名截止日是什麼時候",
+          "expect": { "respond": true, "route": "rag", "question": "報名截止日" }
+        },
+        {
+          "speaker": "Arianis",
+          "text": "那名額有限制嗎",
+          "gapMs": 12000,
+          "expect": { "respond": true, "route": "rag" },
+          "why": "上一句才問過蜜塔，這是同一串對話的追問（2026-07-29 起由語意層接住）"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "那如果超過了會怎樣",
+          "gapMs": 8000,
+          "expect": { "respond": true, "route": "rag" },
+          "why": "連續第三輪追問，人不會每句都喊名字"
+        }
+      ]
+    },
+    {
+      "name": "A.3b 代詞指涉蜜塔",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "小明",
+          "text": "蜜塔，我們的預算上限是多少",
+          "expect": { "respond": true, "route": "rag" }
+        },
+        {
+          "speaker": "小明",
+          "text": "你可以再確認一次嗎",
+          "gapMs": 10000,
+          "expect": { "respond": true },
+          "why": "「你」在此明確指蜜塔（要跟 A.4 的「你」指第三人區分開）"
+        }
+      ]
+    },
+    {
+      "name": "A.4 多人會議：對第三人說話不該攔截",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，這份簡章的報名方式是什麼",
+          "expect": { "respond": true, "route": "rag" }
+        },
+        {
+          "speaker": "Arianis",
+          "text": "小華你覺得這樣可以嗎",
+          "gapMs": 10000,
+          "expect": { "respond": false },
+          "why": "明確點名小華，蜜塔不該接話"
+        },
+        {
+          "speaker": "小華",
+          "text": "我覺得可以，你再看一下附件",
+          "gapMs": 6000,
+          "expect": { "respond": false },
+          "why": "「你」指的是 Arianis 不是蜜塔——代詞消解必須看對象"
+        }
+      ]
+    },
+    {
+      "name": "回歸：正常喚醒必須照樣運作",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，請問這份規則是最新版嗎",
+          "expect": { "respond": true, "route": "rag", "question": "這份規則" }
+        },
+        {
+          "speaker": "小華",
+          "text": "小幫手，今年的名額是多少",
+          "gapMs": 15000,
+          "expect": { "respond": true, "route": "rag", "question": "名額" }
+        },
+        {
+          "speaker": "Kevin",
+          "text": "Meeta, what is the deadline?",
+          "gapMs": 15000,
+          "expect": { "respond": true, "route": "rag" }
+        }
+      ]
+    },
+    {
+      "name": "回歸：STT 誤轉的喚醒詞",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜桃，請問報名日期",
+          "expect": { "respond": true, "route": "rag", "question": "報名日期" }
+        },
+        {
+          "speaker": "Arianis",
+          "text": "米塔 今天的議程是什麼",
+          "gapMs": 15000,
+          "expect": { "respond": true }
+        }
+      ]
+    },
+    {
+      "name": "回歸：半形標點（agent 模式 OpenAI 轉錄）",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔, 可以告訴我我們的資料中有什麼內容嗎?",
+          "expect": { "respond": true, "question": "可以告訴我" },
+          "why": "問題不可以「,」開頭——會一路帶進 Dify 的檢索字串"
+        }
+      ]
+    },
+    {
+      "name": "回歸：只叫名字→下一段接問題",
+      "kb": true,
+      "turns": [
+        { "speaker": "Arianis", "text": "蜜塔", "expect": { "respond": false }, "why": "只叫名字，等下一段" },
+        {
+          "speaker": "Arianis",
+          "text": "我們的評分標準是什麼",
+          "gapMs": 3000,
+          "expect": { "respond": true, "route": "rag", "question": "評分標準" }
+        }
+      ]
+    },
+    {
+      "name": "回歸：只叫名字後，別人講不相干的事不該接",
+      "kb": true,
+      "turns": [
+        { "speaker": "Arianis", "text": "蜜塔", "expect": { "respond": false } },
+        {
+          "speaker": "小華",
+          "text": "我先去倒杯水",
+          "gapMs": 20000,
+          "expect": { "respond": false },
+          "why": "叫名字的是 Arianis，這句是小華在講不相干的事——語意層要判得出來"
+        }
+      ]
+    },
+    {
+      "name": "回歸：debounce 抑制同一次喚醒的殘響",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，報名費多少",
+          "expect": { "respond": true, "route": "rag" }
+        },
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，報名費多少錢",
+          "gapMs": 800,
+          "expect": { "respond": false },
+          "why": "同一句的重複定稿，0.8 秒內不可重複回答"
+        }
+      ]
+    },
+    {
+      "name": "純討論會議：全程不該有任何回應",
+      "kb": true,
+      "turns": [
+        { "speaker": "Arianis", "text": "我們今天先過一下專案進度", "expect": { "respond": false } },
+        { "speaker": "小華", "text": "前端的部分我這週會收尾", "expect": { "respond": false } },
+        { "speaker": "小明", "text": "後端還在等 API 規格", "expect": { "respond": false } },
+        { "speaker": "Arianis", "text": "那我們下週三再對一次", "expect": { "respond": false } },
+        {
+          "speaker": "小華",
+          "text": "好，我把會議記錄丟到群組",
+          "expect": { "respond": false },
+          "why": "誤觸發率的基準線：一整段正常討論不該有任何一句被當成提問"
+        }
+      ]
+    },
+    {
+      "name": "意見型問題不該走 RAG",
+      "kb": true,
+      "turns": [
+        { "speaker": "小華", "text": "我覺得第二版的排程比較穩", "expect": { "respond": false } },
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，你覺得剛剛的提案如何",
+          "expect": { "respond": true, "route": "transcript" },
+          "why": "純會議脈絡問題，查知識庫只會答『資料沒提到』"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，剛才是誰在問簡報格式",
+          "gapMs": 15000,
+          "expect": { "respond": true, "route": "transcript" }
+        }
+      ]
+    },
+    {
+      "name": "無知識庫的專案：一律走會議記錄",
+      "kb": false,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，我們剛剛的結論是什麼",
+          "expect": { "respond": true, "route": "transcript" }
+        }
+      ]
+    },
+    {
+      "name": "叫停指令不該被當成問題",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，報名截止日是什麼時候",
+          "expect": { "respond": true, "route": "rag" }
+        },
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔 不用了",
+          "gapMs": 9000,
+          "expect": { "respond": false },
+          "why": "「不用了」是叫停，不是新問題"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "不用了，我們用另一個方案好了",
+          "gapMs": 5000,
+          "expect": { "respond": false },
+          "why": "叫停後的一般討論不該把蜜塔喚回來（叫停詞表本身的整句錨定由單元測試涵蓋）"
+        },
+        {
+          "speaker": "小華",
+          "text": "蜜塔，那報名網址是哪個",
+          "gapMs": 5000,
+          "expect": { "respond": true, "route": "rag" },
+          "why": "叫停之後再問新問題必須照常回應——叫停不是把蜜塔關掉"
+        }
+      ]
+    }
+  ]
+}

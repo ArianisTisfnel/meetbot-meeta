@@ -21,6 +21,7 @@ const wwd = vi.hoisted(() => ({
   resolveAnswer: vi.fn(),
   sendChatBestEffort: vi.fn().mockResolvedValue(undefined),
   speakProactive: vi.fn().mockResolvedValue(true),
+  answerFollowUp: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('../../../../backend/src/sessions/wake-word-detector', () => wwd)
 
@@ -48,7 +49,7 @@ import {
   ICEBREAKER_OPENING_WITH_KB,
   ICEBREAKER_OPENING_NO_KB,
   ICEBREAKER_SUMMARY_SYSTEM,
-  INTERJECTION_DECISION_SYSTEM,
+  TURN_DECISION_SYSTEM,
 } from '../../../../backend/src/sessions/interjection-prompts'
 import type { MeetingSession } from '../../../../backend/src/types/session'
 import type { BotSession } from '../../../../backend/src/provider/types'
@@ -76,8 +77,7 @@ function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     creatorVexaToken: 'tok-123',
     isSpeaking: false,
     lastWakeAt: 0,
-    wakePendingUntil: 0,
-    wakePendingSpeaker: null,
+    lastEngagedAt: 0,
     partialAckAt: 0,
     currentSpeech: null,
     speechStartedAt: 0,
@@ -100,6 +100,20 @@ function humanEntry(text: string, speaker = '小明', source: 'voice' | 'chat' =
   return { speaker, text, source, fromBot: false, at: Date.now() }
 }
 
+/**
+ * 每輪決策層的 JSON 輸出（2026-07-29 起定址／意圖／插話同一次呼叫產出）。
+ * addressed 預設 none：測插話的劇本都是「沒人叫蜜塔」的情境。
+ */
+function decision(o: Partial<{ addressed: string; question: string; intent: string; interject: boolean }> = {}) {
+  return JSON.stringify({
+    addressed: o.addressed ?? 'none',
+    question: o.question ?? '',
+    intent: o.intent ?? 'factual',
+    interject: o.interject ?? false,
+  })
+}
+const quiet = () => decision()
+
 beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
@@ -107,7 +121,7 @@ beforeEach(() => {
   mockEnv.INTERJECTION_ENABLED = true
   mockEnv.INTERJECTION_TURN_DETECTOR = 'silence'
   mockEnv.ICEBREAKER_ENABLED = true
-  llm.completeText.mockResolvedValue('{"interject": false, "question": ""}')
+  llm.completeText.mockResolvedValue(quiet())
   wwd.resolveAnswer.mockResolvedValue('預設答案')
   eou.isEndOfTurn.mockResolvedValue(null)
 })
@@ -132,7 +146,7 @@ describe('icebreaker — 沉默破冰', () => {
     await vi.advanceTimersByTimeAsync(39_999)
     expect(wwd.speakProactive).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
-    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_WITH_KB)
+    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_WITH_KB, 'icebreaker')
     expect(llm.completeText).not.toHaveBeenCalled() // 罐頭台詞不走 LLM
   })
 
@@ -140,7 +154,7 @@ describe('icebreaker — 沉默破冰', () => {
     const session = putSession({ difyDatasetId: null })
     startIcebreaker(session)
     await vi.advanceTimersByTimeAsync(40_000)
-    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_NO_KB)
+    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_NO_KB, 'icebreaker')
   })
 
   it('任何發言都重置沉默計時（39s 時有人講話 → 從那刻重新起算 40s）', async () => {
@@ -169,6 +183,7 @@ describe('icebreaker — 沉默破冰', () => {
     expect(wwd.speakProactive).toHaveBeenCalledWith(
       session,
       '目前聊到 A 方案預算 50 萬。大家覺得要先確認資金來源嗎？',
+      'icebreaker',
     )
   })
 
@@ -304,7 +319,7 @@ describe('interjection — 主動插話（silence 時機層）', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(llm.completeText).toHaveBeenCalledTimes(1)
     const call = llm.completeText.mock.calls[0][0]
-    expect(call.system).toBe(INTERJECTION_DECISION_SYSTEM)
+    expect(call.system).toBe(TURN_DECISION_SYSTEM)
     expect(call.prompt).toContain('[小明] 報名截止日是什麼時候？')
     expect(call.prompt).toContain('[小華·聊天室] 我在聊天室補充一下')
   })
@@ -321,18 +336,19 @@ describe('interjection — 主動插話（silence 時機層）', () => {
 
   it('決策 = 插話且全場仍沉默 → 語音說「我補充一下：…」', async () => {
     const session = putSession()
-    llm.completeText.mockResolvedValueOnce('{"interject": true, "question": "報名截止日是什麼時候"}')
+    llm.completeText.mockResolvedValueOnce(decision({ interject: true, question: '報名截止日是什麼時候' }))
     wwd.resolveAnswer.mockResolvedValueOnce('報名截止日是 6 月 30 日。')
     recordConversation(session, humanEntry('報名截止日是什麼時候？有人知道嗎'))
     await vi.advanceTimersByTimeAsync(2_500)
-    expect(wwd.resolveAnswer).toHaveBeenCalledWith(session, '報名截止日是什麼時候', 'chat')
-    expect(wwd.speakProactive).toHaveBeenCalledWith(session, '我補充一下：報名截止日是 6 月 30 日。')
+    // intent 一併從同一次決策帶下去 → resolveAnswer 不必再打一次分類
+    expect(wwd.resolveAnswer).toHaveBeenCalledWith(session, '報名截止日是什麼時候', 'chat', 'factual')
+    expect(wwd.speakProactive).toHaveBeenCalledWith(session, '我補充一下：報名截止日是 6 月 30 日。', 'interjection')
     expect(wwd.sendChatBestEffort).not.toHaveBeenCalled()
   })
 
   it('決策 = 插話但查詢期間有人開口 → 改貼聊天室 💡（不搶話）', async () => {
     const session = putSession()
-    llm.completeText.mockResolvedValueOnce('{"interject": true, "question": "隊伍人數上限是多少"}')
+    llm.completeText.mockResolvedValueOnce(decision({ interject: true, question: '隊伍人數上限是多少' }))
     wwd.resolveAnswer.mockImplementationOnce(async () => {
       vi.setSystemTime(Date.now() + 50) // 查詢期間時間前進，讓新發言的 at 可區分
       recordConversation(session, humanEntry('欸我想到另一件事', '小華'))
@@ -340,13 +356,13 @@ describe('interjection — 主動插話（silence 時機層）', () => {
     })
     recordConversation(session, humanEntry('隊伍人數上限是多少？'))
     await vi.advanceTimersByTimeAsync(2_500)
-    expect(wwd.sendChatBestEffort).toHaveBeenCalledWith(session, '💡 每隊最多 5 人。')
+    expect(wwd.sendChatBestEffort).toHaveBeenCalledWith(session, '💡 每隊最多 5 人。', 'chat', 'interjection')
     expect(wwd.speakProactive).not.toHaveBeenCalled()
   })
 
   it('決策 = 插話但檢索沒中（哨兵句）→ 放棄投遞，冷卻照計', async () => {
     const session = putSession()
-    llm.completeText.mockResolvedValueOnce('{"interject": true, "question": "報名費多少"}')
+    llm.completeText.mockResolvedValueOnce(decision({ interject: true, question: '報名費多少' }))
     wwd.resolveAnswer.mockResolvedValueOnce('抱歉 沒有檢索到相關資訊')
     recordConversation(session, humanEntry('報名費多少啊？'))
     await vi.advanceTimersByTimeAsync(2_500)
@@ -361,7 +377,7 @@ describe('interjection — 主動插話（silence 時機層）', () => {
 
   it('決策 = 插話但答案是空字串 → 放棄投遞', async () => {
     const session = putSession()
-    llm.completeText.mockResolvedValueOnce('{"interject": true, "question": "地點在哪"}')
+    llm.completeText.mockResolvedValueOnce(decision({ interject: true, question: '地點在哪' }))
     wwd.resolveAnswer.mockResolvedValueOnce('')
     recordConversation(session, humanEntry('比賽地點在哪？'))
     await vi.advanceTimersByTimeAsync(2_500)
@@ -371,7 +387,7 @@ describe('interjection — 主動插話（silence 時機層）', () => {
 
   it('插話後 90s 冷卻：期間新的發言到點不再呼叫決策器', async () => {
     const session = putSession()
-    llm.completeText.mockResolvedValueOnce('{"interject": true, "question": "截止日"}')
+    llm.completeText.mockResolvedValueOnce(decision({ interject: true, question: '截止日' }))
     wwd.resolveAnswer.mockResolvedValueOnce('6/30。')
     recordConversation(session, humanEntry('截止日？'))
     await vi.advanceTimersByTimeAsync(2_500)
@@ -387,18 +403,10 @@ describe('interjection — 主動插話（silence 時機層）', () => {
     expect(llm.completeText).toHaveBeenCalledTimes(2)
   })
 
-  it('喚醒問答剛結束（15s 靜默期）→ 不評估', async () => {
+  it('喚醒寬限內、且對話串沒開著 → 不評估（省一次呼叫）', async () => {
     const session = putSession()
     session.lastWakeAt = Date.now()
     recordConversation(session, humanEntry('剛剛那個答案的出處是？'))
-    await vi.advanceTimersByTimeAsync(2_500)
-    expect(llm.completeText).not.toHaveBeenCalled()
-  })
-
-  it('喚醒待命窗開著（wakePendingUntil 未過期）→ 不評估', async () => {
-    const session = putSession()
-    session.wakePendingUntil = Date.now() + 8_000
-    recordConversation(session, humanEntry('請問報名日期'))
     await vi.advanceTimersByTimeAsync(2_500)
     expect(llm.completeText).not.toHaveBeenCalled()
   })
@@ -419,6 +427,89 @@ describe('interjection — 主動插話（silence 時機層）', () => {
     await vi.advanceTimersByTimeAsync(2_500)
     expect(wwd.resolveAnswer).not.toHaveBeenCalled()
     expect(wwd.sendChatBestEffort).not.toHaveBeenCalled()
+  })
+})
+
+// ── 沒喊名字的連續追問（回報 A.3）──────────────────────────────────────────────
+//
+// 與插話是**同一次 LLM 呼叫**的兩個出口：addressed=address 走這裡（當成喚醒問答回答），
+// 否則才看 interject。這是 A.3 從「只能靠 8 秒待命窗」變成「看得懂整段對話」的關鍵。
+
+describe('interjection — 連續追問（addressed=address）', () => {
+  beforeEach(() => {
+    mockEnv.INTERJECTION_ENABLED = true
+    mockEnv.ICEBREAKER_ENABLED = false
+  })
+
+  /** 剛問過蜜塔：對話串開著，且落在喚醒寬限內（A.3 的真實時序）。 */
+  function engagedSession() {
+    return putSession({ lastEngagedAt: Date.now(), lastWakeAt: Date.now() })
+  }
+
+  it('對話串開著時，喚醒寬限**不再**擋掉評估（否則追問永遠接不上）', async () => {
+    const session = engagedSession()
+    recordConversation(session, humanEntry('那名額有限制嗎', 'Arianis'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(llm.completeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('判定 address → 走喚醒問答的路（不是插話）', async () => {
+    const session = engagedSession()
+    llm.completeText.mockResolvedValueOnce(
+      decision({ addressed: 'address', question: '那名額有限制嗎', intent: 'factual' }),
+    )
+    recordConversation(session, humanEntry('那名額有限制嗎', 'Arianis'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).toHaveBeenCalledWith(session, '那名額有限制嗎', 'voice', {
+      speaker: 'Arianis',
+      intent: 'factual',
+    })
+    // 插話的投遞路徑完全沒被走到
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+    expect(wwd.sendChatBestEffort).not.toHaveBeenCalled()
+  })
+
+  it('聊天室打的追問 → 從聊天室回', async () => {
+    const session = engagedSession()
+    llm.completeText.mockResolvedValueOnce(decision({ addressed: 'address', question: '那報名費呢' }))
+    recordConversation(session, humanEntry('那報名費呢', '小華', 'chat'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).toHaveBeenCalledWith(session, '那報名費呢', 'chat', expect.anything())
+  })
+
+  it('對話串已關（叫停／逾時）→ 就算判 address 也不接話', async () => {
+    const session = putSession({ lastEngagedAt: 0 })
+    llm.completeText.mockResolvedValueOnce(decision({ addressed: 'address', question: '那名額有限制嗎' }))
+    recordConversation(session, humanEntry('那名額有限制嗎'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).not.toHaveBeenCalled()
+  })
+
+  it('判 address 但沒擷出問題 → 不接話（不可自行發明問題）', async () => {
+    const session = engagedSession()
+    llm.completeText.mockResolvedValueOnce(decision({ addressed: 'address', question: '' }))
+    recordConversation(session, humanEntry('嗯嗯了解'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).not.toHaveBeenCalled()
+  })
+
+  it('呼叫失敗（JSON 壞掉）→ **退回安靜**，與句中提及的方向相反', async () => {
+    // 這裡沒人喊名字：退回「照常回答」等於額度枯竭時把每一句話都當成在問她。
+    const session = engagedSession()
+    llm.completeText.mockResolvedValueOnce('429 之類的鬼東西')
+    recordConversation(session, humanEntry('那我們先討論別的'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).not.toHaveBeenCalled()
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+  })
+
+  it('判 none → 落回插話判斷；仍在喚醒寬限內就閉嘴', async () => {
+    const session = engagedSession()
+    llm.completeText.mockResolvedValueOnce(decision({ addressed: 'none', question: '地點在哪', interject: true }))
+    recordConversation(session, humanEntry('欸對了地點在哪'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).not.toHaveBeenCalled()
+    expect(wwd.resolveAnswer).not.toHaveBeenCalled()
   })
 
   it('INTERJECTION_ENABLED=false → 發言不排評估計時', async () => {

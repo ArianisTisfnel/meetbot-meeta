@@ -1,16 +1,17 @@
 import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { activeSessions } from './session-store.js'
-import { resolveAnswer, sendChatBestEffort, speakProactive } from './wake-word-detector.js'
+import { answerFollowUp, resolveAnswer, sendChatBestEffort, speakProactive } from './wake-word-detector.js'
 import { warmEouModel, isEndOfTurn } from '../lib/eou.js'
 import { completeText } from '../lib/llm.js'
 import { DIFY_NO_RESULT_SENTINEL } from '../lib/dify.js'
+import { decideTurn } from './response-policy.js'
+import { isEngaged } from './addressing.js'
 import {
   formatConversation,
   ICEBREAKER_OPENING_NO_KB,
   ICEBREAKER_OPENING_WITH_KB,
   ICEBREAKER_SUMMARY_SYSTEM,
-  INTERJECTION_DECISION_SYSTEM,
 } from './interjection-prompts.js'
 import type { MeetingSession } from '../types/session.js'
 
@@ -76,6 +77,14 @@ function getOrCreateState(meetingInstanceId: string): InterjectionState {
     states.set(meetingInstanceId, s)
   }
   return s
+}
+
+/**
+ * 取近期對話窗（唯讀複本）。語意定址裁決層要靠它判斷受話者——
+ * 同一段討論串裡的第二句提及，多半延續前一句的性質。
+ */
+export function getConversationWindow(meetingInstanceId: string, limit = DECISION_CONTEXT_ENTRIES): ConversationEntry[] {
+  return (states.get(meetingInstanceId)?.window ?? []).slice(-limit)
 }
 
 /** session 結束時清理（session-manager 的 closeSession / handleSessionClose 呼叫）。 */
@@ -221,7 +230,7 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
 
   s.lastIcebreakerAt = Date.now()
   logger.info({ meetingInstanceId, text: text.slice(0, 60) }, 'icebreaker: breaking silence via voice')
-  await speakProactive(session, text)
+  await speakProactive(session, text, 'icebreaker')
   armIcebreaker(meetingInstanceId)
 }
 
@@ -260,27 +269,39 @@ async function checkEndOfTurn(meetingInstanceId: string): Promise<void> {
   }, remaining)
 }
 
-/** ② 決策層＋③ 執行層。 */
+/**
+ * ② 決策層＋③ 執行層。
+ *
+ * 這一輪的**唯一一次** LLM 呼叫（decideTurn）同時回答兩個問題：
+ *   「剛才那句是在對蜜塔說話嗎」→ 是 → 走喚醒問答的路（沒喊名字的連續追問，回報 A.3）
+ *   「沒人叫她的話，她該不該主動補充」→ 該 → 走插話的路（原本的行為）
+ * 兩者互斥且共用同一份判斷，所以連續追問**沒有增加**任何呼叫。
+ */
 async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   const session = activeSessions.get(meetingInstanceId)
   const s = states.get(meetingInstanceId)
   if (!session || !session.botSession || !s || s.evaluating) return
 
   const now = Date.now()
+  // 冷卻／喚醒寬限只擋「主動插話」，不再擋整個評估——連續追問正好落在喚醒寬限裡
+  //（上一題才剛答完），照舊擋掉的話 A.3 永遠接不上。
+  // 對話串沒開著時兩者等價（不可能有追問），維持舊行為直接跳過、省一次呼叫。
+  const engaged = isEngaged(session, now)
+  const inWakeGrace = now - session.lastWakeAt < WAKE_GRACE_MS
+  const inCooldown = now - s.lastInterjectionAt < env.INTERJECTION_COOLDOWN_MS
+
   // 硬性防護：呼叫模型前先擋（省 token、避免搶話）。
   // 跳過時必留 log：原本靜默 return，實測「都不插話」時無從診斷是哪條擋的。
   const last = s.window[s.window.length - 1]
   const skipReason = session.isSpeaking
     ? 'bot-speaking'
-    : now - session.lastWakeAt < WAKE_GRACE_MS
-      ? 'wake-grace'
-      : session.wakePendingUntil > now
-        ? 'wake-pending'
-        : now - s.lastInterjectionAt < env.INTERJECTION_COOLDOWN_MS
+    : !last || last.fromBot
+      ? 'last-entry-from-bot'
+      : !engaged && inWakeGrace
+        ? 'wake-grace'
+        : !engaged && inCooldown
           ? 'cooldown'
-          : !last || last.fromBot
-            ? 'last-entry-from-bot'
-            : null
+          : null
   if (skipReason) {
     logger.info(
       { meetingInstanceId, skipReason, sinceWakeMs: now - session.lastWakeAt },
@@ -292,36 +313,45 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   s.evaluating = true
   try {
     const recent = s.window.slice(-DECISION_CONTEXT_ENTRIES)
-    const context = formatConversation(recent, { chatMarker: true })
+    const turn = await decideTurn({ window: recent, kbContentCard: session.kbContentCard })
 
-    const raw = await completeText({
-      maxTokens: 200,
-      temperature: 0, // 決策要穩定（實測 temp 預設 1.0 時同情境會忽插忽不插）
-      system: INTERJECTION_DECISION_SYSTEM,
-      prompt: `最近的對話：\n\n${context}`,
-      purpose: 'interjection',
-    })
-
-    let decision: { interject?: boolean; question?: string } = {}
-    try {
-      decision = JSON.parse(raw.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim())
-    } catch {
-      logger.warn({ meetingInstanceId, raw: raw.slice(0, 100) }, 'interjection: decision JSON parse failed')
+    // ── 出口一：這是在對蜜塔說話（沒喊名字的連續追問）→ 當成喚醒問答回答
+    // unknown（呼叫失敗／JSON 壞掉）在這裡**退回安靜**，與句中提及的方向相反：
+    // 那邊有喊名字，判不出來時多嘴一次而已；這裡沒喊名字，退回「照常回答」等於
+    // 額度一枯竭就把會議裡每一句話都當成在問她。
+    if (turn.addressed === 'address' && engaged && turn.question) {
+      logger.info(
+        { meetingInstanceId, question: turn.question.slice(0, 60), intent: turn.intent },
+        'interjection: decision = addressed follow-up, answering as a question',
+      )
+      const source = last.source === 'chat' ? 'chat' : 'voice'
+      await answerFollowUp(session, turn.question, source, {
+        speaker: last.speaker || undefined,
+        intent: turn.intent,
+      })
       return
     }
 
-    if (!decision.interject || !decision.question?.trim()) {
+    // ── 出口二：沒人叫她，但值得主動補充 → 原本的插話行為
+    if (inWakeGrace || inCooldown) {
+      logger.info(
+        { meetingInstanceId, skipReason: inWakeGrace ? 'wake-grace' : 'cooldown' },
+        'interjection: not a follow-up and still within grace/cooldown, staying quiet',
+      )
+      return
+    }
+    if (!turn.interject || !turn.question) {
       logger.info({ meetingInstanceId }, 'interjection: decision = stay quiet')
       return
     }
 
     logger.info(
-      { meetingInstanceId, question: decision.question.slice(0, 60) },
+      { meetingInstanceId, question: turn.question.slice(0, 60) },
       'interjection: decision = interject, resolving answer',
     )
 
     const lastAtBeforeAnswer = s.window[s.window.length - 1]?.at
-    const answer = await resolveAnswer(session, decision.question, 'chat')
+    const answer = await resolveAnswer(session, turn.question, 'chat', turn.intent)
 
     s.lastInterjectionAt = Date.now()
 
@@ -330,7 +360,7 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
     // （喚醒詞問答不在此列——使用者點名問就必須回應，哨兵句照常唸出。）
     if (!answer.trim() || answer === DIFY_NO_RESULT_SENTINEL) {
       logger.info(
-        { meetingInstanceId, question: decision.question.slice(0, 40) },
+        { meetingInstanceId, question: turn.question.slice(0, 40) },
         'interjection: no retrievable answer (sentinel/empty), skipping delivery',
       )
       return
@@ -342,10 +372,10 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
     const someoneSpoke = Boolean(nowLast && nowLast.at !== lastAtBeforeAnswer && !nowLast.fromBot)
     if (someoneSpoke || session.isSpeaking) {
       logger.info({ meetingInstanceId }, 'interjection: delivering via chat (people talking)')
-      await sendChatBestEffort(session, `💡 ${answer}`)
+      await sendChatBestEffort(session, `💡 ${answer}`, 'chat', 'interjection')
     } else {
       logger.info({ meetingInstanceId }, 'interjection: room still silent, delivering via voice')
-      await speakProactive(session, `我補充一下：${answer}`)
+      await speakProactive(session, `我補充一下：${answer}`, 'interjection')
     }
 
     s.window.push({ speaker: '蜜塔', text: answer, source: 'chat', fromBot: true, at: Date.now() })

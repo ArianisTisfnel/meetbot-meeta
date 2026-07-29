@@ -15,6 +15,10 @@ import {
   unregisterAgentSession,
   type PageSocketLike,
 } from '../../../../backend/src/agent/agent-registry'
+import {
+  resolveSpeakerAt,
+  clearSpeakerTimeline,
+} from '../../../../backend/src/agent/speaker-timeline'
 
 const BOT_ID = 'bot-abc'
 const BOT_NAME = '蜜塔'
@@ -105,6 +109,53 @@ describe('dispatchRecallEvent', () => {
     expect(segments.map((s) => s.text)).toEqual(['蜜塔請問', '我是蜜塔', '第二句'])
     // handlers 只收到非 bot 的兩句（防自迴圈）
     expect(handlers.onSegment).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('dispatchRecallEvent × 講者時間軸（A.4）', () => {
+  let handlers: ReturnType<typeof makeHandlers>
+
+  function speechEvent(type: 'speech_on' | 'speech_off', name: string, absolute?: string) {
+    return {
+      event: `participant_events.${type}`,
+      data: {
+        bot: { id: BOT_ID },
+        data: {
+          participant: { id: 1, name },
+          timestamp: { relative: 12.5, ...(absolute ? { absolute } : {}) },
+        },
+      },
+    }
+  }
+
+  beforeEach(() => {
+    handlers = makeHandlers()
+    registerRealtimeHandlers(BOT_ID, handlers, BOT_NAME)
+    clearSpeakerTimeline(BOT_ID)
+  })
+
+  it('speech_on/off → 進時間軸，之後查得到講者', () => {
+    const t0 = Date.parse('2026-07-28T10:00:00.000Z')
+    dispatchRecallEvent(speechEvent('speech_on', 'Wendy', '2026-07-28T10:00:00.000Z'))
+    dispatchRecallEvent(speechEvent('speech_off', 'Wendy', '2026-07-28T10:00:04.000Z'))
+    expect(resolveSpeakerAt(BOT_ID, t0 + 6_000)).toBe('Wendy')
+  })
+
+  it('沒有 timestamp.absolute → 退回收到當下的時間（不用 relative，座標系不同）', () => {
+    dispatchRecallEvent(speechEvent('speech_on', 'Wendy'))
+    // relative=12.5 若被誤用成 epoch，查詢時刻會完全對不上而回 null
+    expect(resolveSpeakerAt(BOT_ID, Date.now() + 1_000)).toBe('Wendy')
+  })
+
+  it('bot 自己的 speech_on → 不進時間軸（否則蜜塔會把自己的話歸給自己）', () => {
+    dispatchRecallEvent(speechEvent('speech_on', BOT_NAME))
+    expect(resolveSpeakerAt(BOT_ID, Date.now() + 1_000)).toBeNull()
+  })
+
+  it('未註冊的 botId → 安全略過', () => {
+    unregisterRealtimeHandlers(BOT_ID)
+    expect(() => dispatchRecallEvent(speechEvent('speech_on', 'Wendy'))).not.toThrow()
+    expect(resolveSpeakerAt(BOT_ID, Date.now())).toBeNull()
   })
 })
 

@@ -935,9 +935,12 @@ interface PaginatedResponse<T> {
 重新邀請蜜塔加入**既有**會議（適用 `FAILED` / `ENDED` / 卡住的 `PENDING`）。**需要：建立者本人，或關聯專案的會議權**。
 若 `status = ACTIVE` 則 `400 INVALID_REQUEST`（蜜塔已在會議中）。
 
-會把會議轉回 `PENDING`、清空 `startedAt/endedAt`、記錄本次邀請者 token，再走一次「邀請 Bot + 建立 WS session」流程（同 `POST .../meetings` 步驟④⑤）。並發上限與 scope 檢查同建立流程。
+依原會議狀態分兩種行為（並發上限與 scope 檢查同建立流程）：
 
-**Response 200**：`{ "id": "uuid", "status": "PENDING" }`
+- **`ENDED`**：已有正式資料（摘要、逐字稿、起訖時間），**不覆寫原紀錄**。另建一筆新的 `MeetingInstance`（沿用名稱／URL／專案，建立者為本次邀請者），對新實例走「邀請 Bot + 建立 WS session」流程，**回傳新實例的 id**（前端據此導向新會議頁）。
+- **`FAILED` / 卡住的 `PENDING`**：尚無任何會議資料，就地重置——轉回 `PENDING`、清空 `startedAt/endedAt`、記錄本次邀請者 token，再走一次邀請流程（同 `POST .../meetings` 步驟④⑤），回傳原 id。
+
+**Response 200**：`{ "id": "uuid", "status": "PENDING" }`（`id` 於 ENDED 重邀時為**新**會議實例的 id）
 
 **Error cases**：`400 INVALID_REQUEST`（ACTIVE 或 URL 無效）、`403 INSUFFICIENT_SCOPE`、`403 PERMISSION_DENIED`、`409 BOT_CONCURRENT_LIMIT`。
 
@@ -1222,7 +1225,9 @@ interface PaginatedResponse<T> {
 
 重新邀請蜜塔加入專案內既有會議（`FAILED`/`ENDED`/卡住的 `PENDING`）。**需要：會議權（Owner 或 `canMeeting` 參與者，或建立者本人）**——此端點由 `reinviteBot` 在 service 內部確實驗證。
 
-**Response 200**：`{ "id": "uuid", "status": "PENDING" }`
+行為同全局 reinvite：`ENDED` 會議**不覆寫原紀錄**，另建新 `MeetingInstance` 並回傳新 id；`FAILED`/卡住的 `PENDING` 就地重置回傳原 id。
+
+**Response 200**：`{ "id": "uuid", "status": "PENDING" }`（`id` 於 ENDED 重邀時為**新**會議實例的 id）
 
 **Error cases**：同全局 reinvite（`400`/`403 INSUFFICIENT_SCOPE`/`403 PERMISSION_DENIED`/`409 BOT_CONCURRENT_LIMIT`）。
 

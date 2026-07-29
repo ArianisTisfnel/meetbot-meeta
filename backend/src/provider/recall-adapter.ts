@@ -14,6 +14,7 @@ import {
   agentStopSpeaking,
   teardownAgentSession,
 } from '../agent/agent-relay.js'
+import { recordSpeechOn, recordSpeechOff, clearSpeakerTimeline } from '../agent/speaker-timeline.js'
 import { normalizeRecallTranscript, normalizeRecallRealtimeUtterance } from './normalize.js'
 import {
   BotAdmissionError,
@@ -172,7 +173,34 @@ export function dispatchRecallEvent(event: any): void {
     return
   }
 
+  if (type === 'participant_events.speech_on' || type === 'participant_events.speech_off') {
+    const d = data?.data
+    const name: string = d?.participant?.name ?? ''
+    // bot 自己的語音不進時間軸：蜜塔說話時也會有 speech_on，
+    // 混進來會讓她把自己的話歸給自己再回覆一次。
+    if (!name || isBotParticipant(reg, d?.participant)) return
+    const atMs = eventEpochMs(d?.timestamp)
+    if (type === 'participant_events.speech_on') recordSpeechOn(botId, name, atMs)
+    else recordSpeechOff(botId, name, atMs)
+    return
+  }
+
   logger.info({ type, botId }, 'recall webhook: other event')
+}
+
+/**
+ * webhook 事件時間 → epoch ms。
+ * 優先用 Recall 給的絕對時間；沒有（或格式不認得）才退回「收到的當下」。
+ * **不用 `timestamp.relative`**：它的原點是 Recall 錄製起點，與 agent 的 anchorMs
+ * 不保證同刻，換算需要一個我們無從得知的偏移量（見 speaker-timeline.ts 開頭）。
+ */
+function eventEpochMs(timestamp: any): number {
+  const abs = timestamp?.absolute
+  if (typeof abs === 'string') {
+    const ms = Date.parse(abs)
+    if (!Number.isNaN(ms)) return ms
+  }
+  return Date.now()
 }
 
 /** bot 已在會議中並錄製 ≈ admitted。 */
@@ -255,7 +283,15 @@ export class RecallAdapter implements MeetingBotProvider {
               url: `${env.RECALL_WEBHOOK_URL}/webhooks/recall?token=${env.RECALL_WEBHOOK_TOKEN}`,
               // partial_data：未定稿片段，講到一半就推送 → 喚醒詞快速偵測用
               //（定稿的 data 要等句子講完＋endpointing，慢 1.5–3 秒）。
-              events: ['transcript.data', 'transcript.partial_data', 'participant_events.chat_message'],
+              // speech_on/off：唯一拿得到「誰在講話」的來源（回報 2026-07-28 A.4）。
+              // AGENT_MODE 的單軌混音轉錄沒有講者標記，靠這兩個事件建時間軸反查人名。
+              events: [
+                'transcript.data',
+                'transcript.partial_data',
+                'participant_events.chat_message',
+                'participant_events.speech_on',
+                'participant_events.speech_off',
+              ],
             },
           ],
         }
@@ -524,6 +560,7 @@ export class RecallAdapter implements MeetingBotProvider {
     if (state.statusTimer) clearInterval(state.statusTimer)
     state.statusTimer = null
     unregisterRealtimeHandlers(state.botId)
+    clearSpeakerTimeline(state.botId)
     if (state.agentId) teardownAgentSession(state.agentId)
 
     await recallFetch<void>('POST', `/api/v1/bot/${state.botId}/leave_call/`, {}).catch((err) =>
