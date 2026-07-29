@@ -73,8 +73,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     creatorVexaToken: 'tok-123',
     isSpeaking: false,
     lastWakeAt: 0,
-    wakePendingUntil: 0,
-    wakePendingSpeaker: null,
+    lastEngagedAt: 0,
     partialAckAt: 0,
     currentSpeech: null,
     speechStartedAt: 0,
@@ -336,7 +335,7 @@ describe('喚醒詞剝除後的開頭標點清理', () => {
     expect((dify.askQuestion as any).mock.calls[0][0].question).toBe('報名費多少?')
   })
 
-  it('只叫名字＋標點（「蜜塔，」）→ 仍視為沒問題，開待命窗而不派發', async () => {
+  it('只叫名字＋標點（「蜜塔，」）→ 仍視為沒問題，開對話串而不派發', async () => {
     const session = makeSession()
     await handleTranscriptSegment(session, {
       segment_id: 'seg-name-only-punct',
@@ -346,7 +345,7 @@ describe('喚醒詞剝除後的開頭標點清理', () => {
       end_time: 2,
     })
     expect(mockBotProvider.speak).not.toHaveBeenCalled()
-    expect(session.wakePendingUntil).toBeGreaterThan(0)
+    expect(session.lastEngagedAt).toBeGreaterThan(0)
   })
 })
 
@@ -412,7 +411,9 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
 
   it('閒聊路徑 → 標【閒聊】（分類器回 chitchat）', async () => {
     const session = makeSession()
-    ;(completeText as any).mockResolvedValueOnce('chitchat').mockResolvedValueOnce('我在喔！')
+    ;(completeText as any)
+      .mockResolvedValueOnce('{"addressed":"address","question":"你好啊","intent":"chitchat","interject":false}')
+      .mockResolvedValueOnce('我在喔！')
     await handleTranscriptSegment(session, {
       segment_id: 'seg-tag-chitchat',
       text: '蜜塔，你好啊',

@@ -10,13 +10,16 @@ import {
   decideChatAddressing,
   isVocativeWake,
   stripLeadingPunct,
-  WAKE_PENDING_MS,
+  isEngaged,
+  FOLLOWUP_WINDOW_MS,
   type AddressingState,
 } from '../../../../backend/src/sessions/addressing'
-import { parseVerdict } from '../../../../backend/src/sessions/response-policy'
+import { parseTurnDecision } from '../../../../backend/src/sessions/response-policy'
 
 const NOW = 1_700_000_000_000
-const fresh = (): AddressingState => ({ lastWakeAt: 0, wakePendingUntil: 0, wakePendingSpeaker: null })
+const fresh = (): AddressingState => ({ lastWakeAt: 0, lastEngagedAt: 0 })
+/** 對話串開著（蜜塔剛被叫過）的狀態。 */
+const engaged = (at = NOW): AddressingState => ({ lastWakeAt: 0, lastEngagedAt: at })
 const decide = (text: string, state = fresh(), now = NOW, speaker = 'A') =>
   decideAddressing(state, { text, speaker, now })
 
@@ -71,47 +74,66 @@ describe('decideAddressing — 呼喚 vs 提及', () => {
     expect(decide('剛剛那個 Meeta 的回應真的很怪').kind).toBe('ambiguous')
   })
 
-  it('只叫名字 → wake-pending（不需要語意判斷，後面根本沒內容）', () => {
+  it('只叫名字 → wake-only（不需要語意判斷，後面根本沒內容）', () => {
     const d = decide('蜜塔')
-    expect(d.kind).toBe('wake-pending')
+    expect(d.kind).toBe('wake-only')
   })
 
-  it('只叫名字＋標點 → 一樣 wake-pending', () => {
-    expect(decide('蜜塔,').kind).toBe('wake-pending')
-    expect(decide('蜜塔，').kind).toBe('wake-pending')
+  it('只叫名字＋標點 → 一樣 wake-only', () => {
+    expect(decide('蜜塔,').kind).toBe('wake-only')
+    expect(decide('蜜塔，').kind).toBe('wake-only')
   })
 
-  it('沒有喚醒詞 → ignore', () => {
+  it('沒有喚醒詞、對話串也沒開 → ignore（連問都不問，是誤觸發與成本的主要防線）', () => {
     expect(decide('我們今天先過一下專案進度').kind).toBe('ignore')
   })
 })
 
-describe('decideAddressing — 待命窗與 debounce', () => {
-  it('待命窗內同一人的下一段 → 視為問題', () => {
-    const state: AddressingState = { lastWakeAt: 0, wakePendingUntil: NOW + WAKE_PENDING_MS, wakePendingSpeaker: 'A' }
-    const d = decide('我們的評分標準是什麼', state, NOW + 3000, 'A')
-    expect(d.kind).toBe('question')
-    if (d.kind === 'question') expect(d.viaPendingWindow).toBe(true)
+describe('decideAddressing — 連續追問（回報 A.3）', () => {
+  it('沒喊名字但對話串開著 → followup-candidate，交給語意層', () => {
+    const d = decide('那名額有限制嗎', engaged(), NOW + 12_000)
+    expect(d.kind).toBe('followup-candidate')
+    if (d.kind === 'followup-candidate') expect(d.candidate).toBe('那名額有限制嗎')
   })
 
-  it('待命窗逾時 → 不接', () => {
-    const state: AddressingState = { lastWakeAt: 0, wakePendingUntil: NOW + 1000, wakePendingSpeaker: 'A' }
-    expect(decide('我先去倒杯水', state, NOW + 20_000, 'A').kind).toBe('ignore')
+  it('第三輪追問一樣送得出去（舊的 8 秒待命窗接不到這裡）', () => {
+    expect(decide('那如果超過了會怎樣', engaged(), NOW + 20_000).kind).toBe('followup-candidate')
   })
 
-  it('待命窗屬於別人 → 不接', () => {
-    const state: AddressingState = { lastWakeAt: 0, wakePendingUntil: NOW + WAKE_PENDING_MS, wakePendingSpeaker: 'A' }
-    expect(decide('我先去倒杯水', state, NOW + 2000, 'B').kind).toBe('ignore')
+  it('換人講話照樣是候選：誰在追問由語意層判，不靠 speaker 比對', () => {
+    // 舊待命窗綁定說話者，「別人接著問」就接不上；語意層看得到整段對話。
+    expect(decide('那名額有限制嗎', engaged(), NOW + 5_000, 'B').kind).toBe('followup-candidate')
   })
 
+  it('對話串逾時 → ignore，不再花呼叫', () => {
+    expect(decide('我先去倒杯水', engaged(), NOW + FOLLOWUP_WINDOW_MS + 1).kind).toBe('ignore')
+  })
+
+  it('對話串從沒開過 → ignore', () => {
+    expect(decide('那名額有限制嗎', fresh(), NOW).kind).toBe('ignore')
+  })
+
+  it('isEngaged 的邊界', () => {
+    expect(isEngaged({ lastEngagedAt: 0 }, NOW)).toBe(false)
+    expect(isEngaged({ lastEngagedAt: NOW }, NOW + FOLLOWUP_WINDOW_MS - 1)).toBe(true)
+    expect(isEngaged({ lastEngagedAt: NOW }, NOW + FOLLOWUP_WINDOW_MS)).toBe(false)
+  })
+})
+
+describe('decideAddressing — debounce', () => {
   it('debounce 期間的重複喚醒 → debounced', () => {
-    const state: AddressingState = { lastWakeAt: NOW, wakePendingUntil: 0, wakePendingSpeaker: null }
+    const state: AddressingState = { lastWakeAt: NOW, lastEngagedAt: 0 }
     expect(decide('蜜塔，報名費多少錢', state, NOW + 800).kind).toBe('debounced')
   })
 
+  it('同一句定稿重送的追問也吃 debounce', () => {
+    const state: AddressingState = { lastWakeAt: NOW, lastEngagedAt: NOW }
+    expect(decide('那名額有限制嗎', state, NOW + 800).kind).toBe('debounced')
+  })
+
   it('只叫名字不消耗 debounce（下一段真問題才算）', () => {
-    // 「蜜塔」單獨成段時回 wake-pending，呼叫端不會寫 lastWakeAt
-    expect(decide('蜜塔').kind).toBe('wake-pending')
+    // 「蜜塔」單獨成段時回 wake-only，呼叫端不會寫 lastWakeAt
+    expect(decide('蜜塔').kind).toBe('wake-only')
   })
 })
 
@@ -130,7 +152,7 @@ describe('decideAddressing — 叫停指令', () => {
   it('叫停判定先於 debounce：她才剛開口就喊停也要收到', () => {
     // 叫停幾乎必然落在 debounce 窗內（她 2 秒前才被喚醒）。
     // 若讓 debounce 先攔，這句會整個被丟掉。
-    const state: AddressingState = { lastWakeAt: NOW, wakePendingUntil: 0, wakePendingSpeaker: null }
+    const state: AddressingState = { lastWakeAt: NOW, lastEngagedAt: NOW }
     expect(decide('蜜塔 閉嘴', state, NOW + 500).kind).toBe('stop')
   })
 
@@ -145,9 +167,8 @@ describe('decideAddressing — 叫停指令', () => {
     expect(decide('蜜塔，停車場在哪裡').kind).toBe('question')
   })
 
-  it('待命窗內回一句叫停 → stop（收回上一個呼喚，不是要問「不用了」）', () => {
-    const state: AddressingState = { lastWakeAt: 0, wakePendingUntil: NOW + WAKE_PENDING_MS, wakePendingSpeaker: 'A' }
-    expect(decide('不用了', state, NOW + 3000, 'A').kind).toBe('stop')
+  it('對話串裡回一句叫停 → stop（收回上一個呼喚，不是要問「不用了」）', () => {
+    expect(decide('不用了', engaged(), NOW + 3000, 'A').kind).toBe('stop')
   })
 
   it('聊天室打叫停 → stop（與語音同一份詞表）', () => {
@@ -164,7 +185,7 @@ describe('decideChatAddressing — 聊天室', () => {
     const d = decideChatAddressing({ lastWakeAt: 0 }, { text: '我覺得蜜塔的回應怪怪的', speaker: 'U', now: NOW })
     expect(d.kind).toBe('ambiguous')
   })
-  it('只有喚醒詞沒問題 → ignore（聊天室沒有待命窗）', () => {
+  it('只有喚醒詞沒問題 → ignore（打字時人一定會把問題打完）', () => {
     expect(decideChatAddressing({ lastWakeAt: 0 }, { text: '蜜塔', speaker: 'U', now: NOW }).kind).toBe('ignore')
   })
 })
@@ -184,14 +205,47 @@ describe('isVocativeWake — partial 片段的快速 ack 判準', () => {
   })
 })
 
-describe('parseVerdict — 語意裁決輸出解析', () => {
-  it('明確輸出', () => {
-    expect(parseVerdict('address')).toBe('address')
-    expect(parseVerdict('mention')).toBe('mention')
-    expect(parseVerdict(' Address\n')).toBe('address')
+describe('parseTurnDecision — 語意層輸出解析', () => {
+  it('完整 JSON', () => {
+    const d = parseTurnDecision(
+      '{"addressed":"address","question":"那名額有限制嗎","intent":"factual","interject":false}',
+    )
+    expect(d).toEqual({ addressed: 'address', question: '那名額有限制嗎', intent: 'factual', interject: false })
   })
-  it('無法解析 → unknown（呼叫端據此退回舊行為，不可當成 mention）', () => {
-    expect(parseVerdict('')).toBe('unknown')
-    expect(parseVerdict('我不確定')).toBe('unknown')
+
+  it('包在 markdown 圍欄裡也吃得下（模型常這樣回）', () => {
+    const d = parseTurnDecision('```json\n{"addressed":"none","question":"","intent":"factual","interject":true}\n```')
+    expect(d.addressed).toBe('none')
+    expect(d.interject).toBe(true)
+  })
+
+  it('addressed 用中文講也認得', () => {
+    expect(parseTurnDecision('{"addressed":"在談論蜜塔"}').addressed).toBe('mention')
+  })
+
+  it('壞掉的 JSON → unknown（呼叫端據此各自退回，不可當成 mention 或 none）', () => {
+    expect(parseTurnDecision('').addressed).toBe('unknown')
+    expect(parseTurnDecision('我不確定').addressed).toBe('unknown')
+  })
+
+  it('欄位缺漏 → 一律給最保守的預設值', () => {
+    const d = parseTurnDecision('{"addressed":"none"}')
+    expect(d).toEqual({ addressed: 'none', question: '', intent: 'factual', interject: false })
+  })
+
+  it('interject 只認真正的 true（模型回字串 "true" 不算）', () => {
+    expect(parseTurnDecision('{"addressed":"none","interject":"true"}').interject).toBe(false)
+  })
+
+  // 實測 2026-07-29：窗是「[A] 蜜塔」＋「[B] 我先去倒杯水」時，模型判 address 並把前一則的
+  // 「蜜塔」當成要回答的問題 → 有人喊一聲名字、別人講不相干的事，她就拿「蜜塔」去查知識庫。
+  it('question 只剩喚醒詞 → 視為沒有問題（喊一聲名字不是問題）', () => {
+    expect(parseTurnDecision('{"addressed":"address","question":"蜜塔"}').question).toBe('')
+    expect(parseTurnDecision('{"addressed":"address","question":"蜜塔，"}').question).toBe('')
+    expect(parseTurnDecision('{"addressed":"address","question":"Meeta"}').question).toBe('')
+  })
+
+  it('喚醒詞開頭的真問題不受影響', () => {
+    expect(parseTurnDecision('{"addressed":"address","question":"蜜塔在嗎"}').question).toBe('蜜塔在嗎')
   })
 })
