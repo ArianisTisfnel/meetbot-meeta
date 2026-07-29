@@ -321,6 +321,11 @@ export async function deleteMeeting(
  * ENDED 會議已有正式資料（摘要、逐字稿、起訖時間），重邀**不可覆寫原紀錄**：
  * 會另建一筆新的 MeetingInstance（沿用名稱/URL/專案）並回傳新 id。
  * FAILED / 卡住的 PENDING 尚無任何會議資料，沿用就地重置（避免堆積廢棄紀錄）。
+ *
+ * 已知取捨（不是 bug，看到一串刪不掉的 FAILED 列時別以為壞了）：
+ * 對一場「蜜塔一直進不去」的 ENDED 會議反覆重邀，每次都會新建一列，而 startBotSession
+ * 是背景執行、進不去就留下一列 FAILED；`deleteMeeting` 又不允許刪除 FAILED / ENDED
+ * （見該函式）。所以廢棄紀錄會累積且清不掉。要解得先調整刪除策略，不在本函式的範圍。
  */
 export async function reinviteBot(params: {
   meetingInstanceId: string
@@ -389,14 +394,22 @@ export async function reinviteBot(params: {
 
   let targetMeetingId = meetingInstanceId
   if (meeting.status === 'ENDED') {
-    // 保留原會議紀錄，另建新實例（vexaMeetingId 等由 startBotSession 重新填入）
+    // 保留原會議紀錄，另建新實例（vexaMeetingId 等由 startBotSession 重新填入）。
+    //
+    // 兩個欄位的歸屬**刻意不同**，別把它們一起改成本次邀請者：
+    //   createdByVexaUserId = 紀錄擁有者，決定誰能改名／刪除，以及這場會議算誰的歷史。
+    //     **沿用原紀錄**——重邀是「把蜜塔再請回同一場會議」，不是換人接管這筆紀錄。
+    //     寫成本次邀請者的話，A 建的全局會議被 B 重邀之後 A 就失去控制權了（PR #13 審查發現）。
+    //   creatorApiTokenId = 本次邀請者的 token，**一定要換**。這不是政策是技術限制：
+    //     per-session WS 用邀請者自己的 token 建連線，Vexa 的 WS 授權以
+    //     `meeting.user_id == current_user.id` 判斷，用別人的 token 訂閱不到。
     const newMeeting = await prisma.meetingInstance.create({
       data: {
         projectId: meeting.projectId,
         name: meeting.name,
         googleMeetUrl: meeting.googleMeetUrl,
         status: 'PENDING',
-        createdByVexaUserId: vexaUserId,
+        createdByVexaUserId: meeting.createdByVexaUserId,
         creatorApiTokenId: vexaApiTokenId,
       },
     })

@@ -214,6 +214,32 @@ describe('reinviteBot', () => {
     )
   })
 
+  // 上面那個案例的建立者與重邀者都是 1，分不出「沿用」與「改成本次邀請者」。
+  // 這裡讓別人來重邀，才鎖得住擁有權不轉移（PR #13 審查發現）。
+  it('別人重邀 ENDED 會議 → 擁有權沿用原建立者，只有 token 換成本次邀請者', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      projectId: 'proj-1',
+      status: 'ENDED',
+      // 專案會議：重邀者靠 canMeeting 過權限檢查，不是靠「我是建立者」
+      project: { difyDatasetId: null, ownerVexaUserId: 99, members: [{ canMeeting: true }] },
+    })
+    mockPrisma.meetingInstance.create.mockResolvedValue({ ...MOCK_MEETING, id: 'meet-uuid-2' })
+
+    // 會議是 1 建的，這次由 2 重邀
+    await reinviteBot({ ...REINVITE_PARAMS, vexaUserId: 2, vexaApiTokenId: 77 })
+
+    expect(mockPrisma.meetingInstance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        // 擁有權不轉移：否則 1 會失去改名／刪除這場會議的權限
+        createdByVexaUserId: 1,
+        // token 一定要換：per-session WS 用邀請者自己的 token，Vexa 以
+        // meeting.user_id == current_user.id 授權，用別人的 token 訂閱不到
+        creatorApiTokenId: 77,
+      }),
+    })
+  })
+
   it('FAILED 會議 → 就地重置為 PENDING，不另建實例', async () => {
     mockPrisma.meetingInstance.findUnique.mockResolvedValue({
       ...MOCK_MEETING,
