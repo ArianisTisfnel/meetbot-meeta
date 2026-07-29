@@ -11,7 +11,7 @@ vi.mock('../../../../backend/src/sessions/session-manager', () => ({
 }))
 
 import { parseGoogleMeetUrl } from '../../../../backend/src/lib/vexa'
-import { createMeeting, leaveMeeting } from '../../../../backend/src/services/meeting.service'
+import { createMeeting, leaveMeeting, reinviteBot } from '../../../../backend/src/services/meeting.service'
 import * as sessionManagerMock from '../../../../backend/src/sessions/session-manager'
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -163,3 +163,117 @@ describe('leaveMeeting', () => {
     expect(result.status).toBe('ENDED')
   })
 })
+
+// ── reinviteBot ──────────────────────────────────────────────────────────────
+
+describe('reinviteBot', () => {
+  const REINVITE_PARAMS = {
+    meetingInstanceId: 'meet-uuid-1',
+    vexaUserId: 1,
+    vexaApiTokenId: 42,
+    maxConcurrentBots: 1,
+    vexaToken: 'tok-123',
+    vexaTokenScopes: ['bot', 'browser', 'tx'],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.meetingInstance.count.mockResolvedValue(0)
+  })
+
+  it('ENDED 會議 → 保留原紀錄、另建新 MeetingInstance、回傳新 id', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      status: 'ENDED',
+      summary: '既有摘要',
+      transcriptStoragePath: 'transcripts/meet-uuid-1.md',
+      project: null,
+    })
+    mockPrisma.meetingInstance.create.mockResolvedValue({
+      ...MOCK_MEETING,
+      id: 'meet-uuid-2',
+    })
+
+    const result = await reinviteBot(REINVITE_PARAMS)
+
+    expect(result).toEqual({ id: 'meet-uuid-2', status: 'PENDING' })
+    // 原紀錄不可被覆寫
+    expect(mockPrisma.meetingInstance.update).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        name: MOCK_MEETING.name,
+        googleMeetUrl: MOCK_MEETING.googleMeetUrl,
+        status: 'PENDING',
+        createdByVexaUserId: 1,
+        creatorApiTokenId: 42,
+      }),
+    })
+    // bot 派往新實例
+    expect(sessionManagerMock.startBotSession).toHaveBeenCalledWith(
+      expect.objectContaining({ meetingInstanceId: 'meet-uuid-2' }),
+    )
+  })
+
+  // 上面那個案例的建立者與重邀者都是 1，分不出「沿用」與「改成本次邀請者」。
+  // 這裡讓別人來重邀，才鎖得住擁有權不轉移（PR #13 審查發現）。
+  it('別人重邀 ENDED 會議 → 擁有權沿用原建立者，只有 token 換成本次邀請者', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      projectId: 'proj-1',
+      status: 'ENDED',
+      // 專案會議：重邀者靠 canMeeting 過權限檢查，不是靠「我是建立者」
+      project: { difyDatasetId: null, ownerVexaUserId: 99, members: [{ canMeeting: true }] },
+    })
+    mockPrisma.meetingInstance.create.mockResolvedValue({ ...MOCK_MEETING, id: 'meet-uuid-2' })
+
+    // 會議是 1 建的，這次由 2 重邀
+    await reinviteBot({ ...REINVITE_PARAMS, vexaUserId: 2, vexaApiTokenId: 77 })
+
+    expect(mockPrisma.meetingInstance.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        // 擁有權不轉移：否則 1 會失去改名／刪除這場會議的權限
+        createdByVexaUserId: 1,
+        // token 一定要換：per-session WS 用邀請者自己的 token，Vexa 以
+        // meeting.user_id == current_user.id 授權，用別人的 token 訂閱不到
+        creatorApiTokenId: 77,
+      }),
+    })
+  })
+
+  it('FAILED 會議 → 就地重置為 PENDING，不另建實例', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      status: 'FAILED',
+      project: null,
+    })
+    mockPrisma.meetingInstance.update.mockResolvedValue({ ...MOCK_MEETING })
+
+    const result = await reinviteBot(REINVITE_PARAMS)
+
+    expect(result).toEqual({ id: 'meet-uuid-1', status: 'PENDING' })
+    expect(mockPrisma.meetingInstance.create).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.update).toHaveBeenCalledWith({
+      where: { id: 'meet-uuid-1' },
+      data: expect.objectContaining({ status: 'PENDING' }),
+    })
+    expect(sessionManagerMock.startBotSession).toHaveBeenCalledWith(
+      expect.objectContaining({ meetingInstanceId: 'meet-uuid-1' }),
+    )
+  })
+
+  it('ACTIVE 會議 → 400 INVALID_REQUEST（蜜塔已在會議中）', async () => {
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({
+      ...MOCK_MEETING,
+      status: 'ACTIVE',
+      project: null,
+    })
+
+    await expect(reinviteBot(REINVITE_PARAMS)).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+      statusCode: 400,
+    })
+    expect(mockPrisma.meetingInstance.create).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.update).not.toHaveBeenCalled()
+  })
+})
+

@@ -1,4 +1,5 @@
 'use client'
+import { useRouter } from 'next/navigation'
 import { useBotReinvite } from '@/hooks/use-meeting'
 import { Button } from '@/components/ui/button'
 import { RefreshIcon } from '@/components/ui/icons'
@@ -20,12 +21,23 @@ export function ReinviteBotButton({
   label = '重新邀請蜜塔',
   compact,
 }: Props) {
+  const router = useRouter()
   const reinvite = useBotReinvite(projectId, meetingId)
 
   const handleReinvite = (e: React.MouseEvent) => {
     e.stopPropagation()
     reinvite.mutate(undefined, {
-      onSuccess: () => toast.success('已重新邀請蜜塔，加入中…'),
+      onSuccess: (data) => {
+        toast.success('已重新邀請蜜塔，加入中…')
+        // ENDED 會議重邀會另建新會議實例（原紀錄保留），導向新會議頁
+        if (data.id !== meetingId) {
+          router.push(
+            projectId
+              ? `/projects/${projectId}/meetings/${data.id}`
+              : `/meetings/${data.id}`
+          )
+        }
+      },
       onError: (err: any) => toast.error(err?.message ?? '重新邀請失敗'),
     })
   }
