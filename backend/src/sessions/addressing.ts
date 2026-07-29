@@ -1,10 +1,10 @@
 /**
  * 定址判斷（addressing）——「這句話是不是在對蜜塔說話？」
  *
- * 為什麼獨立成檔（兩個理由，都跟這一層之後要被替換有關）：
- *   1. **這是語意層的接縫**。目前是純字串比對；回報 2026-07-28 A.1 指出它會被
- *      「單純討論到蜜塔」誤觸發，A.3 指出沒喊名字的連續追問接不上。之後的語意層
- *      只要換掉本檔的實作，喚醒流程（debounce／待命窗／派發）一行都不用動。
+ * 為什麼獨立成檔（兩個理由，都跟這一層與語意層的分工有關）：
+ *   1. **這是語意層的接縫**。本檔只做純字串比對，凡是需要看語意的都往上交給
+ *      response-policy.ts 的 decideTurn（A.1 的「單純討論到蜜塔」、A.3 的連續追問）。
+ *      判準換人時喚醒流程（debounce／派發）一行都不用動。
  *   2. **離線可評測**。`scripts/eval-meeting.ts` 直接 import 同一份判斷跑劇本，
  *      不必開真會議。線上跑的與評測的永遠是同一份（沿用 eval-interjection 的做法）。
  *
@@ -17,8 +17,20 @@ export const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達桃]|小幫手|
 
 /** 同一次喚醒的重複觸發抑制期。 */
 export const DEBOUNCE_MS = 2000
-/** 喚醒待命窗長度：只叫名字沒問題後，等後續段落接問題的時間。 */
-export const WAKE_PENDING_MS = 8000
+
+/**
+ * 「對話串還開著」的有效期：蜜塔最近一次被叫之後多久內，**沒喊名字**的發言仍值得
+ * 送語意層問一句「這是不是在追問我」。
+ *
+ * 這不是舊 `WAKE_PENDING_MS` 待命窗的改名版，兩者的角色完全不同（2026-07-29 換掉）：
+ *   舊待命窗是**判準**——窗內就直接當成問題，用時間去近似語意，於是只接得住
+ *     「只叫名字 →（8 秒內）→ 問題」這一種句型，接不住第二、三輪追問（回報 A.3）。
+ *   本常數只是**成本閘門**——判準交給語意層（它看得到前幾輪對話，本來就知道
+ *     「那名額有限制嗎」在延續什麼）。這裡只負責擋掉「蜜塔根本沒參與過的對話」，
+ *     免得整場會議每一句都送去問。
+ * 因此可以放得比待命窗寬得多：判錯的成本由語意層承擔，不是由這個數字承擔。
+ */
+export const FOLLOWUP_WINDOW_MS = 90_000
 
 /**
  * 明確的叫停指令。**定義在本檔而非 wake-word-detector**：兩個呼叫點要共用同一份詞表——
@@ -98,8 +110,17 @@ export function isVocativeWake(text: string): boolean {
 /** 定址判斷需要看的 session 狀態（MeetingSession 的子集，方便離線構造）。 */
 export interface AddressingState {
   lastWakeAt: number
-  wakePendingUntil: number
-  wakePendingSpeaker: string | null
+  /**
+   * 蜜塔最近一次被叫到的時刻（epoch ms）：派發問題、只叫名字都算，叫停則歸零。
+   * 0 = 目前沒有和蜜塔進行中的對話串。用途只有一個——決定沒喊名字的發言值不值得
+   * 送語意層（見 {@link FOLLOWUP_WINDOW_MS}）。
+   */
+  lastEngagedAt: number
+}
+
+/** 現在還在「和蜜塔的對話串」裡嗎？線上與評測共用同一個判準。 */
+export function isEngaged(state: Pick<AddressingState, 'lastEngagedAt'>, now: number): boolean {
+  return state.lastEngagedAt > 0 && now - state.lastEngagedAt < FOLLOWUP_WINDOW_MS
 }
 
 export interface Utterance {
@@ -114,44 +135,51 @@ export type AddressingDecision =
   | { kind: 'ignore'; reason: string }
   /** 剛回應過，這句視為同一次喚醒的殘響 → 不重複回應。 */
   | { kind: 'debounced'; reason: string }
-  /** 只叫了名字沒接問題 → 開待命窗等下一段。 */
-  | { kind: 'wake-pending'; wakeWord: string; reason: string }
-  /** 明確叫停（蜜塔 不用了／閉嘴）→ 閉嘴並收掉待命窗，**不可**當成新問題。 */
+  /** 只叫了名字沒接問題 → 不回應，但對話串算是開了（後續發言值得送語意層）。 */
+  | { kind: 'wake-only'; wakeWord: string; reason: string }
+  /** 明確叫停（蜜塔 不用了／閉嘴）→ 閉嘴並關掉對話串，**不可**當成新問題。 */
   | { kind: 'stop'; reason: string }
   /**
    * 句中提及了蜜塔，但分不出是「對她說話」還是「談論她」→ 交給語意層裁決。
    * candidate 是「若真的是提問，問題會是什麼」，語意層判定為提問時直接拿去用。
    */
   | { kind: 'ambiguous'; wakeWord: string; candidate: string; reason: string }
+  /**
+   * 沒喊名字，但蜜塔近期被叫過 → 可能是連續追問（回報 A.3），交給語意層看整段對話裁決。
+   * 與 ambiguous 的差別只在**呼叫失敗時的退回方向**（見 AddressVerdict 的說明）。
+   */
+  | { kind: 'followup-candidate'; candidate: string; reason: string }
   /** 確定在問蜜塔，且問題內容已擷取出來 → 派發。 */
-  | { kind: 'question'; question: string; reason: string; viaPendingWindow: boolean }
+  | { kind: 'question'; question: string; reason: string }
 
 /**
- * 語音段落的定址判斷（現行規則版）。
+ * 語音段落的定址判斷（規則層）。
  *
- * 已知限制（正是回報 A 要解決的，先寫在這裡當作語意層的驗收清單）：
- *   - 「蜜塔這功能好像有點難做」這種**談論**蜜塔的句子會被判成提問（A.1）
- *   - 沒喊名字的連續追問（「那它呢」）只有在 8 秒待命窗內才接得上（A.3）
- *   - 多人會議中無法分辨這題是誰問的、針對哪個議題（A.4）
+ * 本層只做「零成本就能定案」與「值不值得花一次語意判斷」兩件事，其餘一律往上交：
+ *   句首呼喚「蜜塔，X」        → 直接定案（question），零延遲
+ *   叫停「蜜塔 不用了」        → 直接定案（stop），不花 LLM
+ *   句中提及「我覺得蜜塔X」    → ambiguous，語意層判對她說 vs 談論她
+ *   沒喊名字但對話串還開著     → followup-candidate，語意層判是不是追問
+ *   沒喊名字、對話串也沒開     → ignore，連問都不問（誤觸發與成本的主要防線）
  */
 export function decideAddressing(state: AddressingState, u: Utterance): AddressingDecision {
   const match = WAKE_WORD_REGEX.exec(u.text)
 
   if (!match) {
-    // 喚醒待命窗：前一段只叫了名字，這段（同說話者）直接視為問題。
-    const inWindow =
-      state.wakePendingUntil > 0 &&
-      u.now <= state.wakePendingUntil &&
-      (!state.wakePendingSpeaker || state.wakePendingSpeaker === u.speaker)
-    if (!inWindow) return { kind: 'ignore', reason: 'no wake word' }
+    // 沒喊名字：只有在「和蜜塔的對話串還開著」時才值得問語意層。
+    // 這一關擋掉整場會議絕大多數的一般討論——不擋的話，每一句話都要花一次呼叫。
+    if (!isEngaged(state, u.now)) return { kind: 'ignore', reason: 'no wake word (no open thread)' }
 
-    const question = stripLeadingPunct(u.text).trim()
-    if (!question) return { kind: 'ignore', reason: 'pending window but empty text' }
-    // 待命窗裡回一句「不用了」是收回上一個呼喚，不是要問「不用了」
-    if (STOP_COMMAND_REGEX.test(question)) {
-      return { kind: 'stop', reason: 'stop command in pending window' }
+    const candidate = stripLeadingPunct(u.text).trim()
+    if (!candidate) return { kind: 'ignore', reason: 'open thread but empty text' }
+    // 對話串裡回一句「不用了」是收回上一個呼喚，不是要問「不用了」
+    if (STOP_COMMAND_REGEX.test(candidate)) {
+      return { kind: 'stop', reason: 'stop command in open thread' }
     }
-    return { kind: 'question', question, reason: 'wake pending window', viaPendingWindow: true }
+    if (u.now - state.lastWakeAt < DEBOUNCE_MS) {
+      return { kind: 'debounced', reason: 'within debounce window' }
+    }
+    return { kind: 'followup-candidate', candidate, reason: 'open thread (possible follow-up)' }
   }
 
   const after = u.text.slice(match.index + match[0].length)
@@ -168,11 +196,12 @@ export function decideAddressing(state: AddressingState, u: Utterance): Addressi
     return { kind: 'debounced', reason: 'within debounce window' }
   }
 
-  // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
-  //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
+  // 只叫名字沒接問題：不回應，但把對話串打開，**不消耗 debounce**
+  //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段——
+  //  那一段就會是 followup-candidate，由語意層接上）。
   // 這個判斷不需要語意——後面根本沒有內容可以談論。
   if (!question) {
-    return { kind: 'wake-pending', wakeWord: match[0], reason: 'wake word without question' }
+    return { kind: 'wake-only', wakeWord: match[0], reason: 'wake word without question' }
   }
 
   // 不是呼喚句型 → 不自行定案，交給語意裁決（純規則在這裡必錯，見上方反例）
@@ -185,12 +214,13 @@ export function decideAddressing(state: AddressingState, u: Utterance): Addressi
     }
   }
 
-  return { kind: 'question', question, reason: `vocative「${match[0]}」`, viaPendingWindow: false }
+  return { kind: 'question', question, reason: `vocative「${match[0]}」` }
 }
 
 /**
  * 聊天室訊息的定址判斷。
- * 比語音簡單：沒有 STT 斷句問題，故沒有待命窗；打字時人一定會把問題打完。
+ * 比語音簡單：沒有 STT 斷句問題，打字時人一定會把問題打完，所以沒喊名字就是沒在叫她
+ *（聊天室的連續追問由插話決策層在 turn 結束時一併處理，與語音同一份 decideTurn）。
  */
 export function decideChatAddressing(
   state: Pick<AddressingState, 'lastWakeAt'>,
@@ -216,5 +246,5 @@ export function decideChatAddressing(
       reason: 'wake word mid-message (mention vs address unclear)',
     }
   }
-  return { kind: 'question', question, reason: `vocative「${match[0]}」`, viaPendingWindow: false }
+  return { kind: 'question', question, reason: `vocative「${match[0]}」` }
 }

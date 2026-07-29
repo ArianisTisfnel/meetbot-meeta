@@ -6,17 +6,21 @@ import * as dify from '../lib/dify.js'
 import { toTraditional } from '../lib/zh.js'
 import { completeText } from '../lib/llm.js'
 import { recordConversation, getConversationWindow } from './interjection.js'
-import { arbitrateAddress } from './response-policy.js'
+import { decideTurn, parseIntent, routeForIntent, type QuestionIntent } from './response-policy.js'
+import type { ConversationEntryLike } from './interjection-prompts.js'
 import { withReplyTag, type AnswerRoute, type ReplyTag } from './reply-tags.js'
 import {
   decideAddressing,
   decideChatAddressing,
   isVocativeWake,
   DEBOUNCE_MS,
-  WAKE_PENDING_MS,
   STOP_COMMAND_REGEX,
 } from './addressing.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
+
+// 意圖四分類的定義已移到 response-policy.ts（它現在是每輪語意決策的產出之一）。
+// 這裡 re-export 保持既有 import 路徑不變（scripts/eval-meeting.ts、單元測試）。
+export { parseIntent, routeForIntent, type QuestionIntent }
 
 /** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
 function requireBotSession(session: MeetingSession): BotSession {
@@ -221,50 +225,65 @@ export async function handleTranscriptSegment(
     case 'debounced':
       return
 
+    // 沒喊名字但對話串還開著（可能是連續追問）→ **本層不處理**。
+    // 交給 turn 結束時的 decideTurn：那一層等講完整輪才判，才不會每收到一個 STT 片段
+    // 就打一次 LLM（一輪話常被切成好幾段）。這也是「每輪一次呼叫」的落點。
+    case 'followup-candidate':
+      return
+
     // 句中提及蜜塔：規則分不出「對她說」還是「談論她」→ 花一次便宜的 LLM 呼叫裁決。
-    // 只有這一小撮案例付這個成本，句首呼喚仍是零成本零延遲。
+    // 這裡**不等 turn 結束**：使用者剛喊了她的名字，等 2.5 秒才反應太慢。
     case 'ambiguous': {
-      const verdict = await arbitrateAddress({
-        text: segment.text,
-        speaker: segment.speaker,
-        recent: getConversationWindow(session.meetingInstanceId),
+      const turn = await decideTurn({
+        window: windowEndingWith(session, {
+          speaker: segment.speaker,
+          text: segment.text,
+          source: 'voice',
+          fromBot: false,
+        }),
+        kbContentCard: session.kbContentCard,
       })
       logger.info(
         {
           meetingInstanceId: session.meetingInstanceId,
-          verdict,
+          verdict: turn.addressed,
+          intent: turn.intent,
           wakeWord: decision.wakeWord,
           text: segment.text.slice(0, 60),
           speaker: segment.speaker,
         },
         'addressing: mid-utterance mention arbitrated',
       )
-      // mention = 模型判定在談論蜜塔 → 安靜（這正是回報 A.1 的病灶）。
+      // mention / none = 模型判定不是在對她說話 → 安靜（這正是回報 A.1 的病灶）。
       // unknown = 呼叫失敗（Gemini 免費層 429 是常態，見 docs/15）→ **退回舊行為照常回答**。
       // 「判不出來」絕不能等同「沒在叫我」：那會讓額度一枯竭蜜塔就對所有非逗號句型全聾，
       // 比偶爾多嘴嚴重得多。
-      if (verdict === 'mention') return
-      if (!decision.candidate) {
-        session.wakePendingUntil = now + WAKE_PENDING_MS
-        session.wakePendingSpeaker = segment.speaker || null
+      if (turn.addressed === 'mention' || turn.addressed === 'none') return
+      // 問題內容以規則層擷取的為準：語意層可能把它濃縮或改寫，
+      // 而送進 Dify 的字串走樣會直接影響檢索命中（規則層擷的是使用者的原話）。
+      const question = decision.candidate
+      if (!question) {
+        // 只喊了名字、沒有問題內容 → 對話串照開，等下一段
+        session.lastEngagedAt = now
         return
       }
-      session.wakePendingUntil = 0
-      session.wakePendingSpeaker = null
+      session.lastEngagedAt = now
       session.lastWakeAt = now
-      await dispatchQuestion(session, decision.candidate, 'voice', {
+      await dispatchQuestion(session, question, 'voice', {
         skipPendingPrompt: consumePartialAck(session, now),
         speaker: segment.speaker,
+        // 呼叫失敗（unknown）時 intent 是預設值，讓 dispatch 自己再判一次
+        intent: turn.addressed === 'address' ? turn.intent : undefined,
       })
       return
     }
 
-    // 明確叫停：收掉待命窗，並吃掉喚醒寬限讓插話引擎安靜一陣子。
+    // 明確叫停：關掉對話串，並吃掉喚醒寬限讓插話引擎安靜一陣子。
     // 真正的「閉嘴」動作不在這裡做——handleBargeIn 對同一段語音先跑，
     // 蜜塔正在說話時它已經停了語音；這裡負責的是「不要把叫停當成新問題去查資料」。
+    // 關掉對話串同時也讓後續發言不再被當成追問候選（叫停就是叫停，不是換個方式繼續問）。
     case 'stop':
-      session.wakePendingUntil = 0
-      session.wakePendingSpeaker = null
+      session.lastEngagedAt = 0
       session.lastWakeAt = now
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, reason: decision.reason, speaker: segment.speaker },
@@ -272,26 +291,24 @@ export async function handleTranscriptSegment(
       )
       return
 
-    // 只叫名字沒接問題：開待命窗等下一段，**不消耗 debounce**
-    //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段）。
-    case 'wake-pending':
-      session.wakePendingUntil = now + WAKE_PENDING_MS
-      session.wakePendingSpeaker = segment.speaker || null
+    // 只叫名字沒接問題：對話串照開、**不消耗 debounce**
+    //（STT 常把「蜜塔，」finalize 成獨立 utterance，問題在下一段，
+    //  下一段會是 followup-candidate，由 turn 結束時的語意層接上）。
+    case 'wake-only':
+      session.lastEngagedAt = now
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, wakeWord: decision.wakeWord, speaker: segment.speaker },
-        'wake word matched without question, opening pending window',
+        'wake word matched without question, opening follow-up thread',
       )
       return
 
     case 'question':
-      session.wakePendingUntil = 0
-      session.wakePendingSpeaker = null
+      session.lastEngagedAt = now
       session.lastWakeAt = now
       logger.info(
         {
           meetingInstanceId: session.meetingInstanceId,
           reason: decision.reason,
-          viaPendingWindow: decision.viaPendingWindow,
           question: decision.question.slice(0, 60),
           speaker: segment.speaker,
         },
@@ -302,6 +319,21 @@ export async function handleTranscriptSegment(
         speaker: segment.speaker,
       })
   }
+}
+
+/**
+ * 組出「最後一則就是要判斷的那一句」的對話窗——decideTurn 的 prompt 以此為前提。
+ *
+ * 為什麼要自己補：`recordConversation` 由 session-manager 在 handler 之後才呼叫，
+ * 而 handler 走到語意層時已經 await 過幾次，兩者的先後順序會隨呼叫路徑改變
+ *（喚醒問答走到 resolveAnswerRouted 時已經記進去了，句中提及則還沒）。
+ * 這裡補上並去重，兩條路都拿到同一種形狀的窗，不必去猜時序。
+ */
+function windowEndingWith(session: MeetingSession, entry: ConversationEntryLike): ConversationEntryLike[] {
+  const recent: ConversationEntryLike[] = getConversationWindow(session.meetingInstanceId)
+  const last = recent[recent.length - 1]
+  if (last && last.text === entry.text && last.speaker === entry.speaker) return recent
+  return [...recent, entry]
 }
 
 /** partial 快速喚醒已說過開場白？（一次性消耗，窗內的 final 派發跳過開場白） */
@@ -323,11 +355,13 @@ export async function handleChatMessage(
   const decision = decideChatAddressing(session, { text: chatMsg.text, speaker: chatMsg.sender, now })
 
   let question: string
+  let intent: QuestionIntent | undefined
   if (decision.kind === 'question') {
     question = decision.question
   } else if (decision.kind === 'stop') {
     // 聊天室打「蜜塔 不用了」：同樣吃掉喚醒寬限，讓插話引擎別接著補一句
     session.lastWakeAt = now
+    session.lastEngagedAt = 0
     logger.info(
       { meetingInstanceId: session.meetingInstanceId, reason: decision.reason },
       'addressing: stop command in chat, staying quiet',
@@ -335,24 +369,53 @@ export async function handleChatMessage(
     return
   } else if (decision.kind === 'ambiguous') {
     // 句中提及（「我覺得蜜塔這功能…」打在聊天室）→ 與語音同一套語意裁決
-    const verdict = await arbitrateAddress({
-      text: chatMsg.text,
-      speaker: chatMsg.sender,
-      recent: getConversationWindow(session.meetingInstanceId),
+    const turn = await decideTurn({
+      window: windowEndingWith(session, {
+        speaker: chatMsg.sender,
+        text: chatMsg.text,
+        source: 'chat',
+        fromBot: false,
+      }),
+      kbContentCard: session.kbContentCard,
     })
     logger.info(
-      { meetingInstanceId: session.meetingInstanceId, verdict, text: chatMsg.text.slice(0, 60) },
+      { meetingInstanceId: session.meetingInstanceId, verdict: turn.addressed, intent: turn.intent, text: chatMsg.text.slice(0, 60) },
       'addressing: mid-message mention arbitrated (chat)',
     )
-    if (verdict === 'mention') return // unknown（呼叫失敗）→ 退回舊行為照常回答，見語音路徑註解
+    // unknown（呼叫失敗）→ 退回舊行為照常回答，見語音路徑註解
+    if (turn.addressed === 'mention' || turn.addressed === 'none') return
     question = decision.candidate
+    if (turn.addressed === 'address') intent = turn.intent
   } else {
     return
   }
 
   // debounce 在確認有問題內容後才消耗，避免空喚醒吃掉緊接著的真問題。
   session.lastWakeAt = now
-  await dispatchQuestion(session, question, 'chat')
+  session.lastEngagedAt = now
+  await dispatchQuestion(session, question, 'chat', { intent })
+}
+
+/**
+ * 沒喊名字的連續追問（回報 A.3）：由插話引擎在 turn 結束時判定為「在對蜜塔說話」後呼叫。
+ *
+ * 為什麼由那一層呼叫而不是 handleTranscriptSegment：判準要看整輪講完的內容，
+ * 而且它與插話決策**是同一次 LLM 呼叫**的兩個出口，不該重複問一次。
+ */
+export async function answerFollowUp(
+  session: MeetingSession,
+  question: string,
+  source: 'voice' | 'chat',
+  opts?: { speaker?: string; intent?: QuestionIntent },
+): Promise<void> {
+  const now = Date.now()
+  session.lastWakeAt = now
+  session.lastEngagedAt = now
+  logger.info(
+    { meetingInstanceId: session.meetingInstanceId, question: question.slice(0, 60), source, intent: opts?.intent },
+    'addressing: follow-up in open thread, dispatching',
+  )
+  await dispatchQuestion(session, question, source, { speaker: opts?.speaker, intent: opts?.intent })
 }
 
 // ── 主動語音（插話/破冰用）────────────────────────────────────────────────────
@@ -407,69 +470,21 @@ export async function speakProactive(
 
 // ── 意圖分流（Dify RAG 前）────────────────────────────────────────────────────
 //
-// 「你覺得這方案如何」直接丟 Dify RAG 會答「資料沒提到」→ 先用便宜的 LLM 四分類：
-//   chitchat：寒暄/閒聊（你好嗎、謝謝）→ LLM 直答，完全不碰 Dify 與逐字稿
-//   factual ：查文件就能答（報名日期）→ Dify RAG（原路）
-//   context ：意見/脈絡型（你覺得如何）→ LLM＋近期逐字稿
-//   hybrid  ：兩者都要（依簡章看我們時程合理嗎）→ 先 Dify 檢索、再與脈絡合成
-// 分類失敗一律回退 factual（保持原行為）。
-
-export type QuestionIntent = 'chitchat' | 'factual' | 'context' | 'hybrid'
-
-/** 把分類器輸出解析成意圖（寬鬆比對；未知回 factual）。純函式，可測。 */
-export function parseIntent(raw: string): QuestionIntent {
-  const t = raw.toLowerCase()
-  if (t.includes('chitchat') || t.includes('閒聊') || t.includes('寒暄')) return 'chitchat'
-  if (t.includes('hybrid') || t.includes('混合')) return 'hybrid'
-  if (t.includes('context') || t.includes('意見') || t.includes('脈絡')) return 'context'
-  return 'factual'
-}
+// 「你覺得這方案如何」直接丟 Dify RAG 會答「資料沒提到」→ 先判意圖再選資料來源。
+// 判斷本身在 response-policy.ts 的 decideTurn（與定址／插話同一次呼叫），
+// 本檔只負責「拿到 intent 之後要怎麼取答案」。分類失敗一律回退 factual（保持原行為）。
 
 /**
- * 意圖 → 實際走的資料來源。**路由的唯一真相**：resolveAnswerRouted 與
- * scripts/eval-meeting.ts 都用這一份，避免評測跟線上判不一樣。
+ * 單一問題的意圖分類。**線上不再用它**——線上的 intent 一律來自 decideTurn 的同一次
+ * 呼叫（見 resolveAnswerRouted）。留著是給 `scripts/eval-meeting.ts --intent` 用的：
+ * 那個評測要的正是「單看這個問題該走哪條路」，退化成只有一則的對話窗即可。
  */
-export function routeForIntent(intent: QuestionIntent, hasKb: boolean): AnswerRoute {
-  if (!hasKb) return 'transcript'
-  if (intent === 'chitchat') return 'chitchat'
-  if (intent === 'context') return 'transcript'
-  return 'rag' // factual / hybrid 都要先做 Dify 檢索
-}
-
-/** 匯出供 scripts/eval-meeting.ts 離線評測（線上與評測共用同一份 prompt）。 */
 export async function classifyIntent(question: string, kbContentCard: string | null): Promise<QuestionIntent> {
-  try {
-    const raw = await completeText({
-      system: [
-        '你是會議助理的問題分類器。把問題分成四類，只回傳一個詞：',
-        'chitchat = 與專案資料和會議討論都無關的寒暄、打招呼、道謝、玩笑（你好嗎、在嗎、how are you、謝謝你、你是誰）',
-        'factual = 查專案文件/資料就能回答的事實型問題（日期、金額、規則、名額）',
-        'context = 需要對話脈絡或主觀判斷的問題（你覺得如何、有什麼建議、剛才誰說了什麼）',
-        'hybrid = 同時需要文件資料與對話脈絡（依照文件看我們的討論/規劃合理嗎）',
-        '接續型追問（「那X呢」「X呢」）若追問焦點 X 是日期、金額、名額、規則等查資料可答的事實 → factual。',
-        '多輪脈絡由檢索端的對話記憶處理，不要只因句子省略主詞就分成 context（實測：「那 Beta 呢」誤分 context 會答不出來）。',
-        '意見/評估型問題若評估對象是專案資料的內容（時程、規則、預算合不合理）→ hybrid：要先查文件才有評估依據。',
-        'context 保留給純會議脈絡問題（剛才誰說了什麼、我們剛剛的結論是什麼）。',
-        '最高優先規則：問「誰說了／誰問了／剛才是誰」，或指涉「這場會、我們剛剛、現在開的會」的問題 → 一律 context，就算句中出現文件相關名詞也一樣（實測：「剛才是誰在問簡報格式」被誤送去查文件，只會回無法回答）。',
-        '對蜜塔自身狀態或行為的話（你還在嗎、你不X了嗎、你怎麼不說話）→ chitchat。',
-        // 內容卡：讓分類器知道知識庫實際有什麼，別把查不到的事實題硬分成 factual
-        ...(kbContentCard
-          ? [
-              `知識庫目前的文件與內容摘要：\n${kbContentCard}`,
-              'factual/hybrid 只給「上述文件能涵蓋」的問題；與文件內容無關的事實題，分 context（讓助理靠對話脈絡回答）。',
-            ]
-          : []),
-        '範例：「今年銷售多少」→ factual；「那 Beta 呢」「那決賽呢」→ factual；「hello 蜜塔」→ chitchat；「你覺得剛剛的提案如何」→ context；「你覺得我們時程安排合理嗎」→ hybrid；「剛才是誰在問簡報格式」「我們這場會確認了哪些日期」→ context；「你不破冰了嗎」→ chitchat',
-      ].join('\n'),
-      prompt: `問題：${question}`,
-      maxTokens: 10,
-      temperature: 0, // 分類要穩定：同一題必須永遠同一路（實測 temp 預設 1.0 會同題不同命）
-    })
-    return parseIntent(raw)
-  } catch (err) {
-    logger.warn({ err }, 'classifyIntent failed, falling back to factual')
-    return 'factual'
-  }
+  const { intent } = await decideTurn({
+    window: [{ speaker: '參與者', text: question, source: 'voice', fromBot: false }],
+    kbContentCard,
+  })
+  return intent
 }
 
 // ── 問答路由 ───────────────────────────────────────────────────────────────────
@@ -483,6 +498,8 @@ export async function resolveAnswerRouted(
   session: MeetingSession,
   question: string,
   mode: 'voice' | 'chat',
+  /** 已經從 decideTurn 拿到的意圖（同一輪的呼叫產出）。沒給才自己判一次。 */
+  knownIntent?: QuestionIntent,
 ): Promise<{ answer: string; route: AnswerRoute }> {
   if (!session.difyDatasetId) {
     logger.info(
@@ -493,9 +510,23 @@ export async function resolveAnswerRouted(
     return { answer, route: 'transcript' }
   }
 
-  // 意圖分流：意見/脈絡型不走 RAG（會答「資料沒提到」）
+  // 意圖分流：意見/脈絡型不走 RAG（會答「資料沒提到」）。
+  // 句中提及／連續追問／插話這三條路的 intent 是跟定址一起判出來的（knownIntent），
+  // 只有純規則定案的句首呼喚才需要在這裡補一次呼叫——總量與舊制的 classifyIntent 相同。
   const classifyStart = Date.now()
-  const intent = await classifyIntent(question, session.kbContentCard)
+  const intent =
+    knownIntent ??
+    (
+      await decideTurn({
+        window: windowEndingWith(session, {
+          speaker: '參與者',
+          text: question,
+          source: mode,
+          fromBot: false,
+        }),
+        kbContentCard: session.kbContentCard,
+      })
+    ).intent
   const route = routeForIntent(intent, true)
   logger.info(
     {
@@ -505,6 +536,7 @@ export async function resolveAnswerRouted(
       mode,
       question: question.slice(0, 40),
       classifyMs: Date.now() - classifyStart,
+      fromTurnDecision: knownIntent !== undefined,
     },
     'resolveAnswer: intent classified',
   )
@@ -580,8 +612,9 @@ export async function resolveAnswer(
   session: MeetingSession,
   question: string,
   mode: 'voice' | 'chat',
+  knownIntent?: QuestionIntent,
 ): Promise<string> {
-  const { answer } = await resolveAnswerRouted(session, question, mode)
+  const { answer } = await resolveAnswerRouted(session, question, mode, knownIntent)
   return answer
 }
 
@@ -598,7 +631,7 @@ async function dispatchQuestion(
   session: MeetingSession,
   question: string,
   source: 'voice' | 'chat',
-  opts?: { skipPendingPrompt?: boolean; speaker?: string },
+  opts?: { skipPendingPrompt?: boolean; speaker?: string; intent?: QuestionIntent },
 ): Promise<void> {
   const pendingVoice = PENDING_VOICE
   // ack 在意圖分類**之前**送出，此時還不知道會走 RAG／逐字稿／閒聊哪條路，
@@ -622,7 +655,7 @@ async function dispatchQuestion(
       )
       await sendChatBestEffort(session, ackChat, 'chat', 'ack')
       try {
-        const { answer, route } = await resolveAnswerRouted(session, question, 'chat')
+        const { answer, route } = await resolveAnswerRouted(session, question, 'chat', opts?.intent)
         await sendChatBestEffort(session, presentAnswer(answer), 'chat', route)
       } catch (err) {
         logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'voice→chat fallback failed')
@@ -651,7 +684,7 @@ async function dispatchQuestion(
     try {
       const botSession = requireBotSession(session)
       // 查詢與開場白並行：不等開場白唸完才開始查（省下開場白的 3-5 秒）
-      const answerPromise = resolveAnswerRouted(session, question, 'voice')
+      const answerPromise = resolveAnswerRouted(session, question, 'voice', opts?.intent)
       answerPromise.catch(() => {}) // 先掛 handler：開場白 throw 時查詢的 rejection 才不會變 unhandled
       if (speakPending) {
         session.currentSpeech = pendingVoice
@@ -741,7 +774,7 @@ async function dispatchQuestion(
     await sendChatBestEffort(session, pendingChat, 'chat', 'ack')
 
     try {
-      const { answer, route } = await resolveAnswerRouted(session, question, 'chat')
+      const { answer, route } = await resolveAnswerRouted(session, question, 'chat', opts?.intent)
       await sendChatBestEffort(session, presentAnswer(answer), 'chat', route)
     } catch (err) {
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion chat failed')

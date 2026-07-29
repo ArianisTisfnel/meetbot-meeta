@@ -37,13 +37,15 @@ export interface MeetingSession {
   isSpeaking: boolean
   lastWakeAt: number
   /**
-   * 喚醒待命窗（epoch ms）：說話者只叫了名字（「蜜塔」）沒接問題時開窗，
-   * 窗內同說話者的下一段語音直接視為問題。0 = 無待命。
-   * 解決 STT 把「叫名字 →（停頓）→ 問問題」切成兩個 utterance 的情境。
+   * 蜜塔最近一次被叫到的時刻（epoch ms）：派發問題、只叫名字都算，叫停歸零。
+   * 0 = 目前沒有和蜜塔進行中的對話串。
+   *
+   * 用途只有一個：決定「沒喊名字的發言」值不值得送語意層問「這是不是在追問我」
+   *（`FOLLOWUP_WINDOW_MS`）。取代舊的 wakePendingUntil/wakePendingSpeaker 待命窗——
+   * 那組欄位是用 8 秒時間窗去**近似**語意，只接得住「叫名字 →（停頓）→ 問題」，
+   * 接不住第二、三輪追問（回報 A.3）。現在判準由語意層負責，這裡只管成本閘門。
    */
-  wakePendingUntil: number
-  /** 開喚醒待命窗的說話者（null = 未知，任何人皆可接問題）。 */
-  wakePendingSpeaker: string | null
+  lastEngagedAt: number
   /**
    * partial 快速喚醒的確認時間戳（epoch ms）：partial 片段偵測到喚醒詞時
    * 先說開場確認（「我收到了」），final 段落到達派發問題時據此跳過開場白。

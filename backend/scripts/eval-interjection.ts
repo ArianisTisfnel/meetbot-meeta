@@ -5,6 +5,10 @@
  * import 自 src/sessions/interjection-prompts.ts），統計準確率——
  * 不用開真會議、不用多帳號，改完 prompt 直接重跑比較。
  *
+ * ⚠️ 2026-07-29 起這份 prompt（TURN_DECISION_SYSTEM）同時產出定址／意圖／插話三個判斷，
+ *    本檔只讀 interject 與 question 兩個欄位——劇本全是「沒人叫蜜塔」的情境，語意不變。
+ *    另一半（定址、連續追問）由 scripts/eval-meeting.ts --address 蓋。改 prompt 兩邊都要跑。
+ *
  * 跑法（從 backend/ 目錄）：
  *   npx tsx --env-file .env scripts/eval-interjection.ts                     # 全部劇本 × 全部變體
  *   npx tsx --env-file .env scripts/eval-interjection.ts --runs 3            # 每案例跑 3 次看穩定度
@@ -27,7 +31,7 @@ import { readFileSync, appendFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  INTERJECTION_DECISION_SYSTEM,
+  TURN_DECISION_SYSTEM,
   formatConversation,
   type ConversationEntryLike,
 } from '../src/sessions/interjection-prompts.js'
@@ -73,7 +77,7 @@ if (!cases.length) {
 }
 
 const variants: Array<{ name: string; system: string }> = [
-  { name: 'live（現行線上版）', system: INTERJECTION_DECISION_SYSTEM },
+  { name: 'live（現行線上版）', system: TURN_DECISION_SYSTEM },
   ...(file.candidates ?? []).map((c) => ({
     name: c.name,
     system: Array.isArray(c.system) ? c.system.join('\n') : c.system,

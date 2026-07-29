@@ -1,91 +1,162 @@
 /**
- * 語意定址裁決層——只處理規則分不出來的灰色地帶。
+ * 語意決策層——規則層分不出來的事，一律在這裡用**一次** LLM 呼叫決定。
  *
  * 分工（成本設計是重點，Gemini 免費層是全系統的阿基里斯腱）：
- *   句首呼喚「蜜塔，X」  → addressing.ts 純規則定案，**不進本檔**，零成本零延遲
- *   句中提及「我覺得蜜塔X」→ 進本檔，一次便宜的 LLM 呼叫判「對她說 vs 談論她」
- *   完全沒提到名字的追問  → 由插話決策層在 turn 結束時處理（interjection.ts）
+ *   句首呼喚「蜜塔，X」  → addressing.ts 純規則定案「該回應」，零成本零延遲；
+ *                          本檔只再補一個 intent（取代舊的 classifyIntent，呼叫數不變）
+ *   句中提及「我覺得蜜塔X」→ 本檔判「對她說 vs 談論她」＋順手拿到 intent（舊制要打兩次）
+ *   沒喊名字的連續追問     → 本檔判「這是不是在延續剛才問我的那一串」（回報 A.3）
+ *   完全沒人叫、也不是追問 → 本檔判「該不該主動補充」（插話決策，interjection.ts 用）
  *
- * 為什麼句中提及非得靠語意：表面特徵完全分不出這兩句——
- *   「蜜塔這個功能是不是有點難做」→ 在跟同事討論蜜塔（不該回應）
- *   「那我問一下蜜塔，這個功能難做嗎」→ 在問蜜塔（該回應）
- * 兩句都含喚醒詞、都是疑問句、都有「這個功能」。差別只在誰是受話者。
+ * 為什麼四件事合成一次呼叫，見 interjection-prompts.ts 的 TURN_DECISION_SYSTEM 說明。
  *
- * ⚠️ 改本檔的 prompt 前後都要跑：
+ * ⚠️ 改本檔或那份 prompt 前後都要跑：
  *   npx tsx --env-file .env scripts/eval-meeting.ts --address
+ *   npx tsx --env-file .env scripts/eval-interjection.ts --variant live
  */
 import { completeText } from '../lib/llm.js'
 import { logger } from '../middleware/logger.js'
+import { WAKE_WORD_REGEX } from './addressing.js'
+import type { AnswerRoute } from './reply-tags.js'
 import type { ConversationEntryLike } from './interjection-prompts.js'
-import { formatConversation } from './interjection-prompts.js'
-
-/** 判定結果。unknown = 呼叫失敗，由呼叫端決定退回哪一邊。 */
-export type AddressVerdict = 'address' | 'mention' | 'unknown'
-
-export const ADDRESS_ARBITER_SYSTEM = [
-  '你在判斷一句會議發言的「受話者」。會議裡有一位 AI 助理叫「蜜塔」（英文 Meeta）。',
-  '這句話裡提到了蜜塔。請判斷說話者是「在對蜜塔說話」還是「在跟其他人談論蜜塔」。',
-  '',
-  '只回傳一個詞：',
-  'address = 在對蜜塔說話（向她提問、請她做事、跟她打招呼）',
-  'mention = 在談論蜜塔這個人／這個功能，受話者是其他與會者',
-  '',
-  '判斷要點：',
-  '- 「蜜塔」後面直接接名詞或的字結構（蜜塔這個功能、蜜塔的回應、蜜塔的判斷）→ 蜜塔是被討論的主題 → mention',
-  '- 句子在評論蜜塔（很怪、太死板、做得不錯、有點難做）→ mention',
-  '- 轉述蜜塔說過的話並向他人求證（蜜塔剛才說X對吧、蜜塔不是說過X嗎）→ mention',
-  '- 句子是對蜜塔下指令或直接問她（蜜塔幫我查、我問一下蜜塔X是什麼）→ address',
-  '- 「蜜塔」後面緊接第二人稱「你」，且那個「你」指的是蜜塔 → address',
-  '- 打招呼、問候、確認她在不在、問她是誰（蜜塔你好、蜜塔在嗎、蜜塔早安、hello 蜜塔、蜜塔你是誰）→ address。',
-  '  這類話沒有第三方受話者可言——沒有人會跟同事說「蜜塔你好」來談論蜜塔。',
-  '- 以上規則都套不上、真的無法判斷時才回 mention：沒被叫卻插嘴，比漏答一次更傷會議體驗。',
-  '',
-  '範例：',
-  '「我覺得蜜塔這個功能是不是有點難做啊」→ mention',
-  '「對啊，蜜塔現在的判斷太死板了」→ mention',
-  '「剛剛那個 Meeta 的回應真的很怪」→ mention',
-  '「蜜塔剛才說截止日是六月三十號對吧」→ mention',
-  '「蜜塔的摘要要記得存檔」→ mention',
-  '「蜜塔你好」→ address',
-  '「蜜塔在嗎」→ address',
-  '「蜜塔你是誰啊」→ address',
-  '「小幫手請問報名日期」→ address',
-  '「那我問一下蜜塔，報名截止日是什麼時候」→ address',
-  '「欸我們叫蜜塔查一下好了，蜜塔你可以查嗎」→ address',
-].join('\n')
+import { formatConversation, TURN_DECISION_SYSTEM } from './interjection-prompts.js'
 
 /**
- * 裁決一句「句中提及蜜塔」的發言。
- * 帶近期對話當脈絡：同一段討論串裡的第二句提及，多半延續前一句的性質。
+ * 定址判定。`unknown` = 呼叫失敗，**由呼叫端決定退回哪一邊**——
+ * 兩個呼叫端的安全方向相反，不可以在本檔統一決定：
+ *   句中提及（有喊名字）→ 退回「照常回答」。判不出來絕不能等同「沒在叫我」，
+ *     否則額度一枯竭蜜塔就對所有非逗號句型全聾。
+ *   連續追問（沒喊名字）→ 退回「安靜」。這裡若退回照常回答，額度枯竭時
+ *     蜜塔會把會議中每一句話都當成在問她，是災難等級的誤觸發。
  */
-export async function arbitrateAddress(params: {
-  text: string
-  speaker: string
-  /** 近期對話窗（不含本句），提供受話者線索。 */
-  recent: ConversationEntryLike[]
-}): Promise<AddressVerdict> {
-  const context = params.recent.length
-    ? `最近的對話：\n${formatConversation(params.recent, { chatMarker: false })}\n\n`
+export type AddressVerdict = 'address' | 'mention' | 'none' | 'unknown'
+
+// ── 意圖四分類 ────────────────────────────────────────────────────────────────
+// 定義放本檔（而非 wake-word-detector）的理由：intent 現在是語意決策層的產出之一，
+// 與定址/插話同一次呼叫得到。wake-word-detector 仍 re-export，呼叫端與測試不用改。
+//
+//   chitchat：寒暄/閒聊（你好嗎、謝謝）→ LLM 直答，完全不碰 Dify 與逐字稿
+//   factual ：查文件就能答（報名日期）→ Dify RAG（原路）
+//   context ：意見/脈絡型（你覺得如何）→ LLM＋近期逐字稿
+//   hybrid  ：兩者都要（依簡章看我們時程合理嗎）→ 先 Dify 檢索、再與脈絡合成
+
+export type QuestionIntent = 'chitchat' | 'factual' | 'context' | 'hybrid'
+
+/** 把分類器輸出解析成意圖（寬鬆比對；未知回 factual）。純函式，可測。 */
+export function parseIntent(raw: string): QuestionIntent {
+  const t = raw.toLowerCase()
+  if (t.includes('chitchat') || t.includes('閒聊') || t.includes('寒暄')) return 'chitchat'
+  if (t.includes('hybrid') || t.includes('混合')) return 'hybrid'
+  if (t.includes('context') || t.includes('意見') || t.includes('脈絡')) return 'context'
+  return 'factual'
+}
+
+/**
+ * 意圖 → 實際走的資料來源。**路由的唯一真相**：resolveAnswerRouted 與
+ * scripts/eval-meeting.ts 都用這一份，避免評測跟線上判不一樣。
+ */
+export function routeForIntent(intent: QuestionIntent, hasKb: boolean): AnswerRoute {
+  if (!hasKb) return 'transcript'
+  if (intent === 'chitchat') return 'chitchat'
+  if (intent === 'context') return 'transcript'
+  return 'rag' // factual / hybrid 都要先做 Dify 檢索
+}
+
+// ── 每輪語意決策 ──────────────────────────────────────────────────────────────
+
+export interface TurnDecision {
+  /** 最後一則是不是在對蜜塔說話。 */
+  addressed: AddressVerdict
+  /** 要回答的問題（忠實擷取自對話；沒有就是空字串）。 */
+  question: string
+  /** 這個問題該去哪裡找答案。 */
+  intent: QuestionIntent
+  /** 沒人叫蜜塔的前提下，現在主動補充恰不恰當（插話引擎用）。 */
+  interject: boolean
+}
+
+/** 呼叫失敗時的中性結果：定址 unknown（呼叫端自行退回），其餘一律最保守。 */
+const FAILED_DECISION: TurnDecision = {
+  addressed: 'unknown',
+  question: '',
+  intent: 'factual',
+  interject: false,
+}
+
+/**
+ * 對「剛講完的這一輪」做一次語意決策。
+ *
+ * window 的**最後一則必須是要判斷的那一句**（格式與插話決策層完全相同，
+ * 這樣 eval-interjection.ts 的劇本與線上輸入分佈一致）。
+ */
+export async function decideTurn(params: {
+  window: ConversationEntryLike[]
+  /** 知識庫內容卡：讓 intent 知道知識庫實際有什麼，別把查不到的事實題硬分成 factual。 */
+  kbContentCard?: string | null
+}): Promise<TurnDecision> {
+  const kb = params.kbContentCard
+    ? `\n\n知識庫目前的文件與內容摘要：\n${params.kbContentCard}`
     : ''
   try {
     const raw = await completeText({
-      system: ADDRESS_ARBITER_SYSTEM,
-      prompt: `${context}要判斷的這一句（說話者：${params.speaker || '未知'}）：\n${params.text}`,
-      maxTokens: 10,
-      temperature: 0, // 判定要穩定：同一句必須永遠同一個結果
+      system: TURN_DECISION_SYSTEM,
+      prompt: `最近的對話：\n\n${formatConversation(params.window, { chatMarker: true })}${kb}`,
+      maxTokens: 200,
+      temperature: 0, // 判定要穩定：同一段對話必須永遠同一個結果
       purpose: 'interjection',
     })
-    return parseVerdict(raw)
+    return parseTurnDecision(raw)
   } catch (err) {
-    logger.warn({ err }, 'arbitrateAddress failed')
-    return 'unknown'
+    logger.warn({ err }, 'decideTurn failed')
+    return FAILED_DECISION
   }
 }
 
-/** 寬鬆解析裁決輸出。純函式，可測。 */
-export function parseVerdict(raw: string): AddressVerdict {
-  const t = raw.toLowerCase()
-  if (t.includes('address') || t.includes('對蜜塔說') || t.includes('提問')) return 'address'
-  if (t.includes('mention') || t.includes('談論') || t.includes('討論')) return 'mention'
-  return 'unknown'
+/**
+ * 寬鬆解析決策輸出。純函式，可測。
+ * 解析不出 JSON 時回 FAILED_DECISION——這與呼叫失敗同義（拿不到判斷），
+ * 讓兩個呼叫端各自的退回策略一體適用，不必分辨「沒回應」與「回了看不懂的東西」。
+ */
+export function parseTurnDecision(raw: string): TurnDecision {
+  let obj: Record<string, unknown>
+  try {
+    obj = JSON.parse(raw.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim())
+  } catch {
+    logger.warn({ raw: raw.slice(0, 120) }, 'parseTurnDecision: JSON parse failed')
+    return FAILED_DECISION
+  }
+  const addressedRaw = String(obj.addressed ?? '').toLowerCase()
+  const addressed: AddressVerdict =
+    addressedRaw.includes('address') || addressedRaw.includes('對蜜塔說')
+      ? 'address'
+      : addressedRaw.includes('mention') || addressedRaw.includes('談論') || addressedRaw.includes('討論')
+        ? 'mention'
+        : addressedRaw.includes('none') || addressedRaw.includes('沒有')
+          ? 'none'
+          : 'unknown'
+  return {
+    addressed,
+    question: meaningfulQuestion(typeof obj.question === 'string' ? obj.question.trim() : ''),
+    intent: parseIntent(String(obj.intent ?? '')),
+    interject: obj.interject === true,
+  }
+}
+
+/** 只剩喚醒詞與標點的字串（拆掉之後什麼都不剩）。 */
+const WAKE_WORD_ONLY_REGEX = new RegExp(
+  `^(?:${WAKE_WORD_REGEX.source}|[\\s，。！？、…,.!?;:；：~～\\-—])+$`,
+)
+
+/**
+ * 只喊了名字不算問題。
+ *
+ * 實測 2026-07-29：對話窗是「[Arianis] 蜜塔」＋「[小華] 我先去倒杯水」時，模型會判
+ * addressed=address 並把前一則的「蜜塔」當成本輪要回答的問題——於是有人叫了一聲名字、
+ * 別人接著講不相干的事，蜜塔就拿「蜜塔」兩個字去查知識庫。
+ *
+ * prompt 那側已寫明「question 一定要取自最後一則」，這裡是結構性的第二道防線：
+ * 放在解析層（而不是某一條呼叫路徑裡），線上與離線評測就不會只有一邊擋得住。
+ */
+function meaningfulQuestion(question: string): string {
+  return question && WAKE_WORD_ONLY_REGEX.test(question) ? '' : question
 }
