@@ -157,11 +157,23 @@ export default function AgentPage() {
     let disposed = false
     // 播放中以 player 回報為準；沒在播時依 WS 開閉顯示 listening / connecting
     let playing = false
+    let captureEnabled = true
+    let mutedAt = 0
     let wsOpen = false
     const refreshState = () => {
       if (disposed) return
       setState(playing ? 'speaking' : wsOpen ? 'listening' : 'connecting')
     }
+    // 收音開關由 relay 指揮（它才知道語音真正播完的時刻）；這個上限只是保命，
+    // 解除靜音的指令掉了也不會永久失聰。
+    const MAX_MUTE_MS = 30_000
+    const setCapture = (enabled: boolean) => {
+      captureEnabled = enabled
+      mutedAt = enabled ? 0 : Date.now()
+    }
+    const muteWatchdog = setInterval(() => {
+      if (!captureEnabled && mutedAt && Date.now() - mutedAt > MAX_MUTE_MS) setCapture(true)
+    }, 5_000)
 
     const start = async () => {
       // Recall bot 瀏覽器帶 autoplay 權限；resume 保險（一般瀏覽器手動測試時需要）
@@ -183,14 +195,20 @@ export default function AgentPage() {
 
       const player = new AudioWorkletNode(ctx, 'pcm-player')
       player.connect(ctx.destination)
+      // 播放狀態只用來更新畫面：不能拿它來解除靜音——串流塊到得慢時佇列會中途播空，
+      // 那時蜜塔還沒講完，提早開麥就會把自己的聲音錄進去（自問自答迴圈）。
       player.port.onmessage = (e: MessageEvent) => {
         playing = Boolean(e.data?.playing)
         refreshState()
       }
 
+      // 靜音時送等長的靜音塊，而不是停止上傳：轉錄端靠連續音訊流判斷句子結束，
+      // 中間斷流會讓使用者正在問的那句遲遲不定稿（問了卻沒反應）。
+      const silence = new Int16Array(CAPTURE_CHUNK_SAMPLES)
       capture.port.onmessage = (e: MessageEvent) => {
         const pcm = e.data as Int16Array
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer)
+        if (!ws || ws.readyState !== WebSocket.OPEN) return
+        ws.send(captureEnabled ? pcm.buffer : silence.buffer)
       }
 
       const connect = () => {
@@ -205,7 +223,8 @@ export default function AgentPage() {
           if (typeof ev.data === 'string') {
             try {
               const msg = JSON.parse(ev.data)
-              if (msg?.type === 'stop') player.port.postMessage('clear')
+              if (msg?.type === 'input-mute') setCapture(!msg.muted)
+              else if (msg?.type === 'stop') player.port.postMessage('clear')
               else if (msg?.type === 'flush') player.port.postMessage('flush')
             } catch {
               /* 未知訊息忽略 */
@@ -217,6 +236,7 @@ export default function AgentPage() {
         ws.onclose = () => {
           wsOpen = false
           player.port.postMessage('clear')
+          setCapture(true) // 連線斷了就沒人會來解靜音，重連後要聽得見
           refreshState()
           if (!disposed) setTimeout(connect, RECONNECT_DELAY_MS)
         }
@@ -232,6 +252,7 @@ export default function AgentPage() {
 
     return () => {
       disposed = true
+      clearInterval(muteWatchdog)
       ws?.close()
     }
   }, [])

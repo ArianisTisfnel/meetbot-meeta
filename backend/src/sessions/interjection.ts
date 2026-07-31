@@ -158,7 +158,9 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   // 跳過時必留 log：這些防護原本靜默 return，實測「破冰沒出來」時完全無從診斷是哪條擋的
   const skipReason = session.isSpeaking
     ? 'bot-speaking'
-    : now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS
+    : session.activeSpeakers.size > 0
+      ? 'human-speaking' // 現場根本不是沉默，只是逐字稿還沒到
+      : now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS
       ? 'cooldown'
       : // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
         // 寬限取 max(沉默門檻, 45s 查詢鏈上限)，避免破冰搶在遲到的答案前面
@@ -272,7 +274,12 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   const last = s.window[s.window.length - 1]
   const skipReason = session.isSpeaking
     ? 'bot-speaking'
-    : now - session.lastWakeAt < WAKE_GRACE_MS
+    : // 有人正在講話就不能插嘴。逐字稿是落後指標（要等 VAD 判定靜音才定稿），
+      // 光看「多久沒有新逐字稿」會在別人換氣時誤判成講完了 → 搶話。
+      // speech_on/off 是即時的，且不受靜音窗影響。
+      session.activeSpeakers.size > 0
+      ? 'human-speaking'
+      : now - session.lastWakeAt < WAKE_GRACE_MS
       ? 'wake-grace'
       : session.wakePendingUntil > now
         ? 'wake-pending'

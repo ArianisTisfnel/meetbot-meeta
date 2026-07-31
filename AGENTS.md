@@ -1,0 +1,140 @@
+# AGENTS.md — meetbot 專案脈絡
+
+## 專案簡介
+
+meetbot 是一個 AI 會議助理，讓「蜜塔（Meeta）」機器人加入 Google Meet，  
+監聽喚醒詞後回答問題，會議結束後自動生成摘要。
+
+---
+
+## 技術棧
+
+| 層次 | 技術 |
+|------|------|
+| Backend | Hono（Node.js 20+）+ Prisma multiSchema + Vitest |
+| Frontend | Next.js 15 App Router + shadcn/ui + TanStack Query v5 |
+| 資料庫 | Supabase PostgreSQL（雙 schema） |
+| 外部服務 | Vexa-lite（Bot/逐字稿）、Dify（RAG/摘要）、Supabase Storage、Anthropic Codex |
+
+---
+
+## 雙 Schema 架構（最重要）
+
+```
+public schema  ← Vexa 管理，只讀。使用 prisma.$queryRaw 存取，禁止建立 FK 約束
+app schema     ← 我們管理，Prisma migrate 控制
+```
+
+- 跨 schema 關聯以**整數邏輯 FK**（`vexa_user_id`、`vexa_meeting_id`）記錄，無 DB constraint
+- `prisma.$queryRaw` 用於所有 `public.*` 查詢
+
+---
+
+## 關鍵設計決策（避免重踩的坑）
+
+1. **per-session WebSocket**：每個活躍會議用邀請者自己的 token 建立獨立 WS 連線。原因：Vexa WS 授權以 `meeting.user_id == current_user.id` 判斷，單一服務 token 只能訂閱自己建立的會議
+2. **in-memory activeSessions Map**：Bot session 狀態全在記憶體，**不可多進程部署**（PM2 fork mode 是唯一安全方案）
+3. **DB 轉 ACTIVE 時機**：建立 meeting 後 DB 維持 PENDING，待 Vexa WS 送來 `{type:"meeting.status", payload:{status:"active"}}` 才轉 ACTIVE
+4. **handleSessionClose 原子鎖**：先從 Map delete，再做後續處理，確保摘要只觸發一次
+5. **summary sentinel**：`summary = null` = 摘要尚未生成（前端繼續輪詢）；`summary = ''` = 已嘗試但無內容（前端停止輪詢）；有字串 = 正常
+6. **逐字稿欄位 alias**：Vexa REST API 回傳 `start`/`end`（Pydantic alias），非 `start_time`/`end_time`，需手動映射到 camelCase `startTime`/`endTime`
+
+---
+
+## 目錄結構
+
+```
+meetbot/
+├── backend/          ← Hono 後端
+├── frontend/         ← Next.js 前端
+├── tests/
+│   ├── unit/         ← Vitest 單元測試（mock 外部依賴）
+│   ├── integration/  ← 整合測試（需真實服務，手動執行）
+│   └── mocks/        ← 外部服務 mock（prisma/dify/supabase/vexa）
+├── docs/
+│   ├── 02~07-*.md    ← 設計文件（需求/Schema/API/前端/後端架構/細節）
+│   ├── 08-評估提示詞.md ← 實作前的設計評估記錄
+│   ├── 09-實作計畫/  ← Phase 實作計畫（此目錄）
+│   └── 10-實作報告/  ← 各 Phase 完成後生成的報告
+└── AGENTS.md         ← 此文件
+```
+
+---
+
+## Phase 完成狀態
+
+| Phase | 名稱 | 狀態 | 報告 |
+|-------|------|------|------|
+| P1 | 開發基礎設施 | ✅ 完成 | [Phase1-報告](docs/10-實作報告/Phase1-報告.md) |
+| P2 | 專案與成員管理 | ✅ 完成 | [Phase2-報告](docs/10-實作報告/Phase2-報告.md) |
+| P3 | 資料管理 | ✅ 完成 | [Phase3-報告](docs/10-實作報告/Phase3-報告.md) |
+| P4 | 會議基礎 | ✅ 完成 | [Phase4-報告](docs/10-實作報告/Phase4-報告.md) |
+| P5 | Bot Session 與問答 | ✅ 完成 | [Phase5-報告](docs/10-實作報告/Phase5-報告.md) |
+| P6 | 會議摘要 | ✅ 完成 | [Phase6-報告](docs/10-實作報告/Phase6-報告.md) |
+| P7 | 前端 | ✅ 完成 | [Phase7-報告](docs/10-實作報告/Phase7-報告.md) |
+
+> 每個 Phase 完成後，將 ⬜ 改為 ✅，並填入報告連結。
+
+---
+
+## 常用指令
+
+```bash
+# 後端啟動（必須用 npm run dev：script 帶 --env-file .env，裸跑 npx tsx 不會載入環境變數）
+cd backend && npm run dev
+
+# 執行單元測試（從專案根目錄）
+npx vitest run
+
+# DB schema 同步（本專案是 db push 工作流，無 migrations 目錄；需 .env 有 DIRECT_URL）
+npx prisma db push
+
+# DB pull（同步 Vexa public schema）
+npx prisma db pull   # ⚠️ 執行後務必 diff，只保留 User/Meeting/Transcription
+```
+
+---
+
+## Session 結束時的固定任務
+
+每次 Session 結束前，**必須**將本次變更提交至 git：
+
+- 依變更範圍拆成一次或多次 commit（不強制合併成一個）
+- commit 標題用**英文**
+- commit 內容說明用**中文 + 英文**
+
+---
+
+## 關鍵文件索引
+
+> ⚠️ **文件分兩類，務必分辨**：
+> - 🟢 **活文件**：須與目前程式碼同步，可當現行規格參考。若與程式不符，**以程式為準**並回寫文件。
+> - 🔒 **凍結快照**：記錄當時的決策/計畫/報告，**不一定反映現況**，**不可當作現行規格**。
+>
+> 每份文件開頭都有對應的 🟢／🔒 banner。
+
+### 🟢 活文件（須與程式同步）
+
+| 需要了解... | 讀這個文件 |
+|------------|-----------|
+| 使用者需求與功能範圍 | `docs/02-使用者需求.md` |
+| DB Schema 與 rollback 策略 | `docs/03-資料庫Schema設計.md` |
+| API 端點與錯誤碼 | `docs/04-API設計.md` |
+| 前端路由與 Hook 設計 | `docs/05-前端架構.md` |
+| 後端架構（Session/WS/摘要） | `docs/06-後端架構.md` |
+| 系統現況/路線圖/可測清單/使用的開源 | `docs/13-系統現況與路線圖.md` |
+| 環境變數（.env）設定、速查與除錯 | `docs/13-Recall-Failover-開發設定.md`（第七節起） |
+| 拉新 code 後的部署步驟（依序照做） | `docs/14-部署步驟.md` |
+
+### 🔒 凍結快照（歷史紀錄，勿當現況）
+
+| 內容 | 文件 |
+|------|------|
+| 細節補丁整合追蹤（已併入 02–06） | `docs/07-細節.md` |
+| 設計評估記錄 | `docs/08-評估提示詞.md` |
+| 各 Phase 實作計畫 | `docs/09-實作計畫/*` |
+| 各 Phase 完成報告 | `docs/10-實作報告/*` |
+| 優化／待辦清單 | `docs/11-優化清單.md` |
+| 文件一致性修正報告 | `docs/12-文件一致性修正報告.md` |
+
+> 開發環境設定（人工操作）：`docs/09-實作計畫/00-環境設定.md`（凍結，但環境步驟仍適用）。

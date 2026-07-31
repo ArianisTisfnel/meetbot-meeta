@@ -39,6 +39,16 @@ export interface AgentSession {
   openaiReady: boolean
   /** 語音世代計數：stopSpeaking 時 +1，讓串流中的 TTS 轉發知道自己已作廢。 */
   speakEpoch: number
+  /**
+   * 自身語音的回灌防護（epoch ms）：此時刻之前收到的轉錄一律丟棄。
+   * 「麥克風」是會議混音，蜜塔自己的聲音會延遲數百毫秒回灌進來——沒有這道閘，
+   * 蜜塔會把自己的回答當成新問題再答一次（無限迴圈的主因）。
+   */
+  selfAudioGuardUntil: number
+  /** 是否已要求網頁靜音上行（避免重複送，且失敗路徑一定解得掉）。 */
+  inputMuted: boolean
+  /** 最近說過的話（原文）：文字層比對，擋掉延遲回灌的自身語音轉錄。 */
+  recentSpeech: string[]
   /** 固定台詞（ack/進度句）與預熱答案的 TTS PCM 快取（24kHz s16le mono）。 */
   pcmCache: Map<string, Buffer>
   /**
@@ -55,6 +65,59 @@ const agentIdByBotId = new Map<string, string>()
 
 /** PCM 快取上限（同 adapter 的 mp3 快取；答案預熱會進來，防無界成長）。 */
 export const PCM_CACHE_MAX = 30
+
+// ── 現正發言者（agent 模式的講者歸屬）────────────────────────────────────────
+//
+// agent 網頁的「麥克風」是會議混音，串流轉錄拿不到講者標記（誰問的都變成匿名）。
+// Recall 的 participant_events.speech_on/off 是低延遲的與會者事件（與逐字稿無關），
+// 用它維護「現在誰在講話」，relay 產生 segment 時就能標上真名——
+// 聊天室的確認訊息才寫得出「收到 Arianis 的語音提問」，插話決策也才知道是誰說的。
+
+interface SpeechState {
+  /** 正在說話的人 → 開始時間（epoch ms）。 */
+  speaking: Map<string, number>
+  /** 最後一個停止說話的人：定稿轉錄比 speech_off 晚到，剛講完的人仍是最佳歸屬。 */
+  lastStopped: { name: string; at: number } | null
+}
+
+const speechByBotId = new Map<string, SpeechState>()
+
+/** speech_off 之後仍可歸屬給該講者的時間（定稿轉錄比說話晚 1.5–3 秒）。 */
+const RECENT_SPEAKER_MS = 6_000
+
+/** Recall participant_events.speech_on/off → 更新發言狀態（recall-adapter 呼叫）。 */
+export function noteParticipantSpeech(botId: string, name: string, speaking: boolean): void {
+  const trimmed = name.trim()
+  if (!trimmed) return // 沒有名字就無從歸屬
+  let state = speechByBotId.get(botId)
+  if (!state) {
+    state = { speaking: new Map(), lastStopped: null }
+    speechByBotId.set(botId, state)
+  }
+  if (speaking) {
+    state.speaking.set(trimmed, Date.now())
+  } else if (state.speaking.delete(trimmed)) {
+    state.lastStopped = { name: trimmed, at: Date.now() }
+  }
+}
+
+/**
+ * 這段話最可能是誰說的？（null = 無法判斷，呼叫端就當匿名處理）
+ * 兩人以上同時在說話時一律回 null——寧可匿名，也不要把問題掛到錯的人頭上。
+ */
+export function currentSpeakerName(botId: string): string | null {
+  const state = speechByBotId.get(botId)
+  if (!state) return null
+  if (state.speaking.size === 1) return [...state.speaking.keys()][0]
+  if (state.speaking.size > 1) return null
+  const last = state.lastStopped
+  return last && Date.now() - last.at < RECENT_SPEAKER_MS ? last.name : null
+}
+
+/** bot 離開會議時清掉發言狀態（recall-adapter 的 leave 呼叫）。 */
+export function clearParticipantSpeech(botId: string): void {
+  speechByBotId.delete(botId)
+}
 
 /** agent 模式是否啟用（開關 on 且必要設定齊全）。 */
 export function isAgentModeEnabled(): boolean {
@@ -101,6 +164,9 @@ export function registerAgentSession(
     openaiWs: null,
     openaiReady: false,
     speakEpoch: 0,
+    selfAudioGuardUntil: 0,
+    inputMuted: false,
+    recentSpeech: [],
     pcmCache: new Map(),
     anchorMs: Date.now(),
   }

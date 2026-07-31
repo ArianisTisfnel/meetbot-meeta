@@ -13,6 +13,9 @@ const generateSummaryAsync = vi.hoisted(() => vi.fn())
 
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
 vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
+vi.mock('../../../../backend/src/types/env', () => ({
+  env: { BARGE_IN_ENABLED: false },
+}))
 vi.mock('../../../../backend/src/sessions/wake-word-detector', () => ({
   handleTranscriptSegment: vi.fn(),
   handlePartialSegment: vi.fn(),

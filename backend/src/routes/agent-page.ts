@@ -95,6 +95,10 @@ const AGENT_PAGE_HTML = /* html */ `<!DOCTYPE html>
   // 24kHz、100ms 一塊
   const CAPTURE_CHUNK_SAMPLES = 2400
   const RECONNECT_DELAY_MS = 2000
+  // 收音由伺服器（relay）指揮開關：它才知道語音真正播完的時刻。
+  // 這個上限只是保命——指令掉了也不會永久失聰。
+  const MAX_MUTE_MS = 30000
+  const MUTE_WATCHDOG_MS = 5000
 
   const WORKLET_CODE = \`
 class PcmCapture extends AudioWorkletProcessor {
@@ -178,8 +182,18 @@ registerProcessor('pcm-player', PcmPlayer)
 
   let ws = null
   let playing = false
+  let captureEnabled = true
+  let mutedAt = 0
   let wsOpen = false
   const refreshState = () => setState(playing ? 'speaking' : wsOpen ? 'listening' : 'connecting')
+  const setCapture = (enabled) => {
+    captureEnabled = enabled
+    mutedAt = enabled ? 0 : Date.now()
+  }
+  // 保命閥：靜音指令的解除訊息掉了（WS 抖動/伺服器重啟）也要自己醒過來
+  setInterval(() => {
+    if (!captureEnabled && mutedAt && Date.now() - mutedAt > MAX_MUTE_MS) setCapture(true)
+  }, MUTE_WATCHDOG_MS)
 
   const start = async () => {
     const ctx = new AudioContext({ sampleRate: 24000 })
@@ -200,10 +214,16 @@ registerProcessor('pcm-player', PcmPlayer)
 
     const player = new AudioWorkletNode(ctx, 'pcm-player')
     player.connect(ctx.destination)
+    // 播放狀態只用來更新畫面：不能拿它來解除靜音——串流塊到得慢時佇列會中途播空
+    // （report(false)），那時蜜塔其實還沒講完，提早開麥就會把自己的聲音錄進去。
     player.port.onmessage = (e) => { playing = Boolean(e.data && e.data.playing); refreshState() }
 
+    // 靜音時送等長的靜音塊，而不是停止上傳：轉錄端靠連續音訊流判斷句子結束，
+    // 中間斷流會讓使用者正在問的那句遲遲不定稿（問了卻沒反應）。
+    const silence = new Int16Array(CAPTURE_CHUNK_SAMPLES)
     capture.port.onmessage = (e) => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer)
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      ws.send(captureEnabled ? e.data.buffer : silence.buffer)
     }
 
     const connect = () => {
@@ -213,9 +233,10 @@ registerProcessor('pcm-player', PcmPlayer)
       ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') {
           try {
-            const type = JSON.parse(ev.data).type
-            if (type === 'stop') player.port.postMessage('clear')
-            else if (type === 'flush') player.port.postMessage('flush')
+            const message = JSON.parse(ev.data)
+            if (message.type === 'input-mute') setCapture(!message.muted)
+            else if (message.type === 'stop') player.port.postMessage('clear')
+            else if (message.type === 'flush') player.port.postMessage('flush')
           } catch {}
           return
         }
@@ -224,6 +245,7 @@ registerProcessor('pcm-player', PcmPlayer)
       ws.onclose = () => {
         wsOpen = false
         player.port.postMessage('clear')
+        setCapture(true) // 連線斷了就沒人會來解靜音，重連後要聽得見
         refreshState()
         setTimeout(connect, RECONNECT_DELAY_MS)
       }

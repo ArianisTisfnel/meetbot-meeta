@@ -23,6 +23,9 @@ const envSchema = z.object({
   GEMINI_INTERJECTION_API_KEY: z.string().optional(),
   // 新帳號不能用 gemini-2.5-flash（對新用戶停開），預設用 lite 系列 alias。
   GEMINI_INTERJECTION_MODEL: z.string().default('gemini-flash-lite-latest'),
+  // LLM 失效轉移的第三順位（Gemini 額度用完/金鑰失效時接手）。
+  // 本專案本來就需要 OPENAI_API_KEY 做 TTS 與串流轉錄，等於不必多辦帳號就有一層保險。
+  OPENAI_TEXT_MODEL: z.string().default('gpt-4o-mini'),
   VEXA_API_URL: z.string().url(),
   VEXA_WS_URL: z.string().url(),
   // ── Meeting Bot Provider failover ──────────────────────────────────────────
@@ -47,6 +50,25 @@ const envSchema = z.object({
   AGENT_MODE: z.enum(['on', 'off']).default('off'),
   // agent 網頁（前端 /agent）的公開 URL；bot 的雲端瀏覽器會開啟它，需外網可達。
   AGENT_PAGE_URL: z.string().url().optional(),
+  // OpenAI server_vad 的斷句門檻（毫秒）：靜音超過這麼久就判定「這句講完了」→ 定稿。
+  // 這是**唯一**決定句子在哪裡被切開的參數。太短（500）中文的自然停頓就會把一句話
+  // 切成好幾段（「蜜塔，」「那個」「我想問…」）；太長則定稿變慢。
+  // 快速確認（ack）走 partial、不等定稿，所以調大不影響「聽見我收到了」的 1.5 秒。
+  // ⚠️ 多人混音時串流裡幾乎不存在靜音，調這個數字幫助有限——那要靠獨立音軌解決。
+  STT_SILENCE_DURATION_MS: z.coerce.number().default(500),
+  // ── 獨立音軌探針（耳朵／嘴巴分家的可行性驗證）─────────────────────────────
+  // 'on'：bot 加掛 recording_config.audio_separate_raw，Recall 會把**每位與會者
+  // 各自一條**的 PCM 推到 /ws/recall-audio。目前**只統計、只寫 log，不做轉錄**，
+  // 用來驗證三件事：每人是否真的分開、蜜塔自己有沒有一條、靜音時是否送空封包。
+  // 'off'（預設）：join payload 完全不變，行為與現在一致。
+  // 需要 RECALL_WEBHOOK_URL（公開可達，WS 由它換算成 wss://）。
+  RECALL_SEPARATE_AUDIO: z.enum(['on', 'off']).default('off'),
+  // Opt-in while the realtime relay's utterance timing is being stabilised.
+  // A false interruption must not cancel a normal voice response by default.
+  BARGE_IN_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // 主要 bot provider：'recall'（預設，Vexa 被 reCAPTCHA 擋死後的決策）或 'vexa'。
   // 另一個 provider 自動成為 failover secondary（未設定齊全時退化為單一 provider）。
   BOT_PRIMARY_PROVIDER: z.enum(['vexa', 'recall']).default('recall'),

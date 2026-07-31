@@ -13,6 +13,8 @@ import {
 import {
   registerAgentSession,
   unregisterAgentSession,
+  currentSpeakerName,
+  clearParticipantSpeech,
   type PageSocketLike,
 } from '../../../../backend/src/agent/agent-registry'
 
@@ -35,6 +37,13 @@ function transcriptEvent(participantName: string, text: string) {
         language_code: 'zh',
       },
     },
+  }
+}
+
+function speechEvent(kind: 'on' | 'off', participantName: string) {
+  return {
+    event: `participant_events.speech_${kind}`,
+    data: { bot: { id: BOT_ID }, data: { participant: { id: 1, name: participantName }, data: null } },
   }
 }
 
@@ -92,6 +101,32 @@ describe('dispatchRecallEvent', () => {
   it('缺 event/bot.id → 安全略過', () => {
     expect(() => dispatchRecallEvent({})).not.toThrow()
     expect(() => dispatchRecallEvent({ event: 'transcript.data', data: {} })).not.toThrow()
+  })
+
+  // agent 模式的串流轉錄是會議混音、沒有講者標記 → 靠 speech_on/off 補上是誰在講。
+  it('speech_on/off → 更新現正發言者（agent 模式的講者歸屬來源）', () => {
+    clearParticipantSpeech(BOT_ID)
+    expect(currentSpeakerName(BOT_ID)).toBeNull()
+
+    dispatchRecallEvent(speechEvent('on', 'Wendy'))
+    expect(currentSpeakerName(BOT_ID)).toBe('Wendy')
+
+    // 停止說話後仍在歸屬窗內：定稿轉錄比 speech_off 晚到，剛講完的人仍是最佳歸屬
+    dispatchRecallEvent(speechEvent('off', 'Wendy'))
+    expect(currentSpeakerName(BOT_ID)).toBe('Wendy')
+
+    // 兩人同時講 → 寧可匿名也不要掛錯人
+    dispatchRecallEvent(speechEvent('on', 'Wendy'))
+    dispatchRecallEvent(speechEvent('on', 'Kai'))
+    expect(currentSpeakerName(BOT_ID)).toBeNull()
+
+    clearParticipantSpeech(BOT_ID)
+  })
+
+  it('蜜塔自己的 speech_on → 不記（否則她的話會被標成某個人說的）', () => {
+    clearParticipantSpeech(BOT_ID)
+    dispatchRecallEvent(speechEvent('on', BOT_NAME))
+    expect(currentSpeakerName(BOT_ID)).toBeNull()
   })
 
   it('transcript.data → segment 累積到註冊的 segments array；bot 自己的發言也累積（逐字稿要含蜜塔回覆）但不觸發 handlers', () => {

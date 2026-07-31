@@ -85,6 +85,8 @@ function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     chatLog: [],
     sessionStartedAt: 0,
     bargeEpoch: 0,
+    speechGen: 0,
+    activeSpeakers: new Set<string>(),
     processedSegmentIds: new Set(),
     botSession: fakeBotSession(),
     difyConversationId: null,
@@ -472,5 +474,66 @@ describe('interjection — livekit EOU 時機層', () => {
     recordConversation(session, humanEntry('報名截止日是？'))
     await vi.advanceTimersByTimeAsync(1_000)
     expect(llm.completeText).not.toHaveBeenCalled() // 作廢，沒有評估
+  })
+})
+
+// ── 有人正在說話時不准插嘴 ────────────────────────────────────────────────────
+//
+// 逐字稿是**落後且成批**到達的：要等 VAD 判定靜音才定稿。用「多久沒有新逐字稿」
+// 推論「這輪講完了」，會在別人換氣、下一段定稿還沒到的空檔誤判成冷場，
+// 於是蜜塔就在人家講到一半時插話。
+// speech_on/off（session.activeSpeakers）是即時的，且不受靜音窗影響。
+
+describe('有人正在說話 → 不插話、不破冰', () => {
+  it('插話評估：activeSpeakers 非空 → 跳過（human-speaking）', async () => {
+    mockEnv.INTERJECTION_ENABLED = true
+    mockEnv.ICEBREAKER_ENABLED = false
+    const session = putSession()
+    llm.completeText.mockResolvedValue('{"interject": true, "question": "報名日期是什麼時候"}')
+    wwd.resolveAnswer.mockResolvedValue('報名日期是 3 月 1 日')
+
+    // 有人講了一段（定稿到了），但那個人**還在繼續講**
+    recordConversation(session, humanEntry('我覺得這個時程'))
+    session.activeSpeakers.add('小明')
+
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(llm.completeText).not.toHaveBeenCalled() // 連決策模型都不該問
+    expect(wwd.sendChatBestEffort).not.toHaveBeenCalled()
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+  })
+
+  it('說完話（speech_off）之後的下一輪才會評估', async () => {
+    mockEnv.INTERJECTION_ENABLED = true
+    mockEnv.ICEBREAKER_ENABLED = false
+    const session = putSession()
+    llm.completeText.mockResolvedValue('{"interject": false, "question": ""}')
+
+    recordConversation(session, humanEntry('我覺得這個時程'))
+    session.activeSpeakers.add('小明')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(llm.completeText).not.toHaveBeenCalled()
+
+    // 講完了 → 下一段定稿進來，這次就會正常評估
+    session.activeSpeakers.delete('小明')
+    recordConversation(session, humanEntry('有點趕'))
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(llm.completeText).toHaveBeenCalled()
+  })
+
+  it('破冰：有人正在說話 → 跳過並繼續監看', async () => {
+    mockEnv.INTERJECTION_ENABLED = false
+    mockEnv.ICEBREAKER_ENABLED = true
+    const session = putSession()
+    session.activeSpeakers.add('小明')
+    startIcebreaker(session)
+
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+
+    // 人講完了 → 再一段沉默才破冰
+    session.activeSpeakers.delete('小明')
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
   })
 })

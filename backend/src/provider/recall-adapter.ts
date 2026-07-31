@@ -5,13 +5,17 @@ import {
   isAgentModeEnabled,
   isAgentLive,
   buildAgentPageUrl,
+  signAgentToken,
   registerAgentSession,
   markAgentAnchor,
+  noteParticipantSpeech,
+  clearParticipantSpeech,
 } from '../agent/agent-registry.js'
 import {
   agentSpeak,
   agentPrimeSpeech,
   agentStopSpeaking,
+  agentNoteExternalSpeech,
   teardownAgentSession,
 } from '../agent/agent-relay.js'
 import { normalizeRecallTranscript, normalizeRecallRealtimeUtterance } from './normalize.js'
@@ -96,7 +100,15 @@ export function unregisterRealtimeHandlers(botId: string): void {
 /** 判斷某 participant 是否為 bot 自己（避免自迴圈：歡迎訊息/自身語音含「蜜塔」會誤觸發）。 */
 function isBotParticipant(reg: RealtimeRegistration, participant: any): boolean {
   if (!participant) return false
-  return Boolean(participant.name && participant.name === reg.botName)
+  return Boolean(
+    participant.id === reg.botId ||
+      (participant.name && participant.name.trim().toLocaleLowerCase() === reg.botName.trim().toLocaleLowerCase()),
+  )
+}
+
+/** Input without an origin cannot safely wake a meeting bot. */
+function isIdentifiedParticipant(participant: any): boolean {
+  return Boolean(participant?.id || participant?.name?.trim())
 }
 
 /**
@@ -132,7 +144,7 @@ export function dispatchRecallEvent(event: any): void {
       // agent 網頁在線時，喚醒/插話由 relay 的串流 STT 驅動；webhook 的 accuracy 模式
       // 逐字稿是分鐘級延遲，若仍觸發喚醒，同一句「蜜塔」會在答完幾分鐘後再答一次。
       // 這裡只保留逐字稿寫入；網頁斷線時（isAgentLive=false）自動恢復 webhook 喚醒 fallback。
-      if (!isBot && !isAgentLive(botId)) reg.handlers.onSegment?.(seg)
+      if (!isBot && isIdentifiedParticipant(utter?.participant) && !isAgentLive(botId)) reg.handlers.onSegment?.(seg)
     }
     return
   }
@@ -147,9 +159,23 @@ export function dispatchRecallEvent(event: any): void {
       logger.info({ botId }, 'recall webhook: first transcript.partial_data received for this bot')
     }
     const utter = data?.data
-    if (isBotParticipant(reg, utter?.participant)) return
+    if (isBotParticipant(reg, utter?.participant) || !isIdentifiedParticipant(utter?.participant)) return
     const seg = normalizeRecallRealtimeUtterance(utter, data?.transcript?.id)
     if (seg) reg.handlers.onPartialSegment?.(seg)
+    return
+  }
+
+  if (type === 'participant_events.speech_on' || type === 'participant_events.speech_off') {
+    // 只記人類：蜜塔自己出聲時 Recall 也會送 speech_on，混進去會把她的話標成某個人說的。
+    const participant = data?.data?.participant
+    if (!participant || isBotParticipant(reg, participant)) return
+    const name: string = participant?.name ?? ''
+    if (!name.trim()) return
+    const speaking = type === 'participant_events.speech_on'
+    // ① agent 串流轉錄的講者歸屬（混音沒有講者標記）
+    noteParticipantSpeech(botId, name, speaking)
+    // ② 上層的「現在有沒有人在講話」：插話引擎靠它避免在別人換氣時搶話
+    reg.handlers.onSpeechState?.({ speaker: name.trim(), speaking })
     return
   }
 
@@ -161,7 +187,7 @@ export function dispatchRecallEvent(event: any): void {
       { botId, sender: participant?.name, isBot: isBotParticipant(reg, participant), text: text.slice(0, 60) },
       'recall webhook: chat_message',
     )
-    if (isBotParticipant(reg, participant)) return
+    if (isBotParticipant(reg, participant) || !isIdentifiedParticipant(participant)) return
     if (!text.trim()) return
     reg.handlers.onChat?.({
       sender: participant?.name ?? 'unknown',
@@ -237,7 +263,11 @@ export class RecallAdapter implements MeetingBotProvider {
     //     讓 Recall 即時把 transcript.data / chat_message POST 進來驅動喚醒詞。
     //   - 未設 webhook → 退回 meeting_captions（免費，但只有會後逐字稿、無即時喚醒詞）。
     const realtimeEnabled = Boolean(env.RECALL_WEBHOOK_URL && env.RECALL_WEBHOOK_TOKEN)
-    const recordingConfig = realtimeEnabled
+    const recordingConfig: {
+      transcript?: Record<string, unknown>
+      audio_separate_raw?: Record<string, never>
+      realtime_endpoints?: Array<Record<string, unknown>>
+    } = realtimeEnabled
       ? {
           transcript: {
             provider: {
@@ -255,7 +285,15 @@ export class RecallAdapter implements MeetingBotProvider {
               url: `${env.RECALL_WEBHOOK_URL}/webhooks/recall?token=${env.RECALL_WEBHOOK_TOKEN}`,
               // partial_data：未定稿片段，講到一半就推送 → 喚醒詞快速偵測用
               //（定稿的 data 要等句子講完＋endpointing，慢 1.5–3 秒）。
-              events: ['transcript.data', 'transcript.partial_data', 'participant_events.chat_message'],
+              // speech_on/off：低延遲的「誰在說話」，agent 模式的串流轉錄靠它補上講者名字
+              //（混音沒有講者標記，少了這個所有提問都會變匿名）。
+              events: [
+                'transcript.data',
+                'transcript.partial_data',
+                'participant_events.chat_message',
+                'participant_events.speech_on',
+                'participant_events.speech_off',
+              ],
             },
           ],
         }
@@ -266,6 +304,21 @@ export class RecallAdapter implements MeetingBotProvider {
     // recording_config 原封不動保留：webhook 逐字稿（摘要用）與聊天室事件完全不受影響。
     const agentEnabled = isAgentModeEnabled()
     const agentId = agentEnabled ? randomUUID() : null
+
+    // 獨立音軌探針：Recall 把每位與會者各自一條的 PCM 推到我們的 WS（只統計不轉錄）。
+    // WS base 由 RECALL_WEBHOOK_URL 換算（同一條公開 tunnel），不需要新的環境變數。
+    // agentId 當識別碼＋沿用同一套簽章，與 /ws/agent 一致。
+    const separateAudioEnabled = env.RECALL_SEPARATE_AUDIO === 'on' && Boolean(agentId && env.RECALL_WEBHOOK_URL)
+    if (separateAudioEnabled) {
+      const wsBase = env.RECALL_WEBHOOK_URL!.replace(/^http/, 'ws').replace(/\/+$/, '')
+      const probeUrl = `${wsBase}/ws/recall-audio?agent=${agentId}&token=${signAgentToken(agentId!)}`
+      recordingConfig.audio_separate_raw = {}
+      recordingConfig.realtime_endpoints = [
+        ...(recordingConfig.realtime_endpoints ?? []),
+        { type: 'websocket', url: probeUrl, events: ['audio_separate_raw.data'] },
+      ]
+      logger.info({ agentId }, 'RecallAdapter: audio_separate_raw 探針已啟用（只統計，不影響現有路徑）')
+    }
 
     const bot = await recallFetch<{ id: string }>('POST', '/api/v1/bot/', {
       meeting_url: url,
@@ -443,6 +496,9 @@ export class RecallAdapter implements MeetingBotProvider {
     if (spokenViaAgent) return
 
     // Recall 吃 mp3（base64），需自行 TTS（text → mp3）。
+    // mp3 由 Recall 播進會議，agent 網頁的「麥克風」（會議混音）照樣收得到 →
+    // 先通知 relay 開回音防護，否則這條路徑會出現「蜜塔聽到自己講話又答一次」。
+    agentNoteExternalSpeech(state.botId, text)
     const mp3Base64 = await this.synthesizeMp3(text)
     await recallFetch<void>('POST', `/api/v1/bot/${state.botId}/output_audio/`, {
       kind: 'mp3',
@@ -524,6 +580,7 @@ export class RecallAdapter implements MeetingBotProvider {
     if (state.statusTimer) clearInterval(state.statusTimer)
     state.statusTimer = null
     unregisterRealtimeHandlers(state.botId)
+    clearParticipantSpeech(state.botId)
     if (state.agentId) teardownAgentSession(state.agentId)
 
     await recallFetch<void>('POST', `/api/v1/bot/${state.botId}/leave_call/`, {}).catch((err) =>

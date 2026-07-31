@@ -67,6 +67,14 @@ export interface LiveHandlers {
   onPartialSegment?: (seg: TranscriptSegment) => void
   onStatus?: (ev: BotStatusEvent) => void
   onChat?: (msg: ChatMessageEvent) => void
+  /**
+   * 「某人開始／停止說話」的低延遲事件（Recall participant_events.speech_on/off）。
+   *
+   * 與逐字稿無關，也**不受靜音窗影響** —— 這是唯一能即時回答
+   * 「現在有沒有人在講話」的訊號。插話引擎需要它：逐字稿是「講完一段之後
+   * 才到、而且成批到」的落後指標，光靠它判斷「這輪講完了」會在別人換氣時搶話。
+   */
+  onSpeechState?: (ev: { speaker: string; speaking: boolean }) => void
 }
 
 /** 開啟中的 live stream 控制把手。 */
