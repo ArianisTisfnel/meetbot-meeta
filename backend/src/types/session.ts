@@ -75,6 +75,15 @@ export interface MeetingSession {
   sessionStartedAt: number
   /** barge-in 世代計數：每次被打斷 +1。語音派發流程據此偵測「查詢期間被打斷 → 答案改走聊天室」。 */
   bargeEpoch: number
+  /**
+   * 語音世代計數：每次佔用「嘴巴」+1（見 wake-word-detector 的 holdSpeaking）。
+   * 解鎖計時器據此判斷自己是否已被更新的一段語音接手——speak() 送出即返回、
+   * 播放結束沒有事件可等，解鎖全靠 setTimeout 估時，沒有世代比對的話舊計時器
+   * 會把新的語音解鎖（barge-in 失效、新問題疊在舊答案上）。
+   */
+  speechGen: number
+  /** 進度句輪替索引：同一場會議不要每次都聽到同一句墊檔。 */
+  progressVoiceIdx?: number
   processedSegmentIds: Set<string>
   /** 由 provider 抽象層建立的 bot session（admitted 後才有值）。取代舊的 wsConnection。 */
   botSession: BotSession | null

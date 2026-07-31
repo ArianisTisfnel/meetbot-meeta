@@ -38,7 +38,26 @@ function requireBotSession(session: MeetingSession): BotSession {
  */
 export const PENDING_VOICE = '好的，我收到了，請稍候。'
 export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
-export const PROGRESS_VOICE = '等等喔，我正在頭腦風暴！'
+/**
+ * 進度句：查詢還沒回來時的墊檔。輪替使用——同一場會議問幾題就聽到幾次
+ * 同一句話會很像壞掉的錄音機。五句都在 join 後預熱進 TTS 快取，輪替不增加延遲。
+ */
+export const PROGRESS_VOICES = [
+  '等等喔，我正在頭腦風暴！',
+  '再給我一點時間，快找到了。',
+  '資料有點多，我整理一下。',
+  '嗯……讓我再確認一下。',
+  '快好了，再等我一下下。',
+]
+/** 相容既有引用；也是輪替的第一句。 */
+export const PROGRESS_VOICE = PROGRESS_VOICES[0]
+
+/** 取下一句進度句（每個 session 各自輪替）。 */
+function nextProgressVoice(session: MeetingSession): string {
+  const idx = session.progressVoiceIdx ?? 0
+  session.progressVoiceIdx = (idx + 1) % PROGRESS_VOICES.length
+  return PROGRESS_VOICES[idx]
+}
 /** 說完「我收到了」後自己計時：查詢還沒回來就說進度句（不然使用者會以為沒收到而重問）。 */
 const PROGRESS_NOTICE_MS = 10_000
 
@@ -70,6 +89,26 @@ export const speechTiming = { msPerChar: 250, extraMs: 1500, floorMs: 3000 }
  */
 function estimateSpeechMs(text: string): number {
   return Math.max(speechTiming.floorMs, text.length * speechTiming.msPerChar + speechTiming.extraMs)
+}
+
+/**
+ * 佔用「嘴巴」（isSpeaking = true），回傳這次佔用專屬的釋放函式。
+ *
+ * 為什麼要世代比對：speak() 送出即返回，播放結束沒有事件可等，所以每段語音都靠
+ * setTimeout 估時解鎖。沒有世代的話，**前一段語音的計時器會在新的一段播到一半時
+ * 把 isSpeaking 關掉** —— 症狀是蜜塔講到一半就「聽不見了」：barge-in 直接 return
+ *（它第一行檢查 isSpeaking）、新問題誤走語音分支疊在舊答案上、插話引擎以為現場安靜。
+ *
+ * 釋放一律用回傳的函式，不要直接寫 `session.isSpeaking = false`。
+ */
+function holdSpeaking(session: MeetingSession): () => void {
+  const gen = ++session.speechGen
+  session.isSpeaking = true
+  return () => {
+    if (session.speechGen !== gen) return // 已被更新的語音接手 → 這次釋放作廢
+    session.isSpeaking = false
+    session.currentSpeech = null
+  }
 }
 
 /**
@@ -140,7 +179,9 @@ export async function handleBargeIn(
     }
   }
 
-  // 先翻旗標再做 I/O：重複 partial 不會重入
+  // 先翻旗標再做 I/O：重複 partial 不會重入。
+  // speechGen++ 讓這段語音待執行的解鎖計時器一併作廢（它已被取消，不該再影響後續語音）。
+  session.speechGen++
   session.isSpeaking = false
   session.bargeEpoch++
   // 讓路後進入喚醒靜默期：打斷者的話多半是「剛問過的問題」的延續，
@@ -438,14 +479,11 @@ export async function speakProactive(
   }
 
   const estimatedMs = estimateSpeechMs(speech)
-  session.isSpeaking = true
+  const release = holdSpeaking(session)
   session.speechStartedAt = Date.now()
   session.currentSpeech = speech
   session.speechEndsAt = Date.now() + estimatedMs
-  setTimeout(() => {
-    session.isSpeaking = false
-    session.currentSpeech = null
-  }, estimatedMs)
+  setTimeout(release, estimatedMs)
 
   try {
     await botProvider.speak(requireBotSession(session), speech)
@@ -460,8 +498,7 @@ export async function speakProactive(
     }
     return true
   } catch (err) {
-    session.isSpeaking = false
-    session.currentSpeech = null
+    release()
     logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'speakProactive failed, falling back to chat')
     await sendChatBestEffort(session, text, 'chat', tag)
     return true
@@ -669,16 +706,22 @@ async function dispatchQuestion(
     const speakPending = !opts?.skipPendingPrompt
     const promptEstimatedMs = speakPending ? estimateSpeechMs(pendingVoice) : 0
     const epochAtStart = session.bargeEpoch // 查詢期間被 barge-in 打斷 → 答案改走聊天室
-    session.isSpeaking = true
+    let release = holdSpeaking(session)
     session.speechStartedAt = Date.now()
-    const lockTimer = setTimeout(() => { session.isSpeaking = false }, promptEstimatedMs + 10_000)
+    // 安全網：查詢丟錯／卡住時強制釋放，否則嘴巴永久被佔（蜜塔從此不再回答語音）。
+    // 長度必須涵蓋**整個查詢鏈** —— 舊值 promptEstimatedMs + 10s 在 partial ack 路徑上
+    // 等於 10 秒（skipPendingPrompt → promptEstimatedMs = 0），而實測 classify+Dify
+    // 中位數 11.1 秒，於是每次都在答案回來前就解鎖。它是解死鎖的上限，不是播放長度估計。
+    const lockTimer = setTimeout(release, env.DIFY_CHATFLOW_TIMEOUT_MS + promptEstimatedMs + 10_000)
 
     // 查詢太久（Dify 常要 15-20 秒）→ 口頭回報進度，避免使用者以為沒收到而重問
     const progressTimer = setTimeout(() => {
+      // 在 callback 裡才取：計時器沒觸發時不消耗輪替索引
+      const progressVoice = nextProgressVoice(session)
       botProvider
-        .speak(requireBotSession(session), PROGRESS_VOICE)
-        .then(() => { session.speechEndsAt = Date.now() + estimateSpeechMs(PROGRESS_VOICE) })
-        .catch(() => sendChatBestEffort(session, PROGRESS_VOICE))
+        .speak(requireBotSession(session), progressVoice)
+        .then(() => { session.speechEndsAt = Date.now() + estimateSpeechMs(progressVoice) })
+        .catch(() => sendChatBestEffort(session, progressVoice))
     }, PROGRESS_NOTICE_MS)
 
     try {
@@ -700,8 +743,7 @@ async function dispatchQuestion(
       // 開場白／查詢期間有人開口（barge-in）→ 不再出聲，完整答案貼聊天室
       if (session.bargeEpoch !== epochAtStart) {
         clearTimeout(lockTimer)
-        session.isSpeaking = false
-        session.currentSpeech = null
+        release()
         await sendChatBestEffort(session, rawAnswer, 'chat', route)
         logger.info(
           { meetingInstanceId: session.meetingInstanceId, route },
@@ -728,8 +770,7 @@ async function dispatchQuestion(
       // 等待期間被打斷 → 同樣改走聊天室，不搶話
       if (session.bargeEpoch !== epochAtStart) {
         clearTimeout(lockTimer)
-        session.isSpeaking = false
-        session.currentSpeech = null
+        release()
         await sendChatBestEffort(session, rawAnswer, 'chat', route)
         logger.info(
           { meetingInstanceId: session.meetingInstanceId, route },
@@ -740,12 +781,12 @@ async function dispatchQuestion(
 
       clearTimeout(lockTimer)
       const answerEstimatedMs = estimateSpeechMs(answer)
+      // 重新佔用：安全網可能已在查詢期間到期（clearTimeout 對已觸發的計時器無效），
+      // 不重新佔用的話整段答案都會在「嘴巴是空的」狀態下播出。
+      release = holdSpeaking(session)
       session.currentSpeech = answer
       session.speechEndsAt = Date.now() + answerEstimatedMs
-      setTimeout(() => {
-        session.isSpeaking = false
-        session.currentSpeech = null
-      }, answerEstimatedMs)
+      setTimeout(release, answerEstimatedMs)
 
       await botProvider.speak(botSession, answer)
       // 蜜塔的語音回答記進對話窗（重置破冰計時、決策層可見已回答）
@@ -760,8 +801,7 @@ async function dispatchQuestion(
     } catch (err) {
       clearTimeout(lockTimer)
       clearTimeout(progressTimer)
-      session.isSpeaking = false
-      session.currentSpeech = null
+      release()
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion voice failed')
       // 靜默失敗會讓使用者以為蜜塔沒反應 → 盡力口頭回報（失敗則退回聊天室）。
       try {

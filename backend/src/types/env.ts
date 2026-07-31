@@ -47,6 +47,16 @@ const envSchema = z.object({
   AGENT_MODE: z.enum(['on', 'off']).default('off'),
   // agent 網頁（前端 /agent）的公開 URL；bot 的雲端瀏覽器會開啟它，需外網可達。
   AGENT_PAGE_URL: z.string().url().optional(),
+  // OpenAI server_vad 的斷句門檻（毫秒）：靜音超過這麼久就判定「這句講完了」→ 定稿。
+  // 這是**唯一**決定句子在哪裡被切開的參數。太短（500）中文的自然停頓就會把一句話
+  // 切成好幾段；太長則定稿變慢。快速確認（ack）走 partial、不等定稿，所以調大不影響
+  // 「聽見我收到了」的時間。⚠️ 多人混音時串流裡幾乎不存在靜音，調這個幫助有限。
+  STT_SILENCE_DURATION_MS: z.coerce.number().default(500),
+  // 獨立音軌探針（耳朵／嘴巴分家的可行性驗證）。'on' 時 bot 加掛
+  // recording_config.audio_separate_raw，Recall 把**每位與會者各自一條**的 PCM
+  // 推到 /ws/recall-audio。目前只統計、只寫 log、不做轉錄。
+  // 'off'（預設）：join payload 完全不變。需要 RECALL_WEBHOOK_URL（換算成 wss://）。
+  RECALL_SEPARATE_AUDIO: z.enum(['on', 'off']).default('off'),
   // 主要 bot provider：'recall'（預設，Vexa 被 reCAPTCHA 擋死後的決策）或 'vexa'。
   // 另一個 provider 自動成為 failover secondary（未設定齊全時退化為單一 provider）。
   BOT_PRIMARY_PROVIDER: z.enum(['vexa', 'recall']).default('recall'),

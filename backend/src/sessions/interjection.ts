@@ -1,6 +1,7 @@
 import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { activeSessions } from './session-store.js'
+import { isSpeakingNow } from '../agent/speaker-timeline.js'
 import { answerFollowUp, resolveAnswer, sendChatBestEffort, speakProactive } from './wake-word-detector.js'
 import { warmEouModel, isEndOfTurn } from '../lib/eou.js'
 import { completeText } from '../lib/llm.js'
@@ -158,6 +159,19 @@ function armIcebreaker(meetingInstanceId: string): void {
   }, env.ICEBREAKER_SILENCE_MS)
 }
 
+/**
+ * 現在有沒有人正在講話？靠 Recall 的 speech_on/off 時間軸（即時），
+ * 不靠「多久沒有新逐字稿」——後者是落後且成批到達的指標，會在別人換氣、
+ * 下一段定稿還沒到的空檔誤判成冷場，於是蜜塔在人家講到一半時插話。
+ *
+ * botId 取自 BotSession 的公開欄位（Recall 是字串 bot id；Vexa 是數字 → 無時間軸，
+ * 回 false 維持原行為）。不讀 provider 私有的 state。
+ */
+function someoneIsSpeaking(session: MeetingSession): boolean {
+  const botId = session.botSession?.providerMeetingId
+  return typeof botId === 'string' && isSpeakingNow(botId)
+}
+
 async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   const session = activeSessions.get(meetingInstanceId)
   const s = states.get(meetingInstanceId)
@@ -167,7 +181,9 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   // 跳過時必留 log：這些防護原本靜默 return，實測「破冰沒出來」時完全無從診斷是哪條擋的
   const skipReason = session.isSpeaking
     ? 'bot-speaking'
-    : now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS
+    : someoneIsSpeaking(session)
+      ? 'human-speaking' // 現場根本不是沉默，只是逐字稿還沒到
+      : now - s.lastIcebreakerAt < env.ICEBREAKER_COOLDOWN_MS
       ? 'cooldown'
       : // 喚醒問答剛發生（查詢/回答可能還在進行）→ 不是真沉默；
         // 寬限取 max(沉默門檻, 45s 查詢鏈上限)，避免破冰搶在遲到的答案前面
@@ -295,7 +311,9 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   const last = s.window[s.window.length - 1]
   const skipReason = session.isSpeaking
     ? 'bot-speaking'
-    : !last || last.fromBot
+    : someoneIsSpeaking(session)
+      ? 'human-speaking' // 有人正在講話就不能插嘴（speech_on/off 是即時訊號）
+      : !last || last.fromBot
       ? 'last-entry-from-bot'
       : !engaged && inWakeGrace
         ? 'wake-grace'

@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest'
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 
 // 喚醒詞偵測現在透過 provider 抽象層說話 / 發聊天室訊息（不再直接呼叫 vexaClient）。
 const mockBotProvider = vi.hoisted(() => ({
@@ -43,9 +43,11 @@ import {
   handleChatMessage,
   handleBargeIn,
   parseIntent,
+  speakProactive,
   speechTiming,
 } from '../../../../backend/src/sessions/wake-word-detector'
 import { completeText } from '../../../../backend/src/lib/llm'
+import * as dify from '../../../../backend/src/lib/dify'
 
 // 語音播放估時歸零：測試裡 speak 是即時 mock，不能真等「開場白唸完」的 3-6 秒
 speechTiming.msPerChar = 0
@@ -79,6 +81,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     speechStartedAt: 0,
     speechEndsAt: 0,
     bargeEpoch: 0,
+    speechGen: 0,
     chatLog: [],
     sessionStartedAt: 0,
     processedSegmentIds: new Set<string>(),
@@ -604,5 +607,80 @@ describe('handleChatMessage — 聊天室喚醒詞', () => {
       is_from_bot: false,
     })
     expect(mockBotProvider.sendChat).toHaveBeenCalled()
+  })
+})
+
+// ── isSpeaking 世代鎖 ─────────────────────────────────────────────────────────
+//
+// speak() 送出即返回、播放結束沒有事件可等 → 解鎖全靠 setTimeout 估時。
+// 這組測試釘住兩件事：
+//   ① 查詢比安全網久時，答案播放期間仍持有嘴巴（安全網到期後要重新佔用）
+//   ② 已作廢的語音，其解鎖計時器不能把新的一段語音解鎖
+// 兩者失守的症狀都是「蜜塔講到一半就聽不見了」：barge-in 第一行檢查 isSpeaking
+// 直接 return、新問題誤走語音分支疊在舊答案上。
+
+describe('isSpeaking 世代鎖（嘴巴佔用的生命週期）', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  afterEach(() => {
+    vi.useRealTimers()
+    speechTiming.msPerChar = 0
+    speechTiming.extraMs = 0
+    speechTiming.floorMs = 0
+  })
+
+  it('查詢比安全網久 → 答案播放期間仍持有嘴巴', async () => {
+    vi.useFakeTimers()
+    speechTiming.floorMs = 5_000 // 給語音真實長度，才有「安全網先到期、答案後到」的時間差
+
+    const session = makeSession()
+    let releaseDify: (v: unknown) => void = () => {}
+    vi.mocked(dify.askQuestion).mockReturnValueOnce(
+      new Promise((resolve) => { releaseDify = resolve }) as any,
+    )
+
+    const pending = handleTranscriptSegment(session, {
+      segment_id: 'seg-slow-query',
+      text: '蜜塔，報名費是多少',
+      speaker: 'B',
+      start_time: 1,
+      end_time: 2,
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(session.isSpeaking).toBe(true)
+
+    // 前進超過安全網（DIFY_CHATFLOW_TIMEOUT_MS 45s + 開場白 5s + 10s 餘裕）
+    await vi.advanceTimersByTimeAsync(70_000)
+
+    releaseDify({ answer: '報名費是 500 元', conversationId: 'conv-1' })
+    await vi.advanceTimersByTimeAsync(0)
+    await pending
+
+    // 修正前：安全網已解鎖，且答案路徑沒有重新佔用 → 這裡會是 false
+    expect(session.isSpeaking).toBe(true)
+  })
+
+  it('已作廢語音的解鎖計時器，不會解鎖新的一段語音', async () => {
+    vi.useFakeTimers()
+    speechTiming.msPerChar = 100
+
+    const session = makeSession()
+
+    await speakProactive(session, '第一段') // 3 字 → 解鎖排在 300ms
+    expect(session.isSpeaking).toBe(true)
+
+    await handleBargeIn(session, { text: '等一下我有問題', speaker: 'B' })
+    expect(session.isSpeaking).toBe(false)
+
+    await speakProactive(session, '第二段'.padEnd(20, '啊')) // 20 字 → 解鎖排在 2000ms
+    expect(session.isSpeaking).toBe(true)
+
+    // 走到「第一段」原定的解鎖時刻：它已作廢，不該影響第二段
+    await vi.advanceTimersByTimeAsync(500)
+    expect(session.isSpeaking).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(1_600)
+    expect(session.isSpeaking).toBe(false)
   })
 })

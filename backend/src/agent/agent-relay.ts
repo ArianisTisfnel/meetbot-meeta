@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws'
+import { createProbeState, ingestProbeMessage, maybeLogSummary } from './recall-audio-probe.js'
 import type { Server as HttpServer } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { env } from '../types/env.js'
@@ -68,7 +69,8 @@ function buildSessionUpdate(): Record<string, unknown> {
             type: 'server_vad',
             threshold: 0.5,
             prefix_padding_ms: 300,
-            silence_duration_ms: 500,
+            // 斷句門檻（見 env.ts 說明）：唯一決定句子在哪切開的參數，可調以實測斷句品質。
+            silence_duration_ms: env.STT_SILENCE_DURATION_MS,
           },
         },
       },
@@ -209,7 +211,10 @@ export function attachAgentGateway(server: HttpServer): void {
       socket.destroy()
       return
     }
-    if (url.pathname !== '/ws/agent') {
+    // /ws/agent        = Output Media 網頁（耳朵＋嘴巴，現行路徑）
+    // /ws/recall-audio = Recall 獨立音軌探針（唯讀統計，見 recall-audio-probe.ts）
+    const isProbePath = url.pathname === '/ws/recall-audio'
+    if (url.pathname !== '/ws/agent' && !isProbePath) {
       socket.destroy()
       return
     }
@@ -221,10 +226,35 @@ export function attachAgentGateway(server: HttpServer): void {
       socket.destroy()
       return
     }
-    wss.handleUpgrade(req, socket, head, (ws) => handlePageConnection(session, ws))
+    wss.handleUpgrade(req, socket, head, (ws) =>
+      isProbePath ? handleProbeConnection(session, ws) : handlePageConnection(session, ws),
+    )
   })
 
-  logger.info('agent relay: gateway attached at /ws/agent')
+  logger.info('agent relay: gateway attached at /ws/agent (+ /ws/recall-audio probe)')
+}
+
+/**
+ * Recall 獨立音軌探針的連線處理。
+ *
+ * **只統計不轉錄** —— 目的是驗證「耳朵能不能從 Output Media 網頁搬到 Recall 的
+ * per-participant 音軌」。驗證通過後才會接到 OpenAI 轉錄，那時靜音窗整套就能拆掉
+ *（改用 participant id 濾掉自己）。
+ */
+function handleProbeConnection(session: AgentSession, ws: WebSocket): void {
+  const state = createProbeState(session.botName)
+  logger.info({ agentId: session.agentId, botId: session.botId }, 'audio probe: Recall 獨立音軌連線已建立')
+
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return // 協定是 JSON；二進位不該出現在這條
+    ingestProbeMessage(state, data.toString())
+    maybeLogSummary(state)
+  })
+  ws.on('close', () => {
+    maybeLogSummary(state, true)
+    logger.info({ agentId: session.agentId, totalMessages: state.totalMessages }, 'audio probe: 連線結束')
+  })
+  ws.on('error', (err) => logger.warn({ err, agentId: session.agentId }, 'audio probe: WS error'))
 }
 
 function handlePageConnection(session: AgentSession, ws: WebSocket): void {

@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder'
 import { env } from '../types/env.js'
 import { toTraditional } from './zh.js'
 import { AppError } from '../middleware/error-handler.js'
@@ -223,6 +224,170 @@ export async function askQuestion(params: {
   }
 
   return { answer, conversationId: data.conversation_id ?? '' }
+}
+
+
+/**
+ * 從一個 SSE frame 取出 JSON payload（純函式，匯出供測試）。
+ *
+ * 一個 frame 可能含多行（`event: xxx` + `data: {...}`），只有 `data:` 那行有內容。
+ * ping（心跳，每 10 秒）與無法解析的 frame 一律回 null 讓呼叫端略過。
+ */
+export function parseSsePayload(frame: string): Record<string, unknown> | null {
+  for (const line of frame.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+    const payload = trimmed.slice(5).trim()
+    if (!payload || payload === '[DONE]') return null
+    try {
+      return JSON.parse(payload) as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+
+/**
+ * 同上，但走 `response_mode: 'streaming'`（SSE）。**目前未被呼叫**，保留備用。
+ *
+ * 相對 blocking 的三個好處（都與「答案生成速度」無關）：
+ *   - 不會撞到閘道器對單一長請求的固定逾時
+ *   - 記錄 `ttftMs`（首字延遲）——「邊生成邊唸」能省多少時間就看這個數字
+ *   - `onDelta` 是「邊收邊唸」的掛鉤
+ *
+ * 回傳契約與 {@link askQuestion} 完全相同（完整答案字串），可直接替換。
+ *
+ * ⚠️ `onDelta` 的兩個注意事項：
+ *   1. `resolveAnswer` 的 Dify 錯誤重試會重跑一次，onDelta 會從頭再來一輪
+ *   2. hybrid 意圖最後會用 LLM 重新合成，最終答案**不等於**串流出來的內容
+ *   兩者都代表 onDelta 目前只適合做量測/預熱，拿去直接播音前要先處理。
+ */
+export async function askQuestionStreaming(params: {
+  datasetId: string
+  question: string
+  mode: 'voice' | 'chat'
+  userId: string
+  conversationId?: string | null
+  /** 每段增量文字（已轉繁體）；acc 為到目前為止的完整答案。 */
+  onDelta?: (delta: string, acc: string) => void
+}): Promise<{ answer: string; conversationId: string }> {
+  const startedAt = Date.now()
+  const res = await fetch(`${env.DIFY_API_BASE}/chat-messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.DIFY_WORKFLOW_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      inputs: { dataset_id: params.datasetId, mode: params.mode },
+      query: params.question,
+      response_mode: 'streaming',
+      user: params.userId,
+      conversation_id: params.conversationId || '',
+    }),
+    signal: AbortSignal.timeout(env.DIFY_CHATFLOW_TIMEOUT_MS),
+  })
+
+  if (!res.ok || !res.body) {
+    throw new AppError(
+      'EXTERNAL_SERVICE_ERROR',
+      503,
+      `Dify Chatflow error: ${res.status} ${await res.text().catch(() => '')}`,
+    )
+  }
+
+  // StringDecoder 而非 chunk.toString()：中文一個字 3 bytes，會被切在 chunk 邊界，
+  // 直接 toString 會產生替換字元（答案出現「」）。decoder 會保留半個字等下一塊。
+  const decoder = new StringDecoder('utf8')
+  let buffer = ''
+  let acc = ''
+  let conversationId = params.conversationId || ''
+  let firstDeltaMs: number | null = null
+  let replaced = false
+
+  const consumeFrame = (frame: string): void => {
+    const ev = parseSsePayload(frame)
+    if (!ev) return
+
+    const cid = ev.conversation_id
+    if (typeof cid === 'string' && cid) conversationId = cid
+
+    switch (ev.event) {
+      case 'message':
+      case 'agent_message': {
+        // LLM 輸出偶爾夾簡體 → 逐塊轉繁體（會直接顯示在聊天室 / 被 TTS 念出）
+        const delta = toTraditional(String(ev.answer ?? ''))
+        if (!delta) return
+        if (firstDeltaMs === null) firstDeltaMs = Date.now() - startedAt
+        acc += delta
+        params.onDelta?.(delta, acc)
+        return
+      }
+      case 'message_replace':
+        // 內容審查攔截 → 整段取代先前累積的內容
+        acc = toTraditional(String(ev.answer ?? ''))
+        replaced = true
+        return
+      case 'error':
+        throw new AppError(
+          'EXTERNAL_SERVICE_ERROR',
+          503,
+          `Dify Chatflow streaming error: ${String(ev.code ?? '')} ${String(ev.message ?? '')}`.trim(),
+        )
+      default:
+        // message_end / ping / workflow_* / node_* → 沒有要累積的內容
+        return
+    }
+  }
+
+  for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+    buffer += decoder.write(Buffer.from(chunk))
+    let sep: number
+    // SSE frame 以空行分隔；\r\n\r\n 也要接受（經過某些反向代理會被改寫）
+    while ((sep = buffer.search(/\r?\n\r?\n/)) !== -1) {
+      const match = /\r?\n\r?\n/.exec(buffer.slice(sep))!
+      const frame = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + match[0].length)
+      consumeFrame(frame)
+    }
+  }
+  buffer += decoder.end()
+  if (buffer.trim()) consumeFrame(buffer) // 最後一段沒有結尾空行
+
+  const answer = acc || '抱歉，無法取得回答。'
+
+  if (replaced) {
+    logger.warn(
+      { datasetId: params.datasetId },
+      'Dify Chatflow: message_replace received (content moderation) — 先前串流出去的內容已被取代',
+    )
+  }
+
+  if (answer === DIFY_NO_RESULT_SENTINEL) {
+    // 靜默失效偵測：RAG 可能因 DIFY_DATASET_API_KEY 未設定而失效
+    logger.warn(
+      { datasetId: params.datasetId },
+      'Dify Chatflow returned no-result sentinel — check DIFY_DATASET_API_KEY in Dify platform env vars',
+    )
+  } else {
+    logger.info(
+      {
+        datasetId: params.datasetId,
+        userId: params.userId,
+        conversationId,
+        answerLength: answer.length,
+        // ttftMs = 首字延遲：這才是「最快能開口的時刻」。
+        // difyMs - ttftMs 就是「邊生成邊唸」能省下來的時間。
+        ttftMs: firstDeltaMs,
+        difyMs: Date.now() - startedAt,
+      },
+      'Dify Chatflow answered (RAG hit)',
+    )
+  }
+
+  return { answer, conversationId }
 }
 
 // ── 逐字稿 MD 上傳至 Dify Files API ────────────────────────────────────────

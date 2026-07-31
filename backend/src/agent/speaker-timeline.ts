@@ -137,6 +137,28 @@ export function resolveSpeakerAt(
   return topName
 }
 
+/**
+ * 現在有沒有人正在講話？（= 有尚未 speech_off 的區間）
+ *
+ * 給插話／破冰用，與 {@link resolveSpeakerAt} 的問題不同：那個問「剛才那句是誰講的」，
+ * 這個問「此刻可不可以開口」。插話原本靠「多久沒有新逐字稿」推論這輪講完了，
+ * 但逐字稿是**落後且成批**到達的（要等 VAD 判定靜音才定稿），於是會在別人換氣、
+ * 下一段定稿還沒到的空檔誤判成冷場 → 蜜塔就在人家講到一半時插話。
+ * speech_on/off 是即時的，不受轉錄延遲影響。
+ *
+ * `maxOpenMs` 是保命上限：speech_off 掉了的話，開著的區間會讓蜜塔永遠不敢開口。
+ * **不能沿用 SPEAKER_LOOKBACK_MS（15 秒）**——那是為「歸屬一句話」設計的，
+ * 而一個人連續講兩分鐘是很正常的事，用 15 秒會在他還在講時就放行插話。
+ * ponytail: 用固定窗擋住漏掉的 speech_off，真要準得靠 Recall 補送或心跳。
+ */
+export const MAX_OPEN_SPEECH_MS = 120_000
+
+export function isSpeakingNow(botId: string, nowMs: number = Date.now(), maxOpenMs = MAX_OPEN_SPEECH_MS): boolean {
+  const t = timelines.get(botId)
+  if (!t?.length) return false
+  return t.some((iv) => iv.endMs === null && nowMs - iv.startMs < maxOpenMs)
+}
+
 /** session 結束時清理（recall-adapter 的 leave 呼叫）。 */
 export function clearSpeakerTimeline(botId: string): void {
   timelines.delete(botId)

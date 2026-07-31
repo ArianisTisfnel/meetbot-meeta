@@ -5,6 +5,7 @@ import {
   isAgentModeEnabled,
   isAgentLive,
   buildAgentPageUrl,
+  signAgentToken,
   registerAgentSession,
   markAgentAnchor,
 } from '../agent/agent-registry.js'
@@ -265,7 +266,11 @@ export class RecallAdapter implements MeetingBotProvider {
     //     讓 Recall 即時把 transcript.data / chat_message POST 進來驅動喚醒詞。
     //   - 未設 webhook → 退回 meeting_captions（免費，但只有會後逐字稿、無即時喚醒詞）。
     const realtimeEnabled = Boolean(env.RECALL_WEBHOOK_URL && env.RECALL_WEBHOOK_TOKEN)
-    const recordingConfig = realtimeEnabled
+    const recordingConfig: {
+      transcript?: Record<string, unknown>
+      audio_separate_raw?: Record<string, never>
+      realtime_endpoints?: Array<Record<string, unknown>>
+    } = realtimeEnabled
       ? {
           transcript: {
             provider: {
@@ -302,6 +307,20 @@ export class RecallAdapter implements MeetingBotProvider {
     // recording_config 原封不動保留：webhook 逐字稿（摘要用）與聊天室事件完全不受影響。
     const agentEnabled = isAgentModeEnabled()
     const agentId = agentEnabled ? randomUUID() : null
+
+    // 獨立音軌探針：Recall 把每位與會者各自一條的 PCM 推到我們的 WS（只統計不轉錄）。
+    // WS base 由 RECALL_WEBHOOK_URL 換算（同一條公開 tunnel），不需要新的環境變數；
+    // agentId 當識別碼＋沿用同一套簽章，與 /ws/agent 一致。
+    if (env.RECALL_SEPARATE_AUDIO === 'on' && agentId && env.RECALL_WEBHOOK_URL) {
+      const wsBase = env.RECALL_WEBHOOK_URL.replace(/^http/, 'ws').replace(/\/+$/, '')
+      const probeUrl = `${wsBase}/ws/recall-audio?agent=${agentId}&token=${signAgentToken(agentId)}`
+      recordingConfig.audio_separate_raw = {}
+      recordingConfig.realtime_endpoints = [
+        ...(recordingConfig.realtime_endpoints ?? []),
+        { type: 'websocket', url: probeUrl, events: ['audio_separate_raw.data'] },
+      ]
+      logger.info({ agentId }, 'RecallAdapter: audio_separate_raw 探針已啟用（只統計，不影響現有路徑）')
+    }
 
     const bot = await recallFetch<{ id: string }>('POST', '/api/v1/bot/', {
       meeting_url: url,
