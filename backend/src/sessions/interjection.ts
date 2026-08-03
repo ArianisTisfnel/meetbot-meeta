@@ -73,6 +73,16 @@ interface InterjectionState {
   /** 沉默破冰計時器：全場靜默超過 ICEBREAKER_SILENCE_MS 觸發。 */
   idleTimer: ReturnType<typeof setTimeout> | null
   lastIcebreakerAt: number
+  /**
+   * 最後一次「有人類在出聲」的時刻——**未定稿的 partial 也算**。
+   *
+   * 存在的理由只有一個：主動開口的流程（破冰／插話）是「先檢查再產生內容再開口」，
+   * 而中間那段（破冰要叫 LLM 1-2 秒，插話還要等 Dify）沒有任何東西能喊停。
+   * 實測 2026-08-03 20:13:21 通過檢查、20:13:22 就講出去了，使用者在那一秒裡開口
+   * 完全來不及擋。開口前拿這個時刻跟進來時的快照比對，變了就放棄本輪。
+   * 用時刻而不是布林：布林要處理「什麼時候關掉」，時刻只要比對有沒有動過。
+   */
+  lastHumanActivityAt: number
 }
 
 const states = new Map<string, InterjectionState>()
@@ -80,7 +90,15 @@ const states = new Map<string, InterjectionState>()
 function getOrCreateState(meetingInstanceId: string): InterjectionState {
   let s = states.get(meetingInstanceId)
   if (!s) {
-    s = { window: [], lastInterjectionAt: 0, timer: null, evaluating: false, idleTimer: null, lastIcebreakerAt: 0 }
+    s = {
+      window: [],
+      lastInterjectionAt: 0,
+      timer: null,
+      evaluating: false,
+      idleTimer: null,
+      lastIcebreakerAt: 0,
+      lastHumanActivityAt: 0,
+    }
     states.set(meetingInstanceId, s)
   }
   return s
@@ -112,6 +130,7 @@ export function recordConversation(session: MeetingSession, entry: ConversationE
   const s = getOrCreateState(session.meetingInstanceId)
   s.window.push(entry)
   if (s.window.length > WINDOW_MAX_ENTRIES) s.window.splice(0, s.window.length - WINDOW_MAX_ENTRIES)
+  if (!entry.fromBot) s.lastHumanActivityAt = Math.max(s.lastHumanActivityAt, entry.at)
 
   // 任何活動（含蜜塔自己）都重置沉默計時
   armIcebreaker(session.meetingInstanceId)
@@ -165,8 +184,10 @@ export function startIcebreaker(session: MeetingSession): void {
  * 進對話窗會污染決策層的輸入，也會讓插話的 turn 計時器永遠重排。
  */
 export function noteHumanSpeaking(meetingInstanceId: string): void {
-  if (!env.ICEBREAKER_ENABLED) return
-  if (!states.has(meetingInstanceId)) return
+  const s = states.get(meetingInstanceId)
+  if (!s) return
+  // 時刻先記（插話也要看，不受破冰開關影響），再重置破冰計時
+  s.lastHumanActivityAt = Date.now()
   armIcebreaker(meetingInstanceId)
 }
 
@@ -231,6 +252,8 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
     return
   }
 
+  // 進來時的快照：開口前再比對一次，中間只要有人出過聲就放棄本輪（見 lastHumanActivityAt）
+  const activityAt = s.lastHumanActivityAt
   const humanEntries = s.window.filter((e) => !e.fromBot)
   let text: string
   if (s.lastIcebreakerAt === 0 && humanEntries.length < 2) {
@@ -242,8 +265,6 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
   } else {
     // 會議中沉默：總結＋拋問題
     try {
-      // 記住進 LLM 前的最後一則：生成期間（1-2 秒）若有人開口，代表已不是冷場
-      const lastEntryAt = s.window.length ? s.window[s.window.length - 1].at : 0
       const context = formatConversation(s.window.slice(-DECISION_CONTEXT_ENTRIES), { chatMarker: false })
       text = await completeText({
         system: ICEBREAKER_SUMMARY_SYSTEM,
@@ -256,19 +277,23 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
         armIcebreaker(meetingInstanceId)
         return
       }
-      // 撞車防護：LLM 生成期間有人類新發言 → 放棄本輪破冰
-      //（實測 2026-07-07：有人 3:05 提問、破冰 3:06 照發，變成打斷提問者）
-      const nowLast = s.window[s.window.length - 1]
-      if (nowLast && nowLast.at !== lastEntryAt && !nowLast.fromBot) {
-        logger.info({ meetingInstanceId }, 'icebreaker: someone spoke during generation, aborting this round')
-        armIcebreaker(meetingInstanceId)
-        return
-      }
     } catch (err) {
       logger.warn({ err, meetingInstanceId }, 'icebreaker: LLM failed, skipping')
       armIcebreaker(meetingInstanceId)
       return
     }
+  }
+
+  // 開口前的最後一道關卡：檢查完到現在（罐頭幾十毫秒、總結要 1-2 秒的 LLM）
+  // 只要有人出過聲就放棄——partial 也算，不必等定稿。
+  //（實測 2026-08-03 20:13:21 通過檢查、20:13:22 就講出去，蓋在使用者身上）
+  if (s.lastHumanActivityAt !== activityAt) {
+    logger.info(
+      { meetingInstanceId, sinceActivityMs: Date.now() - s.lastHumanActivityAt },
+      'icebreaker: someone started speaking while preparing, aborting this round',
+    )
+    armIcebreaker(meetingInstanceId)
+    return
   }
 
   s.lastIcebreakerAt = Date.now()
@@ -360,6 +385,9 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   }
 
   s.evaluating = true
+  // 同破冰：從這裡到真的開口中間隔著 decideTurn ＋ Dify（最長 45 秒），
+  // 期間有人出聲就不該用語音硬插進去。
+  const activityAt = s.lastHumanActivityAt
   try {
     const recent = s.window.slice(-DECISION_CONTEXT_ENTRIES)
     const turn = await decideTurn({ window: recent, kbContentCard: session.kbContentCard })
@@ -415,7 +443,6 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
       'interjection: decision = interject, resolving answer',
     )
 
-    const lastAtBeforeAnswer = s.window[s.window.length - 1]?.at
     const answer = await resolveAnswer(session, turn.question, 'chat', turn.intent)
 
     s.lastInterjectionAt = Date.now()
@@ -433,8 +460,8 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
 
     // 投遞方式看現場：查詢期間有人開口/蜜塔正在說話 → 聊天室（不打擾）；
     // 仍然沉默 → 語音說出來（沉默中丟訊息沒人會看）。
-    const nowLast = s.window[s.window.length - 1]
-    const someoneSpoke = Boolean(nowLast && nowLast.at !== lastAtBeforeAnswer && !nowLast.fromBot)
+    // partial 也算「有人在講話」：等定稿才知道的話，判斷永遠慢 1.5-3 秒
+    const someoneSpoke = s.lastHumanActivityAt !== activityAt
     if (someoneSpoke || session.isSpeaking) {
       logger.info({ meetingInstanceId }, 'interjection: delivering via chat (people talking)')
       await sendChatBestEffort(session, `💡 ${answer}`, 'chat', 'interjection')

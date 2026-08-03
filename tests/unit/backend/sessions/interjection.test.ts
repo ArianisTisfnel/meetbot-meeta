@@ -241,6 +241,25 @@ describe('icebreaker — 沉默破冰', () => {
     expect(llm.completeText.mock.calls[0][0].system).toBe(ICEBREAKER_SUMMARY_SYSTEM)
   })
 
+  // 實機 2026-08-03 20:13:21 通過檢查、20:13:22 就講出去了——中間那 1-2 秒的 LLM 生成
+  // 沒有任何東西能喊停，使用者在那一秒開口完全來不及擋。
+  it('準備期間有人開口（只有 partial、定稿還沒到）→ 放棄本輪', async () => {
+    const session = putSession()
+    startIcebreaker(session)
+    recordConversation(session, humanEntry('先討論預算'))
+    recordConversation(session, humanEntry('好啊', '小華'))
+
+    let finishLlm!: (text: string) => void
+    llm.completeText.mockReturnValueOnce(new Promise<string>((r) => { finishLlm = r }))
+    await vi.advanceTimersByTimeAsync(40_000) // 到點 → 卡在 LLM 生成
+
+    noteHumanSpeaking(MEETING_ID) // 她開口了，只有 partial
+    finishLlm('剛聊到預算，要繼續嗎？')
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+  })
+
   it('partial 逐字稿（還沒定稿）也算有人在講話 → 重置沉默計時', async () => {
     const session = putSession()
     startIcebreaker(session)
