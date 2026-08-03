@@ -506,6 +506,27 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
     )
   })
 
+  // 模擬器 2026-08-03：語音答案唸完的**當下**就鏡像到聊天室了（speak 送出即返回），
+  // 7 秒後有人插嘴，barge-in 又把同一段當成「漏送的內容」貼一次。
+  it('語音答案已鏡像到聊天室 → 播放中被打斷不再重貼一次', async () => {
+    const session = makeSession()
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-barge-dup',
+      text: '蜜塔，報名截止日是什麼時候？',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 3,
+    })
+    expect(session.currentSpeech).toBeNull() // 沒有「還沒送到的內容」
+    const chatCallsBefore = mockBotProvider.sendChat.mock.calls.length
+
+    session.isSpeaking = true // 估時未到，嘴巴還在播
+    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'B' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1) // 還是要停
+    expect(mockBotProvider.sendChat.mock.calls.length).toBe(chatCallsBefore) // 但不重貼
+  })
+
   it('STT 晚到事件：開口時間早於蜜塔開始說話 → 不算打斷', async () => {
     const base = Date.now() - 100_000
     const session = makeSession({

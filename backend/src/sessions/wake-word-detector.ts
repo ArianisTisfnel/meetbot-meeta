@@ -1,4 +1,4 @@
-import { env } from '../types/env.js'
+﻿import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { botProvider } from '../provider/index.js'
 import type { BotSession } from '../provider/types.js'
@@ -791,6 +791,11 @@ async function dispatchQuestion(
       setTimeout(release, answerEstimatedMs)
 
       await botProvider.speak(botSession, answer)
+      // 語音答案的完整版在下面就會鏡像到聊天室，所以這段語音**沒有「還沒送到的內容」**。
+      // 不清掉的話，播放期間有人插嘴時 handleBargeIn 會把 currentSpeech 當成漏送的內容
+      // 再貼一次，同一段文字在聊天室出現兩遍（模擬器 2026-08-03 一場跑出兩次）。
+      // isSpeaking 不動——嘴巴確實還在播，barge-in 仍然要停得下來。
+      session.currentSpeech = null
       // 蜜塔的語音回答記進對話窗（重置破冰計時、決策層可見已回答）
       recordConversation(session, { speaker: '蜜塔', text: answer, source: 'voice', fromBot: true, at: Date.now() })
       // 語音回答同步貼聊天室：留下文字紀錄（會後隨 chatLog 併入逐字稿，標「（語音）」），
