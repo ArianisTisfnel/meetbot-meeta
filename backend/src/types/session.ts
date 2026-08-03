@@ -84,6 +84,15 @@ export interface MeetingSession {
   speechGen: number
   /** 進度句輪替索引：同一場會議不要每次都聽到同一句墊檔。 */
   progressVoiceIdx?: number
+  /**
+   * 最後一次派發出去的問題原文與時刻——給「同一題不要答兩次」用。
+   *
+   * 追問出口（interjection 的 evaluateTurn）是讓語意層**從整個對話窗裡**挑出使用者在問
+   * 什麼，而窗裡就躺著幾秒前才剛答過的那一則。實測 2026-08-03 19:35：使用者在聊天室打了
+   * 「我們這個月有甚麼目標嗎」，答案還在查的時候她又出了一次聲，語意層就把同一句原文
+   * （連錯字「甚麼」都一字不差）當成新的追問，於是同一題聊天室答一次、語音又答一次。
+   */
+  lastDispatchedQuestion?: { text: string; at: number }
   processedSegmentIds: Set<string>
   /** 由 provider 抽象層建立的 bot session（admitted 後才有值）。取代舊的 wsConnection。 */
   botSession: BotSession | null

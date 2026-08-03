@@ -670,6 +670,8 @@ async function dispatchQuestion(
   source: 'voice' | 'chat',
   opts?: { skipPendingPrompt?: boolean; speaker?: string; intent?: QuestionIntent },
 ): Promise<void> {
+  // 記下這題：追問出口據此擋掉「同一題再答一次」（見 session.lastDispatchedQuestion）
+  session.lastDispatchedQuestion = { text: question, at: Date.now() }
   const pendingVoice = PENDING_VOICE
   // ack 在意圖分類**之前**送出，此時還不知道會走 RAG／逐字稿／閒聊哪條路，
   // 也還不知道對方到底是不是在提問 → 措辭必須中性。踩過兩次：

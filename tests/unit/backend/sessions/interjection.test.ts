@@ -503,6 +503,30 @@ describe('interjection — 連續追問（addressed=address）', () => {
     expect(wwd.sendChatBestEffort).not.toHaveBeenCalled()
   })
 
+  // 實機 2026-08-03 19:35：聊天室打的那題答案還在查，她又出了一次聲，語意層把**同一句
+  // 原文**從對話窗撈出來當成新追問 → 聊天室答一次、語音又答一次。
+  it('剛派發過的同一題 → 不再答第二次', async () => {
+    const session = engagedSession()
+    session.lastDispatchedQuestion = { text: '我們這個月有甚麼目標嗎', at: Date.now() }
+    llm.completeText.mockResolvedValueOnce(
+      decision({ addressed: 'address', question: '我們這個月有甚麼目標嗎' }),
+    )
+    recordConversation(session, humanEntry('嗯', 'WENDY'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).not.toHaveBeenCalled()
+  })
+
+  it('同一題但已經過了一分鐘 → 當成沒聽到，照答', async () => {
+    const session = engagedSession()
+    session.lastDispatchedQuestion = { text: '我們這個月有甚麼目標嗎', at: Date.now() - 61_000 }
+    llm.completeText.mockResolvedValueOnce(
+      decision({ addressed: 'address', question: '我們這個月有甚麼目標嗎' }),
+    )
+    recordConversation(session, humanEntry('我們這個月有甚麼目標嗎', 'WENDY'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).toHaveBeenCalledTimes(1)
+  })
+
   it('聊天室打的追問 → 從聊天室回', async () => {
     const session = engagedSession()
     llm.completeText.mockResolvedValueOnce(decision({ addressed: 'address', question: '那報名費呢' }))

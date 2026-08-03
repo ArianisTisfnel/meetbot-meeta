@@ -58,6 +58,12 @@ const WAKE_GRACE_MS = 15_000
  * 答案落地前破冰會自打臉（實測 2026-07-08：破冰說「我查不到預算」，2 秒後自己的答案就到了）。
  */
 const ICEBREAKER_WAKE_QUERY_GRACE_MS = 45_000
+/**
+ * 「同一題不要答兩次」的有效期。取 60s：涵蓋整條查詢鏈（Dify 上限 45s）加上答案唸完，
+ * 也就是「答案還沒落地／剛落地」的那段時間。超過就不擋——使用者過了一分鐘還在問
+ * 同一句話，多半是真的沒聽到，這時候安靜才是壞掉。
+ */
+const REPEAT_QUESTION_MS = 60_000
 
 interface InterjectionState {
   window: ConversationEntry[]
@@ -363,6 +369,17 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
     // 那邊有喊名字，判不出來時多嘴一次而已；這裡沒喊名字，退回「照常回答」等於
     // 額度一枯竭就把會議裡每一句話都當成在問她。
     if (turn.addressed === 'address' && engaged && turn.question) {
+      // 跳針防護：語意層是從**整個對話窗**挑問題的，窗裡就躺著剛才已經答過的那一則
+      //（實測 2026-08-03 19:35：聊天室打的那題，答案還在查時她又出了一次聲，
+      //  同一句原文被當成新追問，聊天室答一次、語音又答一次）。
+      const prev = session.lastDispatchedQuestion
+      if (prev && prev.text.trim() === turn.question.trim() && now - prev.at < REPEAT_QUESTION_MS) {
+        logger.info(
+          { meetingInstanceId, question: turn.question.slice(0, 60), sinceDispatchMs: now - prev.at },
+          'interjection: same question was just dispatched, not answering twice',
+        )
+        return
+      }
       logger.info(
         { meetingInstanceId, question: turn.question.slice(0, 60), intent: turn.intent },
         'interjection: decision = addressed follow-up, answering as a question',
