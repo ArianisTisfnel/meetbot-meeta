@@ -13,6 +13,8 @@
  *   npx tsx --env-file .env scripts/eval-interjection.ts                     # 全部劇本 × 全部變體
  *   npx tsx --env-file .env scripts/eval-interjection.ts --runs 3            # 每案例跑 3 次看穩定度
  *   npx tsx --env-file .env scripts/eval-interjection.ts --only 指名         # 只跑名稱含「指名」的案例
+ *   npx tsx --env-file .env scripts/eval-interjection.ts --only 離題,評估型     # 逗號分隔＝任一符合就跑
+ *     （改 prompt 後只重測受影響的劇本用；**基準數字仍必須全跑**才算數）
  *   npx tsx --env-file .env scripts/eval-interjection.ts --variant live      # 只跑名稱含 live 的變體
  *   npx tsx --env-file .env scripts/eval-interjection.ts --variant v2 --from 3  # 額度分段：從第 3 個案例續跑
  *   npx tsx --env-file .env scripts/eval-interjection.ts --delay-ms 12000    # 免費層限流嚴時放慢
@@ -70,7 +72,11 @@ const here = dirname(fileURLToPath(import.meta.url))
 const scenarioPath = resolve(here, flag('scenarios') ?? 'interjection-scenarios.json')
 
 const file: ScenarioFile = JSON.parse(readFileSync(scenarioPath, 'utf-8'))
-const cases = file.cases.filter((c) => !ONLY || c.name.includes(ONLY)).slice(Math.max(0, FROM - 1))
+// --only 可給逗號分隔的多個關鍵字：任一命中就納入（改 prompt 後做局部回歸用）
+const onlyTerms = ONLY ? ONLY.split(',').map((t) => t.trim()).filter(Boolean) : []
+const cases = file.cases
+  .filter((c) => !onlyTerms.length || onlyTerms.some((t) => c.name.includes(t)))
+  .slice(Math.max(0, FROM - 1))
 if (!cases.length) {
   console.error('沒有符合的案例。')
   process.exit(1)

@@ -27,9 +27,18 @@
       "expected": true,
       "expectQuestionIncludes": "截止",
       "window": [
-        { "speaker": "小明", "text": "我們進度有點趕欸" },
-        { "speaker": "小華", "text": "對啊，先把該交的東西列一列" },
-        { "speaker": "小明", "text": "有人知道報名截止日是什麼時候嗎？" }
+        {
+          "speaker": "小明",
+          "text": "我們進度有點趕欸"
+        },
+        {
+          "speaker": "小華",
+          "text": "對啊，先把該交的東西列一列"
+        },
+        {
+          "speaker": "小明",
+          "text": "有人知道報名截止日是什麼時候嗎？"
+        }
       ]
     },
     {
@@ -37,8 +46,14 @@
       "expected": true,
       "expectQuestionIncludes": "人",
       "window": [
-        { "speaker": "小華", "text": "我們要不要再找一個人進來" },
-        { "speaker": "小明", "text": "我不太確定我們一隊最多可以幾個人" }
+        {
+          "speaker": "小華",
+          "text": "我們要不要再找一個人進來"
+        },
+        {
+          "speaker": "小明",
+          "text": "我不太確定我們一隊最多可以幾個人"
+        }
       ]
     },
     {
@@ -46,9 +61,18 @@
       "expected": true,
       "expectQuestionIncludes": "初賽",
       "window": [
-        { "speaker": "小明", "text": "初賽是線上還是要到現場啊？" },
-        { "speaker": "小華", "text": "等等要不要順便訂飲料" },
-        { "speaker": "阿傑", "text": "好啊我要冰美式" }
+        {
+          "speaker": "小明",
+          "text": "初賽是線上還是要到現場啊？"
+        },
+        {
+          "speaker": "小華",
+          "text": "等等要不要順便訂飲料"
+        },
+        {
+          "speaker": "阿傑",
+          "text": "好啊我要冰美式"
+        }
       ]
     },
     {
@@ -56,9 +80,19 @@
       "expected": true,
       "expectQuestionIncludes": "pdf",
       "window": [
-        { "speaker": "小明", "text": "投影片我今晚可以生出初版" },
-        { "speaker": "小華", "text": "請問簡報要交 pdf 還是 ppt？", "source": "chat" },
-        { "speaker": "小明", "text": "封面我想用深色系" }
+        {
+          "speaker": "小明",
+          "text": "投影片我今晚可以生出初版"
+        },
+        {
+          "speaker": "小華",
+          "text": "請問簡報要交 pdf 還是 ppt？",
+          "source": "chat"
+        },
+        {
+          "speaker": "小明",
+          "text": "封面我想用深色系"
+        }
       ]
     },
     {
@@ -66,96 +100,268 @@
       "expected": true,
       "expectQuestionIncludes": "評分",
       "window": [
-        { "speaker": "小明", "text": "規則書裡有寫評分標準嗎？" },
-        { "speaker": "小華", "text": "我也想知道，剛剛翻了沒看到" }
+        {
+          "speaker": "小明",
+          "text": "規則書裡有寫評分標準嗎？"
+        },
+        {
+          "speaker": "小華",
+          "text": "我也想知道，剛剛翻了沒看到"
+        }
       ]
     },
     {
       "name": "不插話：指名要某人查",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "小華你查一下報名截止日，等等跟大家說" },
-        { "speaker": "小華", "text": "好，我看看" }
+        {
+          "speaker": "小明",
+          "text": "小華你查一下報名截止日，等等跟大家說"
+        },
+        {
+          "speaker": "小華",
+          "text": "好，我看看"
+        }
       ]
     },
     {
       "name": "不插話：問題已被別人回答",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "截止日是什麼時候？" },
-        { "speaker": "小華", "text": "6 月 30 號啦，官網有寫" }
+        {
+          "speaker": "小明",
+          "text": "截止日是什麼時候？"
+        },
+        {
+          "speaker": "小華",
+          "text": "6 月 30 號啦，官網有寫"
+        }
       ]
     },
     {
       "name": "不插話：蜜塔自己剛回答過同一題",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "報名費是多少啊？" },
-        { "speaker": "蜜塔", "text": "報名費是每隊 500 元，文件第 3 頁有寫。", "fromBot": true },
-        { "speaker": "小華", "text": "喔喔了解" }
+        {
+          "speaker": "小明",
+          "text": "報名費是多少啊？"
+        },
+        {
+          "speaker": "蜜塔",
+          "text": "報名費是每隊 500 元，文件第 3 頁有寫。",
+          "fromBot": true
+        },
+        {
+          "speaker": "小華",
+          "text": "喔喔了解"
+        }
       ]
     },
     {
       "name": "不插話：純意見交流",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "我覺得 A 方案比較穩" },
-        { "speaker": "小華", "text": "我比較喜歡 B，比較有亮點" },
-        { "speaker": "阿傑", "text": "兩個都可以啦，看時間夠不夠" }
+        {
+          "speaker": "小明",
+          "text": "我覺得 A 方案比較穩"
+        },
+        {
+          "speaker": "小華",
+          "text": "我比較喜歡 B，比較有亮點"
+        },
+        {
+          "speaker": "阿傑",
+          "text": "兩個都可以啦，看時間夠不夠"
+        }
       ]
     },
     {
       "name": "不插話：寒暄開場",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "哈囉大家早安" },
-        { "speaker": "小華", "text": "早～今天有點睏" }
+        {
+          "speaker": "小明",
+          "text": "哈囉大家早安"
+        },
+        {
+          "speaker": "小華",
+          "text": "早～今天有點睏"
+        }
       ]
     },
     {
       "name": "不插話：指代模糊的問題",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "欸那個東西後來怎麼樣了？" }
+        {
+          "speaker": "小明",
+          "text": "欸那個東西後來怎麼樣了？"
+        }
       ]
     },
     {
       "name": "不插話：修辭性反問",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "這條規則不是寫得很清楚嗎？大家再看一下啦" }
+        {
+          "speaker": "小明",
+          "text": "這條規則不是寫得很清楚嗎？大家再看一下啦"
+        }
       ]
     },
     {
       "name": "不插話：有人已表示要去查",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "所以到底幾點截止啊？" },
-        { "speaker": "小華", "text": "我來查，等我一下" }
+        {
+          "speaker": "小明",
+          "text": "所以到底幾點截止啊？"
+        },
+        {
+          "speaker": "小華",
+          "text": "我來查，等我一下"
+        }
       ]
     },
     {
       "name": "不插話：與專案資料無關的日常問題",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "等等中午要吃什麼？" },
-        { "speaker": "小華", "text": "樓下便當？" }
+        {
+          "speaker": "小明",
+          "text": "等等中午要吃什麼？"
+        },
+        {
+          "speaker": "小華",
+          "text": "樓下便當？"
+        }
       ]
     },
     {
       "name": "不插話：抱怨語氣、非資訊需求",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "這報名系統怎麼這麼難用，按半天都沒反應" }
+        {
+          "speaker": "小明",
+          "text": "這報名系統怎麼這麼難用，按半天都沒反應"
+        }
       ]
     },
     {
-      "name": "不插話：一問一答流暢進行中（追問屬意見）",
+      "name": "不插話：一問一答進行中的意見型追問（有人接話＝人類在對話）",
       "expected": false,
       "window": [
-        { "speaker": "小明", "text": "我們預算抓多少？" },
-        { "speaker": "小華", "text": "目前抓 50 萬" },
-        { "speaker": "小明", "text": "那樣夠嗎？" }
+        {
+          "speaker": "小明",
+          "text": "我們預算抓多少？"
+        },
+        {
+          "speaker": "小華",
+          "text": "目前抓 50 萬"
+        },
+        {
+          "speaker": "小明",
+          "text": "那樣夠嗎？"
+        }
+      ]
+    },
+    {
+      "name": "應插話：意見型問全場、沒人接話（放寬後新增）",
+      "expected": true,
+      "expectQuestionIncludes": "時程",
+      "window": [
+        {
+          "speaker": "小明",
+          "text": "初賽的東西差不多都排進去了"
+        },
+        {
+          "speaker": "小華",
+          "text": "嗯"
+        },
+        {
+          "speaker": "小明",
+          "text": "大家覺得這個時程可行嗎？"
+        }
+      ]
+    },
+    {
+      "name": "應插話：評估型問全場、沒人接話（會不會太趕）",
+      "expected": true,
+      "expectQuestionIncludes": "趕",
+      "window": [
+        {
+          "speaker": "小華",
+          "text": "簡報我這週生初版"
+        },
+        {
+          "speaker": "阿傑",
+          "text": "好"
+        },
+        {
+          "speaker": "小華",
+          "text": "離截止日這樣安排會不會太趕啊？"
+        }
+      ]
+    },
+    {
+      "name": "應插話：徵詢全場選哪個方案、沒人接話",
+      "expected": true,
+      "expectQuestionIncludes": "方案",
+      "window": [
+        {
+          "speaker": "阿傑",
+          "text": "報名方式有兩種可以選"
+        },
+        {
+          "speaker": "阿傑",
+          "text": "我們該選哪個方案比較好？"
+        }
+      ]
+    },
+    {
+      "name": "不插話：意見型問全場但已有人接話",
+      "expected": false,
+      "window": [
+        {
+          "speaker": "小明",
+          "text": "大家覺得這個時程可行嗎？"
+        },
+        {
+          "speaker": "小華",
+          "text": "我覺得還行，就是簡報那段要壓緊一點"
+        }
+      ]
+    },
+    {
+      "name": "不插話：純意見交換（互相表態，不是徵詢資料）",
+      "expected": false,
+      "window": [
+        {
+          "speaker": "小明",
+          "text": "我覺得先做 A 功能比較有感"
+        },
+        {
+          "speaker": "小華",
+          "text": "我偏好 B，展示效果好"
+        },
+        {
+          "speaker": "阿傑",
+          "text": "兩個都可以啦"
+        }
+      ]
+    },
+    {
+      "name": "不插話：對提案表態附和",
+      "expected": false,
+      "window": [
+        {
+          "speaker": "小華",
+          "text": "那我們就照原訂計畫走吧"
+        },
+        {
+          "speaker": "小明",
+          "text": "我沒問題"
+        }
       ]
     }
   ]

@@ -34,7 +34,7 @@
 | RAG 問答 voice/chat 兩套 | Dify「edu2-v3」兩個 LLM 節點 | Dify 預覽跑 `edu2-v3-變更說明.md` 的 5 題 |
 | 關鍵字抽取（雙語＋多輪） | Dify「edu2-v3」LLM 4 節點 | Dify 預覽測追問（「那X呢」） |
 | 檢索過濾（閾值/長度） | Dify「edu2-v3」Code 節點 | 知識庫「召回測試」看分數 |
-| **每輪語意決策（定址／問題／意圖／插話，四合一）** | `backend/src/sessions/interjection-prompts.ts` `TURN_DECISION_SYSTEM`（邏輯在 `response-policy.ts` `decideTurn`） | **兩個都要跑**：`scripts/eval-meeting.ts --address`（定址、連續追問）＋`scripts/eval-interjection.ts --variant live`（插話，16 劇本，見第六節） |
+| **每輪語意決策（定址／問題／意圖／插話，四合一）** | `backend/src/sessions/interjection-prompts.ts` `TURN_DECISION_SYSTEM`（邏輯在 `response-policy.ts` `decideTurn`） | **兩個都要跑**：`scripts/eval-meeting.ts --address`（定址、連續追問）＋`scripts/eval-interjection.ts --variant live`（插話，22 劇本，見第六節） |
 | ↳ 意圖四分類（chitchat/factual/context/hybrid） | 同上 prompt 的 ③ 段 | `scripts/eval-meeting.ts --intent`＋log `intent classified` |
 | 破冰文案（罐頭＋會中總結） | 同上 `interjection-prompts.ts` | 真會議觀察＋26 個時序測試 |
 | 閒聊直答／逐字稿 QA／hybrid 合成 | `wake-word-detector.ts` 內各函式 | 真會議抽驗 |
@@ -63,20 +63,20 @@
 
 ## 六、已知調校備忘
 
-- **插話決策正式基準（2026-08-03，16 劇本 × 3 輪 = 48 案例）**：
-  **準確率 95.8%（46/48）｜誤插話 1｜漏插話 1｜問題忠實度 0**。
+- **插話決策正式基準（2026-08-03 意見型放寬後，22 劇本 × 3 輪 = 66 案例）**：
+  **準確率 97.0%（64/66）｜誤插話 1｜漏插話 1｜問題忠實度 0**。
   跑法：`scripts/eval-interjection.ts --variant live --runs 3 --delay-ms 12000`
   （模型 `gemini-flash-lite-latest`、temperature 0，與線上 `decideTurn` 逐項對齊）。
-  改動 `TURN_DECISION_SYSTEM` 之後以此為對照，**判準：誤插話不得增加**。
-  - 兩個不穩定案例（皆只在第 3 輪翻車，temperature 0 下 Gemini 仍非完全決定性）：
-    「應插話：問題後接離題閒聊仍無人回答」漏插一次；
-    「不插話：一問一答流暢進行中（追問屬意見）」誤插一次——模型把「那樣夠嗎？」
-    讀成可查資料的問題。
-  - 舊的「聊天室提問」老問題（四輪 ✗✓✓✗）**已消失，3/3 全穩**：那些抖動有相當部分
+  改動 `TURN_DECISION_SYSTEM` 之後以此為對照，**判準：誤插話不得增加（≤1）**。
+  - 前一版基準（16 劇本 × 3 = 48 案例，尚未放寬意見型）：95.8%（46/48）、誤插 1、漏插 1。
+    **放寬後多涵蓋 6 個劇本、準確率反而上升，誤插話沒有增加**——收緊條件（只在
+    「沒有人回應那個問題」時才插話）確實抵銷了放寬帶來的風險。
+  - 兩個不穩定案例（各只錯一輪，temperature 0 下 Gemini 仍非完全決定性）：
+    「不插話：有人已表示要去查」誤插一次；「應插話：意見型問全場」漏插一次。
+  - 舊的「聊天室提問」老問題（四輪 ✗✓✓✗）**連兩次全跑都 3/3**：那些抖動有相當部分
     是量測工具自己製造的（見下一條），不是 prompt 不穩。
-  - ⚠️ 做「意見型插話」（docs/13 P2）時會與上述誤插話案例**直接衝突**：
-    該項的目標正是讓意見型問題也能回應，屆時「追問屬意見」這個劇本的預期值要一併重新定義，
-    不能一邊放寬一邊拿舊預期當退步。
+  - ⚠️ **局部回歸 ≠ 基準**：改 prompt 後可用 `--only A,B,C` 只重測受影響的劇本省額度，
+    但**要寫進文件的基準數字一定要全跑**（局部只證明沒改壞，不能代表整體）。
 - Gemini 免費層額度是全系統阿基里斯腱：決策層每個發言輪打一次，長會議必枯竭（破冰/插話靜默跳過）。demo 前必須定案付費方案。
   - **2026-07-28 補**：額度用完時 429 會被吞成「語意層失敗」，讓 eval 結果看起來像 prompt 改壞了。
     看到 eval 總結印出「語意層有 N 次呼叫失敗」就代表該次數字不可信，換一把 key 重跑（見下面第四點）。
