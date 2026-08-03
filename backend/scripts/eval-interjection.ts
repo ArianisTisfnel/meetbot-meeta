@@ -109,7 +109,13 @@ function parseDecision(raw: string): { interject?: boolean; question?: string } 
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-type CompleteTextFn = (p: { system: string; prompt: string; maxTokens: number }) => Promise<string>
+type CompleteTextFn = (p: {
+  system: string
+  prompt: string
+  maxTokens: number
+  temperature?: number
+  purpose?: 'interjection'
+}) => Promise<string>
 
 /** 429/限流自動退避重試：30s、60s，最多兩次；其他錯誤不重試。 */
 async function withRateLimitRetry(fn: CompleteTextFn, params: Parameters<CompleteTextFn>[0]): Promise<string> {
@@ -153,14 +159,19 @@ async function main() {
   if (FULL_ENV) {
     completeText = (await import('../src/lib/llm.js')).completeText
   } else {
-    const key = process.env.GEMINI_API_KEY
+    // 降級路徑同樣要對齊 llm.ts 的 purpose 分流：插話決策在線上走
+    // GEMINI_INTERJECTION_API_KEY / _MODEL，這裡沒跟上就等於測錯模型。
+    const key = process.env.GEMINI_INTERJECTION_API_KEY || process.env.GEMINI_API_KEY
     if (!key) {
-      console.error('backend/.env 不完整，且沒有 GEMINI_API_KEY。評測至少需要 GEMINI_API_KEY（AI Studio 免費申請）。')
+      console.error('backend/.env 不完整，且沒有 GEMINI_API_KEY。評測至少需要 GEMINI_API_KEY（AI Studio 申請）。')
       process.exit(1)
     }
-    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+    const model =
+      process.env.GEMINI_INTERJECTION_MODEL ||
+      (process.env.GEMINI_INTERJECTION_API_KEY ? 'gemini-flash-lite-latest' : process.env.GEMINI_MODEL) ||
+      'gemini-flash-lite-latest'
     console.log(`（backend/.env 不完整 → 使用內建 Gemini 直呼叫，模型 ${model}）`)
-    completeText = async ({ system, prompt, maxTokens }) => {
+    completeText = async ({ system, prompt, maxTokens, temperature }) => {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
         {
@@ -169,7 +180,12 @@ async function main() {
           body: JSON.stringify({
             system_instruction: { parts: [{ text: system }] },
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig: { maxOutputTokens: maxTokens, thinkingConfig: { thinkingBudget: 0 } },
+            generationConfig: {
+              maxOutputTokens: maxTokens,
+              ...(temperature !== undefined ? { temperature } : {}),
+              // 2.5 系列預設會思考、吃掉輸出額度；lite/3.x 不吃這個欄位也無害
+              thinkingConfig: { thinkingBudget: 0 },
+            },
           }),
         },
       )
@@ -202,7 +218,16 @@ async function main() {
         let note = ''
         let kind: Kind = 'wrong'
         try {
-          const raw = await withRateLimitRetry(completeText, { system: v.system, prompt: buildPrompt(c), maxTokens: 200 })
+          // ⚠️ 這三個參數必須與線上的 decideTurn（response-policy.ts）逐項相同，
+          // 否則測的不是線上跑的東西（2026-07-29 發現：少了 purpose 就走到另一顆模型、
+          // 少了 temperature 則評測比線上更飄，基準數字兩邊都不可比）。
+          const raw = await withRateLimitRetry(completeText, {
+            system: v.system,
+            prompt: buildPrompt(c),
+            maxTokens: 200,
+            temperature: 0,
+            purpose: 'interjection',
+          })
           const d = parseDecision(raw)
           if (!d) {
             note = `JSON 解析失敗：${raw.slice(0, 60)}`
