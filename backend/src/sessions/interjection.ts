@@ -146,6 +146,24 @@ export function startIcebreaker(session: MeetingSession): void {
   armIcebreaker(session.meetingInstanceId)
 }
 
+/**
+ * 有人**正在**講話（未定稿的 partial 逐字稿）→ 只重置破冰計時，不進對話窗。
+ *
+ * 破冰原本只靠定稿逐字稿重置計時，而定稿要等 VAD 判定靜音、再落後 1.5–3 秒才到，
+ * 於是「她開口了但那句還沒定稿」的空檔會被算成沉默 —— 實測 2026-08-03 19:20:15
+ * 就是這樣講到使用者身上。Recall 的 speech_on 本來該擋住，但那次它整段沒送
+ *（19:19:36 之後就沒有事件了），單靠它不夠。partial 來自我們自己的串流 STT，
+ * 不經過 Recall 的 webhook，是最可靠的「此刻有人在出聲」訊號。
+ *
+ * **不呼叫 recordConversation**：partial 內容會變動且同一句重複推送，
+ * 進對話窗會污染決策層的輸入，也會讓插話的 turn 計時器永遠重排。
+ */
+export function noteHumanSpeaking(meetingInstanceId: string): void {
+  if (!env.ICEBREAKER_ENABLED) return
+  if (!states.has(meetingInstanceId)) return
+  armIcebreaker(meetingInstanceId)
+}
+
 function armIcebreaker(meetingInstanceId: string): void {
   if (!env.ICEBREAKER_ENABLED) return
   const s = states.get(meetingInstanceId)
@@ -209,8 +227,11 @@ async function fireIcebreaker(meetingInstanceId: string): Promise<void> {
 
   const humanEntries = s.window.filter((e) => !e.fromBot)
   let text: string
-  if (humanEntries.length < 2) {
-    // 開場沉默：罐頭引導
+  if (s.lastIcebreakerAt === 0 && humanEntries.length < 2) {
+    // 開場沉默：罐頭引導。**只有第一次**能走這條——罐頭句是「大家好像還沒開始討論」，
+    // 破過一次冰之後再說一模一樣的話，一來事實上已經開始討論了（能走到這裡代表
+    // 上次破冰後有人講過話，見上面的防護），二來使用者聽到的是同一句話重播
+    //（實測 2026-08-03 19:19:03 與 19:20:15 一字不差）。之後一律走總結路線。
     text = session.difyDatasetId ? ICEBREAKER_OPENING_WITH_KB : ICEBREAKER_OPENING_NO_KB
   } else {
     // 會議中沉默：總結＋拋問題

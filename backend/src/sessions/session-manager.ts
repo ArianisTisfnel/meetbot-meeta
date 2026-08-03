@@ -12,7 +12,7 @@ import {
   ERROR_VOICE,
   PROGRESS_VOICES,
 } from './wake-word-detector.js'
-import { recordConversation, clearInterjection, startIcebreaker } from './interjection.js'
+import { recordConversation, clearInterjection, startIcebreaker, noteHumanSpeaking } from './interjection.js'
 import { generateSummaryAsync } from './summary.service.js'
 import type { MeetingSession } from '../types/session.js'
 
@@ -218,6 +218,8 @@ export function buildLiveHandlers(meetingInstanceId: string): LiveHandlers {
       handlePartialSegment(s, { text: seg.text, speaker: seg.speaker ?? '' }).catch((err) =>
         logger.error({ err, meetingInstanceId }, 'handlePartialSegment error'),
       )
+      // 有人正在出聲 → 重置破冰計時（定稿要慢 1.5–3 秒才到，等它會講到人家身上）
+      noteHumanSpeaking(meetingInstanceId)
     },
     onChat: (msg) => {
       const s = activeSessions.get(meetingInstanceId)

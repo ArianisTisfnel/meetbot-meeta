@@ -44,6 +44,7 @@ import { recordSpeechOn, recordSpeechOff, clearSpeakerTimeline } from '../../../
 import {
   recordConversation,
   startIcebreaker,
+  noteHumanSpeaking,
   clearInterjection,
 } from '../../../../backend/src/sessions/interjection'
 import {
@@ -218,6 +219,37 @@ describe('icebreaker — 沉默破冰', () => {
     llm.completeText.mockResolvedValueOnce('剛才停在預算。要繼續嗎？')
     await vi.advanceTimersByTimeAsync(40_000)
     expect(wwd.speakProactive).toHaveBeenCalledTimes(2)
+  })
+
+  // ── 2026-08-03 19:20 實機事故：同一句罐頭破冰講了兩次，第二次還蓋在使用者身上 ──
+
+  it('第二次破冰不重播罐頭句（改走總結路線）', async () => {
+    const session = putSession()
+    startIcebreaker(session)
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(wwd.speakProactive).toHaveBeenCalledWith(session, ICEBREAKER_OPENING_WITH_KB, 'icebreaker')
+
+    // 冷卻過後有人問了一題：人類發言只有 1 則，修正前 humanEntries<2 會再唸一次
+    // 一模一樣的「大家好像還沒開始討論」——但討論明明已經開始了。
+    await vi.advanceTimersByTimeAsync(300_000)
+    recordConversation(session, humanEntry('蜜塔，我們有什麼競品嗎'))
+    llm.completeText.mockResolvedValueOnce('剛聊到競品比較，要不要挑一個深入看？')
+    await vi.advanceTimersByTimeAsync(40_000)
+
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(2)
+    expect(wwd.speakProactive.mock.calls[1][1]).toBe('剛聊到競品比較，要不要挑一個深入看？')
+    expect(llm.completeText.mock.calls[0][0].system).toBe(ICEBREAKER_SUMMARY_SYSTEM)
+  })
+
+  it('partial 逐字稿（還沒定稿）也算有人在講話 → 重置沉默計時', async () => {
+    const session = putSession()
+    startIcebreaker(session)
+    await vi.advanceTimersByTimeAsync(39_000)
+    noteHumanSpeaking(MEETING_ID) // 她開口了，定稿還要 1.5–3 秒才到
+    await vi.advanceTimersByTimeAsync(39_000)
+    expect(wwd.speakProactive).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
   })
 
   it('到點時蜜塔正在說話 → 本輪跳過、繼續監看下一段沉默', async () => {
