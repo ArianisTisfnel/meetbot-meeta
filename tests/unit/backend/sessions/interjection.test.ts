@@ -620,15 +620,49 @@ describe('有人正在說話 → 不插話、不破冰', () => {
   it('破冰：有人正在說話 → 跳過並繼續監看', async () => {
     mockEnv.INTERJECTION_ENABLED = false
     mockEnv.ICEBREAKER_ENABLED = true
+    mockEnv.ICEBREAKER_SILENCE_MS = 10_000 // 短於 MAX_OPEN_SPEECH_MS，才測得到「擋住」
     const session = speakingSession()
     recordSpeechOn(BOT_ID, '小明', Date.now())
     startIcebreaker(session)
 
-    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(10_000)
     expect(wwd.speakProactive).not.toHaveBeenCalled()
 
     recordSpeechOff(BOT_ID, '小明', Date.now())
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+    mockEnv.ICEBREAKER_SILENCE_MS = 40_000
+  })
+
+  // ── 2026-08-03 實機事故的兩條迴歸 ────────────────────────────────────────────
+
+  it('漏收 speech_off → 最多擋 MAX_OPEN_SPEECH_MS，不會讓蜜塔永久失聲', async () => {
+    mockEnv.INTERJECTION_ENABLED = false
+    mockEnv.ICEBREAKER_ENABLED = true
+    const session = speakingSession()
+    recordSpeechOn(BOT_ID, '小明', Date.now()) // 之後永遠沒有 speech_off
+    startIcebreaker(session)
+
+    // 破冰門檻 40s > 30s 上限 → 第一次觸發時開放區間已過期，照樣開口
     await vi.advanceTimersByTimeAsync(40_000)
     expect(wwd.speakProactive).toHaveBeenCalledTimes(1)
+  })
+
+  it('對話串開著時，human-speaking 不能擋掉「回答被問到的問題」', async () => {
+    mockEnv.INTERJECTION_ENABLED = true
+    mockEnv.ICEBREAKER_ENABLED = false
+    // lastEngagedAt = 剛剛被叫過名字（「蜜塔」→ wake-only）→ 這一輪是追問
+    const session = speakingSession({ lastEngagedAt: Date.now() })
+    llm.completeText.mockResolvedValue(
+      decision({ addressed: 'address', question: '競品比較', intent: 'factual' }),
+    )
+
+    recordConversation(session, humanEntry('我們的競品比較'))
+    recordSpeechOn(BOT_ID, '小明', Date.now()) // 現場還有人在講話
+
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(wwd.answerFollowUp).toHaveBeenCalledTimes(1)
+    expect(wwd.answerFollowUp.mock.calls[0][1]).toBe('競品比較')
   })
 })

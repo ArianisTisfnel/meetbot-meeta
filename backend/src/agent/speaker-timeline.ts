@@ -146,12 +146,16 @@ export function resolveSpeakerAt(
  * 下一段定稿還沒到的空檔誤判成冷場 → 蜜塔就在人家講到一半時插話。
  * speech_on/off 是即時的，不受轉錄延遲影響。
  *
- * `maxOpenMs` 是保命上限：speech_off 掉了的話，開著的區間會讓蜜塔永遠不敢開口。
- * **不能沿用 SPEAKER_LOOKBACK_MS（15 秒）**——那是為「歸屬一句話」設計的，
- * 而一個人連續講兩分鐘是很正常的事，用 15 秒會在他還在講時就放行插話。
- * ponytail: 用固定窗擋住漏掉的 speech_off，真要準得靠 Recall 補送或心跳。
+ * `maxOpenMs` 是保命上限：speech_off 掉了的話，開著的區間會讓蜜塔不敢開口。
+ * **原本設 120 秒（理由是「一個人連續講兩分鐘很正常」）——實測 2026-08-03 證明這個
+ * 推論站不住腳**：那場會議連續 45 秒沒有任何逐字稿（＝現場是靜的），這裡卻一路回 true，
+ * 破冰與插話評估全被擋掉。真正在講話的人會持續產生定稿逐字稿，而逐字稿會重置
+ * 破冰／turn 計時器——所以「講很久的人」根本走不到這個檢查；能走到這裡的長開區間，
+ * 幾乎都是漏收 speech_off。壞掉的代價（蜜塔全啞）遠大於早放行的代價
+ *（＝退回這個檢查存在之前的行為），故取 30 秒。
+ * ponytail: 固定窗擋漏收，真要準得靠 Recall 補送或心跳。
  */
-export const MAX_OPEN_SPEECH_MS = 120_000
+export const MAX_OPEN_SPEECH_MS = 30_000
 
 export function isSpeakingNow(botId: string, nowMs: number = Date.now(), maxOpenMs = MAX_OPEN_SPEECH_MS): boolean {
   const t = timelines.get(botId)

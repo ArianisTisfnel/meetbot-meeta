@@ -16,6 +16,15 @@ import { logger } from '../middleware/logger.js'
 let anthropic: Anthropic | null = null
 
 /**
+ * 單次 LLM 呼叫上限。**沒有它會直接吃掉整段對話**：實測 2026-08-03，Gemini 遇到 503
+ * 高負載時 fetch 一路掛著沒有回來，問題 18:53:56 派發、答案 18:56:10 才落地
+ *（decideTurn 卡在意圖分類），使用者早就放棄離開會議了。
+ * 這裡的呼叫全是分類／短文生成，正常 1-3 秒；15 秒沒回來就是壞了，讓它 throw，
+ * 上層各自有退路（意圖退回 factual、破冰跳過、定址 unknown 退回照常回答）。
+ */
+const LLM_TIMEOUT_MS = 15_000
+
+/**
  * 組出 Gemini 的 generationConfig。獨立成純函式是為了可單元測試——
  * 這裡踩過一個只在特定 env 組合下才炸、且只寫進 warn log 的坑。
  *
@@ -69,6 +78,7 @@ export async function completeText(params: {
           temperature: params.temperature,
         }),
       }),
+      signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
     })
     if (!res.ok) {
       const t = await res.text().catch(() => '')
@@ -86,12 +96,15 @@ export async function completeText(params: {
   }
 
   anthropic ??= new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
-  const message = await anthropic.messages.create({
-    model: params.maxTokens <= 256 ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
-    max_tokens: params.maxTokens,
-    ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
-    system: params.system,
-    messages: [{ role: 'user', content: params.prompt }],
-  })
+  const message = await anthropic.messages.create(
+    {
+      model: params.maxTokens <= 256 ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+      max_tokens: params.maxTokens,
+      ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+      system: params.system,
+      messages: [{ role: 'user', content: params.prompt }],
+    },
+    { timeout: LLM_TIMEOUT_MS },
+  )
   return message.content[0].type === 'text' ? message.content[0].text : ''
 }

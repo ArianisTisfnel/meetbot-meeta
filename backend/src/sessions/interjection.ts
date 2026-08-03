@@ -311,8 +311,12 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
   const last = s.window[s.window.length - 1]
   const skipReason = session.isSpeaking
     ? 'bot-speaking'
-    : someoneIsSpeaking(session)
-      ? 'human-speaking' // 有人正在講話就不能插嘴（speech_on/off 是即時訊號）
+    : // 有人正在講話就不能插嘴——但**只擋主動插話**。對話串開著時這裡是「回答被問到的
+      // 問題」的唯一出口（出口一），拿現場有人在講話擋掉等於她被叫到也不回答
+      //（實測 2026-08-03：追問連續三次全部 skipReason=human-speaking，使用者最後說「閉嘴」）。
+      // 與下面 wake-grace / cooldown 同一個原則：!engaged 才擋。
+      !engaged && someoneIsSpeaking(session)
+      ? 'human-speaking'
       : !last || last.fromBot
       ? 'last-entry-from-bot'
       : !engaged && inWakeGrace
@@ -351,9 +355,14 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
     }
 
     // ── 出口二：沒人叫她，但值得主動補充 → 原本的插話行為
-    if (inWakeGrace || inCooldown) {
+    // human-speaking 在這裡補檢查：上面為了讓出口一走得通而放行了 engaged 的情況，
+    // 但「主動插嘴」在別人講話時仍然不可以。
+    if (inWakeGrace || inCooldown || someoneIsSpeaking(session)) {
       logger.info(
-        { meetingInstanceId, skipReason: inWakeGrace ? 'wake-grace' : 'cooldown' },
+        {
+          meetingInstanceId,
+          skipReason: inWakeGrace ? 'wake-grace' : inCooldown ? 'cooldown' : 'human-speaking',
+        },
         'interjection: not a follow-up and still within grace/cooldown, staying quiet',
       )
       return

@@ -181,6 +181,9 @@ export function dispatchRecallEvent(event: any): void {
     // 混進來會讓她把自己的話歸給自己再回覆一次。
     if (!name || isBotParticipant(reg, d?.participant)) return
     const atMs = eventEpochMs(d?.timestamp)
+    // 兩個事件都留 log：漏收 speech_off 會讓時間軸永遠認為有人在講話（實測 2026-08-03
+    // 破冰／插話被擋 45 秒），而當時 log 裡完全看不出 off 到底有沒有進來。
+    logger.info({ botId, name, on: type.endsWith('speech_on') }, 'recall webhook: speech event')
     if (type === 'participant_events.speech_on') recordSpeechOn(botId, name, atMs)
     else recordSpeechOff(botId, name, atMs)
     return
