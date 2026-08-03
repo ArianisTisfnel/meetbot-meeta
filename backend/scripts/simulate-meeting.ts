@@ -170,6 +170,10 @@ function makeSession(botSession: BotSession): MeetingSession {
     speechStartedAt: 0,
     speechEndsAt: 0,
     bargeEpoch: 0,
+    // 少了這個欄位模擬器會與線上行為分岔：holdSpeaking 做 ++session.speechGen，
+    // undefined 會變 NaN，而 NaN !== NaN 讓解鎖函式永遠提早 return
+    //（tsconfig 的 include 不含 scripts/，型別檢查抓不到，只能靠這行註解）。
+    speechGen: 0,
     chatLog: [],
     sessionStartedAt: Date.now(),
     processedSegmentIds: new Set(),
