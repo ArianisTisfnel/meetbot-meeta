@@ -76,6 +76,8 @@ interface RealtimeRegistration {
   segments: TranscriptSegment[]
   /** 診斷用：此 bot 是否收過 partial（prioritize_accuracy 模式實測幾乎不發 partial）。 */
   sawPartial?: boolean
+  /** 是否收過任何一則 webhook 事件（tunnel 靜默失敗偵測，見 armWebhookWatchdog）。 */
+  sawAnyEvent?: boolean
 }
 
 const realtimeRegistry = new Map<string, RealtimeRegistration>()
@@ -93,6 +95,31 @@ export function registerRealtimeHandlers(
 /** 移除註冊（leave 時呼叫）。 */
 export function unregisterRealtimeHandlers(botId: string): void {
   realtimeRegistry.delete(botId)
+}
+
+/** admitted 後多久沒收到任何 webhook 就判定 tunnel 沒通。 */
+const WEBHOOK_WATCHDOG_MS = 60_000
+
+/**
+ * tunnel 靜默失敗偵測：bot 已進場、realtime 也設定了，卻連一則 webhook 都沒收到。
+ *
+ * 為什麼需要（2026-08-02 實測踩到）：ngrok 網域換掉之後舊 tunnel 還在跑，
+ * `start.ps1` 只看「有沒有 ngrok 行程」就綠燈放行 → Recall POST 到沒有隧道的網域，
+ * 一切看起來正常但**聊天室與 webhook 逐字稿全部靜默死亡**；agent 模式的語音走另一條
+ * cloudflare tunnel 照常運作，於是症狀變成「只有語音會動」，很難聯想到 tunnel。
+ * 與其讓人從零事件的 log 反推，不如到點直接吼一聲。
+ */
+function armWebhookWatchdog(botId: string): void {
+  setTimeout(() => {
+    const reg = realtimeRegistry.get(botId)
+    if (!reg || reg.sawAnyEvent) return
+    logger.error(
+      { botId, webhookUrl: env.RECALL_WEBHOOK_URL },
+      'RecallAdapter: bot 已進場 60 秒但一則 webhook 都沒收到 → tunnel 沒通到本機。' +
+        '聊天室訊息與 webhook 逐字稿都會失效（agent 語音走另一條 tunnel，仍會動）。' +
+        '請確認 ngrok 正在跑、且它的網域與 RECALL_WEBHOOK_URL 完全一致（http://127.0.0.1:4040 可查）。',
+    )
+  }, WEBHOOK_WATCHDOG_MS).unref?.()
 }
 
 /** 判斷某 participant 是否為 bot 自己（避免自迴圈：歡迎訊息/自身語音含「蜜塔」會誤觸發）。 */
@@ -118,6 +145,7 @@ export function dispatchRecallEvent(event: any): void {
     logger.warn({ type, botId }, 'recall webhook: no registered handlers for botId (orphaned bot?)')
     return
   }
+  reg.sawAnyEvent = true // tunnel 通了（watchdog 據此判斷是否要告警）
 
   if (type === 'transcript.data') {
     const utter = data?.data
@@ -407,6 +435,7 @@ export class RecallAdapter implements MeetingBotProvider {
             settled = true
             if (state.statusTimer) clearInterval(state.statusTimer)
             handlers.onStatus?.({ type: 'admitted' })
+            if (realtimeRegistry.has(state.botId)) armWebhookWatchdog(state.botId)
             this.startStatusPolling(session, handlers)
             resolve()
             return
