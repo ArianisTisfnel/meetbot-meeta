@@ -34,11 +34,11 @@
 | RAG 問答 voice/chat 兩套 | Dify「edu2-v3」兩個 LLM 節點 | Dify 預覽跑 `edu2-v3-變更說明.md` 的 5 題 |
 | 關鍵字抽取（雙語＋多輪） | Dify「edu2-v3」LLM 4 節點 | Dify 預覽測追問（「那X呢」） |
 | 檢索過濾（閾值/長度） | Dify「edu2-v3」Code 節點 | 知識庫「召回測試」看分數 |
-| **每輪語意決策（定址／問題／意圖／插話，四合一）** | `backend/src/sessions/interjection-prompts.ts` `TURN_DECISION_SYSTEM`（邏輯在 `response-policy.ts` `decideTurn`） | **兩個都要跑**：`scripts/eval-meeting.ts --address`（定址、連續追問）＋`scripts/eval-interjection.ts --variant live`（插話，16 劇本，見第六節） |
+| **每輪語意決策（定址／問題／意圖／插話，四合一）** | `backend/src/sessions/interjection-prompts.ts` `TURN_DECISION_SYSTEM`（邏輯在 `response-policy.ts` `decideTurn`） | **兩個都要跑**：`scripts/eval-meeting.ts --address`（定址、連續追問）＋`scripts/eval-interjection.ts --variant live`（插話，22 劇本，見第六節） |
 | ↳ 意圖四分類（chitchat/factual/context/hybrid） | 同上 prompt 的 ③ 段 | `scripts/eval-meeting.ts --intent`＋log `intent classified` |
 | 破冰文案（罐頭＋會中總結） | 同上 `interjection-prompts.ts` | 真會議觀察＋26 個時序測試 |
 | 閒聊直答／逐字稿 QA／hybrid 合成 | `wake-word-detector.ts` 內各函式 | 真會議抽驗 |
-| 會議摘要 | Dify 會議摘要 Workflow（獨立 app） | 會後檢查四欄位（已知問題：QA 型會議的問答會被列成決議） |
+| 會議摘要 | Dify 會議摘要 Workflow（獨立 app） | 拿 `D:\grp\摘要驗證用-純QA無決議逐字稿.txt` 跑，decisions／action_items 應為 `[]` |
 
 ## 五、修改流程
 
@@ -63,20 +63,32 @@
 
 ## 六、已知調校備忘
 
-- 插話決策唯一不穩定案例：聊天室頻道的提問（評測四輪 ✗✓✓✗）。
-  2026-07-29 合併成 `TURN_DECISION_SYSTEM` 之後這題與「多人都表示疑惑」都過了（16/16），
-  但**只有一輪，還不能宣告穩定**——下次比對基準時仍以「誤插話 0、漏插話 ≤1」為準。
+- **插話決策正式基準（2026-08-03 意見型放寬後，22 劇本 × 3 輪 = 66 案例）**：
+  **準確率 97.0%（64/66）｜誤插話 1｜漏插話 1｜問題忠實度 0**。
+  跑法：`scripts/eval-interjection.ts --variant live --runs 3 --delay-ms 12000`
+  （模型 `gemini-flash-lite-latest`、temperature 0，與線上 `decideTurn` 逐項對齊）。
+  改動 `TURN_DECISION_SYSTEM` 之後以此為對照，**判準：誤插話不得增加（≤1）**。
+  - 前一版基準（16 劇本 × 3 = 48 案例，尚未放寬意見型）：95.8%（46/48）、誤插 1、漏插 1。
+    **放寬後多涵蓋 6 個劇本、準確率反而上升，誤插話沒有增加**——收緊條件（只在
+    「沒有人回應那個問題」時才插話）確實抵銷了放寬帶來的風險。
+  - 兩個不穩定案例（各只錯一輪，temperature 0 下 Gemini 仍非完全決定性）：
+    「不插話：有人已表示要去查」誤插一次；「應插話：意見型問全場」漏插一次。
+  - 舊的「聊天室提問」老問題（四輪 ✗✓✓✗）**連兩次全跑都 3/3**：那些抖動有相當部分
+    是量測工具自己製造的（見下一條），不是 prompt 不穩。
+  - ⚠️ **局部回歸 ≠ 基準**：改 prompt 後可用 `--only A,B,C` 只重測受影響的劇本省額度，
+    但**要寫進文件的基準數字一定要全跑**（局部只證明沒改壞，不能代表整體）。
 - Gemini 免費層額度是全系統阿基里斯腱：決策層每個發言輪打一次，長會議必枯竭（破冰/插話靜默跳過）。demo 前必須定案付費方案。
   - **2026-07-28 補**：額度用完時 429 會被吞成「語意層失敗」，讓 eval 結果看起來像 prompt 改壞了。
     看到 eval 總結印出「語意層有 N 次呼叫失敗」就代表該次數字不可信，換一把 key 重跑（見下面第四點）。
   - 因此 `decideTurn` 失敗時，**句中提及**（有喊名字）一律退回舊行為照常回答，不可當成「沒在叫我」——
     否則額度枯竭時蜜塔會對所有非逗號句型全聾，比偶爾多嘴嚴重得多。
     **連續追問候選**（沒喊名字）相反，退回安靜（見下一條）。
-  - **同一份 prompt 在兩個評測裡跑的模型不一樣**（2026-07-29 發現，尚未處理）：
-    `decideTurn` 帶 `purpose:'interjection'` → 走 `GEMINI_INTERJECTION_MODEL`
-    （預設 `gemini-flash-lite-latest`）；但 `eval-interjection.ts` 自己呼叫 `completeText`
-    沒帶 purpose → 走 `GEMINI_MODEL`（預設 `gemini-2.5-flash`）。
-    也就是說 `eval-interjection` 測的模型**不是線上跑的那個**。比對基準時要記得。
+  - ~~同一份 prompt 在兩個評測裡跑的模型不一樣~~ → **已修（2026-08-03）**。
+    修的時候發現是**雙重**不一致：`eval-interjection.ts` 少了 `purpose:'interjection'`
+    （→ 走 `GEMINI_MODEL` 而非線上的 `GEMINI_INTERJECTION_MODEL`），**也少了 `temperature: 0`**
+    （→ 用預設 1.0，評測比線上更飄）。兩者都補上，降級路徑（`.env` 不完整時的內建直呼叫）
+    同步對齊 `GEMINI_INTERJECTION_API_KEY/_MODEL`。
+    教訓：評測與線上共用同一份 prompt 還不夠，**呼叫參數要逐項對齊**才算同一條路。
   - **429 不一定是「每日額度用完」，先別急著等到明天**（2026-07-29 誤判過一次）：
     當天連跑四輪把一把 key 打到整批 429，錯誤訊息寫的是 "You exceeded your current quota"，
     看起來像 RPD 用完；但**一個半小時後同一把 key 就恢復了**，其實是較短窗的節流。
@@ -122,4 +134,24 @@
     新的只是**成本閘門**（擋掉蜜塔沒參與過的對話，免得整場每句都送去問），判準交給語意層。
   - ⚠️ 評測與線上的一處差異：`eval-meeting` 的對話窗**不含蜜塔的回答**（劇本只寫人講的話），
     線上的窗夾著她的回覆。評測看到的追問線索比線上少，這一側偏嚴不偏鬆。
-- 摘要 workflow 會把 QA 問答的答案列成「會議決議」，正式場合前可在摘要 prompt 加「僅列與會者做成的決定」。
+- ~~摘要 workflow 會把 QA 問答的答案列成「會議決議」~~ → **已修（2026-08-03）**。
+  摘要 workflow（獨立 app）的 system prompt 加兩段：
+  (a) **誰是與會者、誰是助理**——逐字稿裡標「蜜塔（聊天室）／（語音）」的是 AI 助理，
+      她的查詢回覆與主動提問**都不是與會者做成的決定或承諾的工作**；
+  (b) **納入判準**——decisions 只列有人拍板／達成共識的事，三類明文排除（查詢結果、
+      蜜塔的提問建議、還在討論中的選項）；action_items 只列與會者承諾或被指派的事，
+      蜜塔拋的問題除非有人明確承接才算；找不到就回空陣列，**寧缺勿濫**。
+      另加防矯枉過正的但書：summary/key_topics 仍可涵蓋蜜塔提供的資訊，
+      但措辭要如實（「查詢得知報名費 500 元」而非「決議報名費 500 元」）。
+  - **驗證（純 QA 無決議逐字稿，`D:\grp\摘要驗證用-純QA無決議逐字稿.txt`）**：
+    舊版 decisions 列出 6 條查詢結果當決議、action_items 把蜜塔自己拋的問題列成待辦；
+    新版兩者皆 `[]`，且 summary 主動寫明「會中未做出新的決議或指派待辦事項」。
+  - ⚠️ **測試素材要有分辨力**（這次的方法論教訓）：第一份驗證素材裡有一個明顯的真人拍板，
+    模型有錨點就不會亂抓，**兩版都通過、等於沒測**。要打的是「全場沒有任何真人決議」的
+    純 QA 會議——那才是模型會拿查詢結果填欄位的情境。
+    同一類錯誤也發生在評測工具身上（測錯模型），**量測方法本身要先被驗證**。
+
+- ⚠️ **`npx vitest run` 一定要在 repo 根目錄跑**：`backend/` 底下有自己的 `vitest.config.ts`
+  （只給後端測試用，沒有前端的 `@`、`next-auth` 別名），在那裡跑會讓 3 個前端測試檔
+  假性失敗（`Failed to load url @/lib/api-client`）。剛跑完 `scripts/eval-*.ts` 還停在
+  `backend/` 時最容易踩到。
