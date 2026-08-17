@@ -12,8 +12,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "Docker Desktop is ready." -ForegroundColor Green
 
-# 2. Start local infrastructure (Postgres, MinIO, vexa-lite) via docker-compose.
-Write-Host "Starting local infrastructure (Postgres, MinIO, vexa-lite)..." -ForegroundColor Cyan
+# 2. Start local infrastructure (Postgres, MinIO) via docker-compose.
+Write-Host "Starting local infrastructure (Postgres, MinIO)..." -ForegroundColor Cyan
 docker compose up -d
 if ($LASTEXITCODE -ne 0) {
     Write-Host "docker compose up failed." -ForegroundColor Red

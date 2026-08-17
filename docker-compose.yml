@@ -1,11 +1,11 @@
 name: meetbot
 
-# 本機開發用基礎設施：Postgres + MinIO（取代 Supabase Storage）+ vexa-lite。
+# 本機開發用基礎設施：Postgres + MinIO。
 # Node backend/frontend 仍在 host 上跑 npm run dev，不進容器。
 #
 # 連線字串分兩種，不要混用：
 #   - host 端（backend/.env、npx prisma 等）：走對外 published port，例如 localhost:5433
-#   - container 對 container（vexa-lite → postgres）：走 compose 網路內的服務名稱，例如 postgres:5432
+#   - container 對 container：走 compose 網路內的服務名稱，例如 postgres:5432
 #
 # Postgres 對外 port 用 5433（非預設 5432）：本機常見已有原生安裝的 Postgres 服務佔用 5432，
 # 用不同 port 避免跟 host 上其他 Postgres 衝突（連線被導去別的資料庫、驗證失敗）。
@@ -61,67 +61,6 @@ services:
       mc anonymous set none local/meeting-materials"
     restart: "no"
 
-  vexa-init-db:
-    image: vexaai/vexa-lite:latest
-    container_name: meetbot-vexa-init-db
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      # vexa-lite 讀的是拆開的 DB_* 變數，不是單一 DATABASE_URL（見 admin_models/database.py）。
-      # 值是 container 網路位址，不是 backend/.env 裡 host 端用的 localhost:5433。
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_NAME: meetbot
-      DB_USER: meetbot
-      DB_PASSWORD: meetbot_local_dev
-      DB_SSL_MODE: disable
-    volumes:
-      - vexa-init-marker:/data
-    entrypoint: ["/bin/sh", "-c"]
-    # marker 檔守門：start.ps1 每次啟動都會 docker compose up -d，
-    # 若 init_db() 對已存在的表重跑會出錯，沒有這層防護會導致每次開發都失敗。
-    command:
-      - >
-        test -f /data/.initialized && echo "already initialized, skipping" || (
-        python3 -c "import asyncio; from admin_models.database import init_db; asyncio.run(init_db())" &&
-        python3 -c "import asyncio; from meeting_api.database import init_db; asyncio.run(init_db())" &&
-        touch /data/.initialized
-        )
-    restart: "no"
-
-  vexa-lite:
-    image: vexaai/vexa-lite:latest
-    container_name: meetbot-vexa-lite
-    restart: unless-stopped
-    depends_on:
-      vexa-init-db:
-        condition: service_completed_successfully
-    env_file:
-      - ./backend/.env
-    environment:
-      # 覆蓋：container 網路位址。entrypoint script 讀組好的 DATABASE_URL 做連線檢查，
-      # Python 模組（admin_models/meeting_api）讀拆開的 DB_*；兩套都要蓋成 container 網路位址，
-      # 不能用 env_file 帶進來、host 端用的 localhost:5433。
-      DATABASE_URL: postgresql://meetbot:meetbot_local_dev@postgres:5432/meetbot
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_NAME: meetbot
-      DB_USER: meetbot
-      DB_PASSWORD: meetbot_local_dev
-      DB_SSL_MODE: disable
-      VEXA_API_URL: http://localhost:8056
-      ADMIN_API_URL: http://localhost:8057
-      # 這個專案目前 BOT_PRIMARY_PROVIDER=recall，vexa-lite 只用來維持 public.users/api_tokens
-      # 與 login 流程，不需要真的能轉錄；entrypoint 預設會送測試音檔驗證轉錄服務，沒有可用
-      # token/額度時會直接 exit 1，跳過它才能讓容器起來。
-      SKIP_TRANSCRIPTION_CHECK: "true"
-    ports:
-      - "8056:8056"
-      - "8057:8057"
-    volumes:
-      - vexa-recordings:/var/lib/vexa/recordings
-
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: meetbot-pgadmin
@@ -145,6 +84,4 @@ services:
 volumes:
   pgdata:
   minio-data:
-  vexa-recordings:
-  vexa-init-marker:
   pgadmin-data:
