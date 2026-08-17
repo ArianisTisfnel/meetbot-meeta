@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createDataset, deleteDataset, deleteDocument } from '../lib/dify.js'
@@ -114,7 +115,9 @@ export async function listProjects(userId: number, params: ListProjectsParams = 
 }
 
 export async function createProject(userId: number, name: string) {
-  const difyDatasetId = await createDataset(name)
+  // Dify dataset 名稱在整個 workspace 內必須唯一，但專案顯示名稱允許使用者間自由重複，
+  // 兩者脫鉤：送給 Dify 的名稱加短 UUID 後綴，避免撞名觸發 409 dataset_name_duplicate
+  const difyDatasetId = await createDataset(`${name}-${crypto.randomUUID().slice(0, 8)}`)
 
   try {
     const project = await prisma.project.create({
