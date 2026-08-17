@@ -45,13 +45,11 @@ export interface ChatMessageEvent {
   isFromBot: boolean
 }
 
-/** 派 bot 進會議所需的選項與憑證。各 adapter 自行挑選需要的欄位。 */
+/** 派 bot 進會議所需的選項。各 adapter 自行挑選需要的欄位。 */
 export interface BotOptions {
   platform: string
   nativeMeetingId: string
   botName?: string
-  /** Vexa 邀請者 token（per-session 授權用）。 */
-  vexaToken?: string
   /** 關聯專案的 Dify dataset，僅用於下游路由判斷。 */
   difyDatasetId?: string | null
 }
@@ -78,8 +76,8 @@ export interface LiveStream {
 /**
  * 一個已派出的 bot session。
  *
- * `adapter` 指向「建立此 session 的具體 provider」，讓 {@link FailoverProvider}
- * 能以 `session.adapter.xxx()` 委派，**完全不需要比對 provider 名稱字串**。
+ * `adapter` 指向「建立此 session 的具體 provider」，讓呼叫端能以
+ * `session.adapter.xxx()` 委派，**完全不需要比對 provider 名稱字串**。
  */
 export interface BotSession {
   /** Provider 名稱，僅供 log / debug，**不可**用於條件分支。 */

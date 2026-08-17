@@ -9,7 +9,7 @@ export interface UserPermissions {
 }
 
 export interface UserSummary {
-  vexaUserId: number
+  userId: number
   email: string
   name: string | null
 }
@@ -24,7 +24,7 @@ export interface PaginatedResponse<T> {
 // ── 使用者 ────────────────────────────────────────────
 
 export interface CurrentUser {
-  vexaUserId: number
+  userId: number
   email: string
   name: string | null
   maxConcurrentBots: number
@@ -66,7 +66,7 @@ export interface ProjectListResponse {
 
 export interface ProjectMember {
   id: string
-  vexaUserId: number
+  userId: number
   email: string
   name: string | null
   canView: boolean
@@ -187,7 +187,6 @@ export interface MeetingDetail {
   name: string
   googleMeetUrl: string
   status: MeetingStatus
-  vexaMeetingId?: number | null
   projectId?: string | null
   projectName?: string | null
   createdBy: UserSummary

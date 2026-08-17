@@ -8,12 +8,12 @@ import type { AppEnv } from '../types/hono.js'
 const app = new Hono<AppEnv>()
 
 app.get('/me', async (c) => {
-  const vexaUserId = c.get('vexaUserId')
+  const userId = c.get('userId')
   const activeBotCount = await prisma.meetingInstance.count({
-    where: { createdByVexaUserId: vexaUserId, status: 'ACTIVE' },
+    where: { createdByUserId: userId, status: 'ACTIVE' },
   })
   return c.json({
-    vexaUserId,
+    userId,
     email: c.get('userEmail'),
     name: c.get('userName'),
     maxConcurrentBots: c.get('maxConcurrentBots'),
@@ -39,7 +39,7 @@ app.get('/me/invitations', async (c) => {
 app.post('/me/invitations/:invitationId/accept', async (c) => {
   const result = await invitationService.acceptInvitationById(
     c.req.param('invitationId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     requireEmail(c),
   )
   return c.json(result)
@@ -58,7 +58,7 @@ app.post('/me/invitations/accept-by-token', async (c) => {
   const { token } = acceptByTokenSchema.parse(body)
   const result = await invitationService.acceptInvitationByToken(
     token,
-    c.get('vexaUserId'),
+    c.get('userId'),
     requireEmail(c),
   )
   return c.json(result)

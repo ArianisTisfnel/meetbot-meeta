@@ -23,11 +23,7 @@ const envSchema = z.object({
   GEMINI_INTERJECTION_API_KEY: z.string().optional(),
   // 新帳號不能用 gemini-2.5-flash（對新用戶停開），預設用 lite 系列 alias。
   GEMINI_INTERJECTION_MODEL: z.string().default('gemini-flash-lite-latest'),
-  VEXA_API_URL: z.string().url(),
-  VEXA_WS_URL: z.string().url(),
-  // ── Meeting Bot Provider failover ──────────────────────────────────────────
-  // Recall.ai（fallback provider）。皆為 optional：未設定時系統只用 Vexa（無 failover），
-  // 功能照常 end-to-end。兩者都設定後，Vexa 派 bot 被擋時自動 fallback 到 Recall。
+  // ── Meeting Bot Provider ────────────────────────────────────────────────────
   RECALL_API_URL: z.string().url().optional(),
   RECALL_API_KEY: z.string().min(1).optional(),
   // RecallAdapter.speak 用的 TTS（text → mp3）。未設定時 Recall bot 無法說話（known limitation）。
@@ -47,13 +43,8 @@ const envSchema = z.object({
   AGENT_MODE: z.enum(['on', 'off']).default('off'),
   // agent 網頁（前端 /agent）的公開 URL；bot 的雲端瀏覽器會開啟它，需外網可達。
   AGENT_PAGE_URL: z.string().url().optional(),
-  // 主要 bot provider：'recall'（預設，Vexa 被 reCAPTCHA 擋死後的決策）或 'vexa'。
-  // 另一個 provider 自動成為 failover secondary（未設定齊全時退化為單一 provider）。
-  BOT_PRIMARY_PROVIDER: z.enum(['vexa', 'recall']).default('recall'),
-  // Vexa：等待 bot 真正被 admitted 進會議的逾時（毫秒）；逾時即視為「被擋在門外」並觸發 failover。
-  BOT_ADMISSION_TIMEOUT_MS: z.coerce.number().default(30_000),
-  // Recall：admission 逾時。Recall bot 從派出到進等候室本身就要約 30s（實測），
-  // 故給較長的視窗，避免 failover 後 Recall 還沒進場就被判逾時。
+  // Recall：admission 逾時（ms）。Recall bot 從派出到進等候室本身就要約 30s（實測），
+  // 故給較長的視窗。
   RECALL_ADMISSION_TIMEOUT_MS: z.coerce.number().default(90_000),
   // ── 主動插話（interjection）─────────────────────────────────────────────────
   // 蜜塔在「沒被叫名字」時也會判斷是否主動用聊天室補充（RAG 答得出的問題才插話）。
@@ -88,7 +79,7 @@ const envSchema = z.object({
   // 讓每則回覆可歸因到觸發它的子系統（除錯與回應品質評估的前提）。
   // 'off'：正式對外會議不想露出除錯資訊時關閉。語音永遠不唸標籤，不受此開關影響。
   REPLY_TAGS: z.enum(['on', 'off']).default('on'),
-  // 內部信任端點（前端 NextAuth 登入鑄 token）共享密鑰；未設定＝端點停用（退回 docker exec 舊路）。
+  // 內部信任端點（前端 NextAuth 登入取得 authToken）共享密鑰；未設定＝端點停用。
   INTERNAL_AUTH_SECRET: z.string().min(16).optional(),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),

@@ -7,7 +7,7 @@ const app = new Hono<AppEnv>()
 
 app.post('/projects/:projectId/materials', async (c) => {
   const projectId = c.req.param('projectId')
-  const vexaUserId = c.get('vexaUserId')
+  const userId = c.get('userId')
 
   const formData = await c.req.formData()
   const fileField = formData.get('file')
@@ -20,7 +20,7 @@ app.post('/projects/:projectId/materials', async (c) => {
   const arrayBuffer = await fileField.arrayBuffer()
   const buffer = Buffer.from(arrayBuffer)
 
-  const result = await materialService.uploadMaterial(projectId, vexaUserId, {
+  const result = await materialService.uploadMaterial(projectId, userId, {
     buffer,
     filename: fileField.name,
     mimeType: fileField.type,
@@ -34,7 +34,7 @@ app.get('/projects/:projectId/materials', async (c) => {
   const projectId = c.req.param('projectId')
   const q = c.req.query()
 
-  const result = await materialService.listMaterials(projectId, c.get('vexaUserId'), {
+  const result = await materialService.listMaterials(projectId, c.get('userId'), {
     page: q.page ? parseInt(q.page) : 1,
     perPage: q.per_page ? parseInt(q.per_page) : 20,
     status: q.status,
@@ -47,7 +47,7 @@ app.get('/projects/:projectId/materials/:materialId', async (c) => {
   const result = await materialService.getMaterial(
     c.req.param('projectId'),
     c.req.param('materialId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
   return c.json(result)
 })
@@ -56,7 +56,7 @@ app.delete('/projects/:projectId/materials/:materialId', async (c) => {
   await materialService.deleteMaterial(
     c.req.param('projectId'),
     c.req.param('materialId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
   return c.body(null, 204)
 })
@@ -64,7 +64,7 @@ app.delete('/projects/:projectId/materials/:materialId', async (c) => {
 // 專案活動紀錄（通用：素材增刪、成員增減、權限變更、會議建立、改名等）
 app.get('/projects/:projectId/history', async (c) => {
   const q = c.req.query()
-  const result = await activityService.listActivity(c.req.param('projectId'), c.get('vexaUserId'), {
+  const result = await activityService.listActivity(c.req.param('projectId'), c.get('userId'), {
     page: q.page ? parseInt(q.page) : 1,
     perPage: q.per_page ? parseInt(q.per_page) : 30,
   })

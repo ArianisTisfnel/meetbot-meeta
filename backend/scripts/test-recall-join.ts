@@ -13,7 +13,7 @@
  * ⚠️ 這是測試用腳本，驗證完可刪。
  */
 import { RecallAdapter } from '../src/provider/recall-adapter.js'
-import { parseGoogleMeetUrl } from '../src/lib/vexa.js'
+import { parseGoogleMeetUrl } from '../src/lib/google-meet.js'
 import type { LiveHandlers } from '../src/provider/types.js'
 
 const url = process.argv[2]

@@ -32,7 +32,7 @@ const PDF_FILE = { buffer: PDF_BUFFER, filename: 'test.pdf', mimeType: 'applicat
 const MOCK_PROJECT = {
   id: 'proj-1',
   name: 'Test',
-  ownerVexaUserId: 1,
+  ownerUserId: 1,
   difyDatasetId: 'dataset-abc',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -53,7 +53,7 @@ const MOCK_MATERIAL = {
   difyBatch: 'batch-abc',
   indexingStatus: 'PENDING' as const,
   indexingError: null,
-  uploadedByVexaUserId: 1,
+  uploadedByUserId: 1,
   uploadedAt: new Date(),
   updatedAt: new Date(),
   deletedAt: null,
@@ -72,7 +72,8 @@ describe('uploadMaterial', () => {
     mockDify.uploadDocument.mockResolvedValueOnce({ documentId: 'doc-123', batch: 'batch-abc' })
     mockPrisma.material.create.mockResolvedValueOnce(MOCK_MATERIAL)
     mockPrisma.materialEditHistory.create.mockResolvedValueOnce({})
-    mockPrisma.$queryRaw.mockResolvedValueOnce([{ id: 1, name: 'Alice' }])
+    mockPrisma.activityLog.create.mockResolvedValueOnce({})
+    mockPrisma.user.findUnique.mockResolvedValueOnce({ id: 1, name: 'Alice' })
 
     const result = await uploadMaterial('proj-1', 1, PDF_FILE)
 
@@ -135,7 +136,8 @@ describe('uploadMaterial', () => {
     mockDify.uploadDocument.mockResolvedValueOnce({ documentId: 'doc-new', batch: 'batch-new' })
     mockPrisma.material.create.mockResolvedValueOnce(MOCK_MATERIAL)
     mockPrisma.materialEditHistory.create.mockResolvedValueOnce({})
-    mockPrisma.$queryRaw.mockResolvedValueOnce([{ id: 1, name: 'Alice' }])
+    mockPrisma.activityLog.create.mockResolvedValueOnce({})
+    mockPrisma.user.findUnique.mockResolvedValueOnce({ id: 1, name: 'Alice' })
 
     await uploadMaterial('proj-1', 1, PDF_FILE)
 
@@ -157,7 +159,6 @@ describe('uploadMaterial', () => {
     mockPrisma.material.create.mockRejectedValueOnce(p2002)
     // rollback mocks
     mockStorage.deleteFile.mockResolvedValueOnce(undefined)
-    mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT)
     mockDify.deleteDocument.mockResolvedValueOnce(undefined)
 
     await expect(uploadMaterial('proj-1', 1, PDF_FILE)).rejects.toMatchObject({
@@ -186,7 +187,6 @@ describe('uploadMaterial', () => {
     mockPrisma.material.create.mockRejectedValueOnce(new Error('DB error'))
     // rollback
     mockStorage.deleteFile.mockResolvedValueOnce(undefined)
-    mockPrisma.project.findUnique.mockResolvedValueOnce(MOCK_PROJECT)
     mockDify.deleteDocument.mockResolvedValueOnce(undefined)
 
     await expect(uploadMaterial('proj-1', 1, PDF_FILE)).rejects.toThrow('DB error')

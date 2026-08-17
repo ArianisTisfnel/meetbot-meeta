@@ -1,5 +1,4 @@
 import { randomBytes, createHash } from 'node:crypto'
-import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { env } from '../types/env.js'
 import { AppError } from '../middleware/error-handler.js'
@@ -17,7 +16,6 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase()
 }
 
-/** 產生原始 token（回傳給使用者 / 連結），與其 SHA-256 hash（存 DB）。 */
 function generateToken(): { token: string; tokenHash: string } {
   const token = randomBytes(32).toString('base64url')
   return { token, tokenHash: hashToken(token) }
@@ -31,16 +29,6 @@ function acceptUrl(token: string): string {
   return `${env.APP_BASE_URL}/invitations/accept?token=${encodeURIComponent(token)}`
 }
 
-/** 以 email 查 Vexa 既有帳號（不分大小寫）。查不到回 null。 */
-async function findVexaUserByEmail(
-  email: string,
-): Promise<{ id: number; email: string; name: string | null } | null> {
-  const rows = await prisma.$queryRaw<
-    Array<{ id: number; email: string; name: string | null }>
-  >`SELECT id, email, name FROM public.users WHERE lower(email) = ${email} LIMIT 1`
-  return rows[0] ?? null
-}
-
 // ── 擁有者側 ──────────────────────────────────────────────────────────
 
 /**
@@ -49,21 +37,23 @@ async function findVexaUserByEmail(
  */
 export async function createInvitation(
   projectId: string,
-  ownerVexaUserId: number,
+  ownerUserId: number,
   rawEmail: string,
   permissions: Permissions,
 ) {
-  const project = await requireOwner(projectId, ownerVexaUserId)
+  const project = await requireOwner(projectId, ownerUserId)
   const email = normalizeEmail(rawEmail)
 
-  // 既有帳號才有可能「已是成員」或「邀到自己」
-  const existing = await findVexaUserByEmail(email)
+  const existing = await prisma.user.findFirst({
+    where: { email: { equals: email, mode: 'insensitive' } },
+    select: { id: true, email: true, name: true },
+  })
   if (existing) {
-    if (existing.id === project.ownerVexaUserId) {
+    if (existing.id === project.ownerUserId) {
       throw new AppError('SELF_INVITE', 400, '您是專案擁有者，無需邀請自己')
     }
     const member = await prisma.projectMember.findUnique({
-      where: { projectId_vexaUserId: { projectId, vexaUserId: existing.id } },
+      where: { projectId_userId: { projectId, userId: existing.id } },
     })
     if (member) {
       throw new AppError('ALREADY_MEMBER', 409, '此使用者已是此專案的成員')
@@ -89,18 +79,18 @@ export async function createInvitation(
       projectId,
       email,
       tokenHash,
-      // 檢視權是成員基準權限，恆為 true（編輯/會議為其上的加購能力）
+      // canView is the baseline permission for all members and cannot be revoked
       canView: true,
       canEdit: permissions.canEdit,
       canMeeting: permissions.canMeeting,
-      invitedByVexaUserId: ownerVexaUserId,
+      invitedByUserId: ownerUserId,
       expiresAt,
     },
   })
 
   await recordActivity({
     projectId,
-    actorVexaUserId: ownerVexaUserId,
+    actorUserId: ownerUserId,
     action: 'MEMBER_INVITE',
     targetLabel: email,
   })
@@ -109,14 +99,13 @@ export async function createInvitation(
   const emailSent = await sendInvitationEmail({
     to: email,
     projectName: project.name,
-    inviterName: await inviterDisplayName(ownerVexaUserId),
+    inviterName: await inviterDisplayName(ownerUserId),
     acceptUrl: url,
     expiresAt,
   })
 
   return {
     ...toInvitationDto(invitation),
-    // 回傳原始連結，方便擁有者在未設定 SMTP 時手動轉交（token 之後不會再出現）
     acceptUrl: url,
     emailSent,
   }
@@ -125,10 +114,10 @@ export async function createInvitation(
 /** 重寄邀請：重產 token、刷新過期時間、再寄一次。 */
 export async function resendInvitation(
   projectId: string,
-  ownerVexaUserId: number,
+  ownerUserId: number,
   invitationId: string,
 ) {
-  const project = await requireOwner(projectId, ownerVexaUserId)
+  const project = await requireOwner(projectId, ownerUserId)
 
   const invitation = await prisma.projectInvitation.findFirst({
     where: { id: invitationId, projectId },
@@ -150,7 +139,7 @@ export async function resendInvitation(
   const emailSent = await sendInvitationEmail({
     to: updated.email,
     projectName: project.name,
-    inviterName: await inviterDisplayName(ownerVexaUserId),
+    inviterName: await inviterDisplayName(ownerUserId),
     acceptUrl: url,
     expiresAt,
   })
@@ -161,10 +150,10 @@ export async function resendInvitation(
 /** 撤銷邀請。 */
 export async function revokeInvitation(
   projectId: string,
-  ownerVexaUserId: number,
+  ownerUserId: number,
   invitationId: string,
 ) {
-  await requireOwner(projectId, ownerVexaUserId)
+  await requireOwner(projectId, ownerUserId)
 
   const invitation = await prisma.projectInvitation.findFirst({
     where: { id: invitationId, projectId },
@@ -201,14 +190,15 @@ export async function listMyInvitations(rawEmail: string) {
   })
   const projectMap = new Map(projects.map((p) => [p.id, p.name]))
 
-  const inviterIds = [...new Set(invitations.map((i) => i.invitedByVexaUserId))]
-  const inviterRows = await prisma.$queryRaw<
-    Array<{ id: number; email: string; name: string | null }>
-  >`SELECT id, email, name FROM public.users WHERE id IN (${Prisma.join(inviterIds)})`
-  const inviterMap = new Map(inviterRows.map((r) => [r.id, r]))
+  const inviterIds = [...new Set(invitations.map((i) => i.invitedByUserId))]
+  const inviters = await prisma.user.findMany({
+    where: { id: { in: inviterIds } },
+    select: { id: true, email: true, name: true },
+  })
+  const inviterMap = new Map(inviters.map((u) => [u.id, u]))
 
   return invitations.map((inv) => {
-    const inviter = inviterMap.get(inv.invitedByVexaUserId)
+    const inviter = inviterMap.get(inv.invitedByUserId)
     return {
       ...toInvitationDto(inv),
       projectName: projectMap.get(inv.projectId) ?? null,
@@ -220,30 +210,30 @@ export async function listMyInvitations(rawEmail: string) {
 /** 透過邀請 id 接受（站內信箱路徑，需 email 相符）。 */
 export async function acceptInvitationById(
   invitationId: string,
-  vexaUserId: number,
+  userId: number,
   rawEmail: string,
 ) {
   const invitation = await prisma.projectInvitation.findUnique({
     where: { id: invitationId },
   })
-  return acceptInvitationRecord(invitation, vexaUserId, rawEmail)
+  return acceptInvitationRecord(invitation, userId, rawEmail)
 }
 
 /** 透過 token 接受（email 連結落地頁路徑）。 */
 export async function acceptInvitationByToken(
   token: string,
-  vexaUserId: number,
+  userId: number,
   rawEmail: string,
 ) {
   const invitation = await prisma.projectInvitation.findUnique({
     where: { tokenHash: hashToken(token) },
   })
-  return acceptInvitationRecord(invitation, vexaUserId, rawEmail)
+  return acceptInvitationRecord(invitation, userId, rawEmail)
 }
 
 async function acceptInvitationRecord(
   invitation: Awaited<ReturnType<typeof prisma.projectInvitation.findUnique>>,
-  vexaUserId: number,
+  userId: number,
   rawEmail: string,
 ) {
   if (!invitation) throw new AppError('INVALID_INVITATION', 404, '邀請不存在或連結無效')
@@ -254,7 +244,6 @@ async function acceptInvitationRecord(
   }
 
   if (invitation.status === 'ACCEPTED') {
-    // 冪等：已接受過就直接回成功
     return { projectId: invitation.projectId, alreadyAccepted: true }
   }
   if (invitation.status !== 'PENDING') {
@@ -268,14 +257,13 @@ async function acceptInvitationRecord(
     throw new AppError('INVITATION_EXPIRED', 410, '此邀請連結已過期，請聯絡邀請人重寄')
   }
 
-  // 既是成員（race）→ 標記接受、冪等返回
   const existingMember = await prisma.projectMember.findUnique({
-    where: { projectId_vexaUserId: { projectId: invitation.projectId, vexaUserId } },
+    where: { projectId_userId: { projectId: invitation.projectId, userId } },
   })
   if (existingMember) {
     await prisma.projectInvitation.update({
       where: { id: invitation.id },
-      data: { status: 'ACCEPTED', acceptedByVexaUserId: vexaUserId, acceptedAt: new Date() },
+      data: { status: 'ACCEPTED', acceptedByUserId: userId, acceptedAt: new Date() },
     })
     return { projectId: invitation.projectId, alreadyAccepted: true }
   }
@@ -284,8 +272,8 @@ async function acceptInvitationRecord(
     prisma.projectMember.create({
       data: {
         projectId: invitation.projectId,
-        vexaUserId,
-        invitedByVexaUserId: invitation.invitedByVexaUserId,
+        userId,
+        invitedByUserId: invitation.invitedByUserId,
         canView: invitation.canView,
         canEdit: invitation.canEdit,
         canMeeting: invitation.canMeeting,
@@ -293,13 +281,13 @@ async function acceptInvitationRecord(
     }),
     prisma.projectInvitation.update({
       where: { id: invitation.id },
-      data: { status: 'ACCEPTED', acceptedByVexaUserId: vexaUserId, acceptedAt: new Date() },
+      data: { status: 'ACCEPTED', acceptedByUserId: userId, acceptedAt: new Date() },
     }),
   ])
 
   await recordActivity({
     projectId: invitation.projectId,
-    actorVexaUserId: vexaUserId,
+    actorUserId: userId,
     action: 'MEMBER_ADD',
     targetLabel: email,
   })
@@ -329,11 +317,12 @@ export async function declineInvitationById(
 
 // ── 輔助 ──────────────────────────────────────────────────────────────
 
-async function inviterDisplayName(vexaUserId: number): Promise<string> {
-  const rows = await prisma.$queryRaw<Array<{ email: string; name: string | null }>>`
-    SELECT email, name FROM public.users WHERE id = ${vexaUserId} LIMIT 1
-  `
-  return rows[0]?.name ?? rows[0]?.email ?? '專案擁有者'
+async function inviterDisplayName(userId: number): Promise<string> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, name: true },
+  })
+  return user?.name ?? user?.email ?? '專案擁有者'
 }
 
 function toInvitationDto(inv: {

@@ -4,7 +4,7 @@ const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 
 async function getAuthHeader(): Promise<HeadersInit> {
   const session = await getSession()
-  const token = (session as any)?.vexaToken
+  const token = (session as any)?.authToken
   if (!token) throw new Error('Not authenticated')
   return { Authorization: `Bearer ${token}` }
 }
