@@ -11,6 +11,7 @@ import {
   isVocativeWake,
   stripLeadingPunct,
   isEngaged,
+  isStopCommand,
   FOLLOWUP_WINDOW_MS,
   type AddressingState,
 } from '../../../../backend/src/sessions/addressing'
@@ -174,6 +175,41 @@ describe('decideAddressing — 叫停指令', () => {
   it('聊天室打叫停 → stop（與語音同一份詞表）', () => {
     expect(decideChatAddressing({ lastWakeAt: 0 }, { text: '蜜塔 不用了', speaker: 'U', now: NOW }).kind).toBe('stop')
   })
+
+  it('叫停後面還接著講也算叫停（實測 2026-08-03「蜜桃閉嘴他是念 Gemini 耶」）', () => {
+    // 原本 ^...$ 錨定 → 這句不算叫停 → 被當成新問題送去查資料，
+    // 使用者已經喊了閉嘴，她卻開始回答另一件事。
+    expect(decide('蜜桃閉嘴他是念Gemini耶').kind).toBe('stop')
+    expect(decide('蜜塔安靜啦我們先討論').kind).toBe('stop')
+  })
+
+  it('接續形態的詞表比整句窄：「停」「不用了」開頭仍不算叫停', () => {
+    // 這兩個在討論裡太常見，只有整句都是它時才算數
+    expect(decide('蜜塔，停車場在哪裡').kind).toBe('question')
+    expect(decide('蜜塔，不用了我們改用另一個方案好嗎').kind).not.toBe('stop')
+  })
+
+  it('STT 把「安靜」轉成「安傑」也要收（實測 2026-08-04）', () => {
+    // 她停是停了（barge-in 只看長度），但沒被當成叫停 →
+    // 被打斷的答案照樣轉貼聊天室、對話串照樣開著，下一句被當成新問題。
+    for (const t of ['蜜塔安傑', '蜜塔 安進', '蜜塔，安靖', '蜜塔安黑']) {
+      expect(decide(t).kind).toBe('stop')
+    }
+  })
+})
+
+describe('WAKE_WORD_REGEX — STT 誤轉涵蓋', () => {
+  it('「蜜茶」「麗塔」要認得出來（實測 2026-08-04 整句被漏掉）', () => {
+    // 誤轉集中在她正在說話的時候（AEC 雙講失真），而那正是最需要叫得動她的時刻
+    expect(decide('蜜茶，我想知道你冷場插話的時機').kind).toBe('question')
+    expect(decide('麗塔，今天天氣怎樣').kind).toBe('question')
+  })
+
+  it('既有的誤轉不受影響', () => {
+    for (const t of ['蜜塔，報名日期', '米塔，報名日期', '蜜桃，報名日期', '小幫手，報名日期']) {
+      expect(decide(t).kind).toBe('question')
+    }
+  })
 })
 
 describe('decideChatAddressing — 聊天室', () => {
@@ -247,5 +283,19 @@ describe('parseTurnDecision — 語意層輸出解析', () => {
 
   it('喚醒詞開頭的真問題不受影響', () => {
     expect(parseTurnDecision('{"addressed":"address","question":"蜜塔在嗎"}').question).toBe('蜜塔在嗎')
+  })
+})
+
+describe('isStopCommand — 共用判準', () => {
+  it('叫停不論有沒有喊名字、後面有沒有接話都認得出來', () => {
+    for (const t of ['安靜', '蜜塔安靜', '蜜塔，閉嘴', '蜜桃閉嘴他是念Gemini耶', '蜜塔安傑']) {
+      expect(isStopCommand(t)).toBe(true)
+    }
+  })
+
+  it('討論內容不算叫停', () => {
+    for (const t of ['蜜塔，停車場在哪裡', '蜜塔，不用了我們改用另一個方案', '這個功能停在哪一版']) {
+      expect(isStopCommand(t)).toBe(false)
+    }
   })
 })

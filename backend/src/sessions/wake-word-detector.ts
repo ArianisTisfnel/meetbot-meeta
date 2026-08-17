@@ -14,7 +14,7 @@ import {
   decideChatAddressing,
   isVocativeWake,
   DEBOUNCE_MS,
-  STOP_COMMAND_REGEX,
+  isStopCommand,
 } from './addressing.js'
 import type { MeetingSession, VexaChatMessage } from '../types/session.js'
 
@@ -37,6 +37,18 @@ function requireBotSession(session: MeetingSession): BotSession {
  * 兩句，結果跟蜜塔打招呼也被宣告要去查資料庫（回報 2026-07-28 A.2）。
  */
 export const PENDING_VOICE = '好的，我收到了，請稍候。'
+/**
+ * ack 也輪替：一場會議問五題就聽到五次一模一樣的「好的我收到了」，
+ * 是「像錄音機」觀感的第一來源（與進度句同一個道理）。
+ * 措辭全部維持中性（不提查資料、不預設對方在提問——見 PENDING_VOICE 的教訓），
+ * 第一句固定是 PENDING_VOICE 保持相容。join 後全部預熱進 TTS 快取，輪替不增加延遲。
+ */
+export const PENDING_VOICES = [
+  PENDING_VOICE,
+  '好喔，稍等我一下。',
+  '嗯嗯，我想一下喔。',
+  '收到收到，等我一下下。',
+]
 export const ERROR_VOICE = '抱歉，查詢時發生錯誤，請稍後再試。'
 /**
  * 進度句：查詢還沒回來時的墊檔。輪替使用——同一場會議問幾題就聽到幾次
@@ -57,6 +69,13 @@ function nextProgressVoice(session: MeetingSession): string {
   const idx = session.progressVoiceIdx ?? 0
   session.progressVoiceIdx = (idx + 1) % PROGRESS_VOICES.length
   return PROGRESS_VOICES[idx]
+}
+
+/** 取下一句 ack（每個 session 各自輪替，機制同進度句）。 */
+function nextPendingVoice(session: MeetingSession): string {
+  const idx = session.pendingVoiceIdx ?? 0
+  session.pendingVoiceIdx = (idx + 1) % PENDING_VOICES.length
+  return PENDING_VOICES[idx]
 }
 /** 說完「我收到了」後自己計時：查詢還沒回來就說進度句（不然使用者會以為沒收到而重問）。 */
 const PROGRESS_NOTICE_MS = 10_000
@@ -122,9 +141,19 @@ export async function sendChatBestEffort(
   text: string,
   channel: 'chat' | 'voice' = 'chat',
   tag?: ReplyTag,
+  /** 「↪ 回 誰問的哪一題」引用行：只進聊天室顯示，不進 chatLog／對話窗——決策層要的是內容原文。 */
+  refLine?: string,
 ): Promise<void> {
   try {
-    await botProvider.sendChat?.(requireBotSession(session), withReplyTag(text, tag))
+    // 聊天室顯示格式（僅顯示用，chatLog／對話窗一律存原文）：
+    //   1. 引用行獨立一行、放在標籤之前 → 「↪ 回 誰問的」＼n「【標籤】答案」
+    //   2. 句末標點後補換行：Dify 的答案是一整段密集文字，在會議聊天室的窄欄裡難讀
+    //     （使用者回報 2026-08-17）。不在結尾、閉引號/括號前不插。
+    const display = text.replace(/([。！？；])(?=[^」』）】\s])/g, '$1\n')
+    await botProvider.sendChat?.(
+      requireBotSession(session),
+      refLine ? `${refLine}\n${withReplyTag(display, tag)}` : withReplyTag(display, tag),
+    )
     // 蜜塔自己的聊天回覆也記進 chatLog（webhook 會過濾 bot 訊息，只能在送出端記錄）
     session.chatLog?.push({ speaker: '蜜塔', text, at: Date.now(), channel })
     // 也記進插話引擎的對話窗：決策層才知道「這個問題已經有人（蜜塔）回答過了」
@@ -142,6 +171,9 @@ export async function sendChatBestEffort(
  * 視為同一次喚醒（跳過開場白）。同時也是 partial 重複 ack 的抑制期。
  */
 const PARTIAL_ACK_WINDOW_MS = 12_000
+
+/** 叫停後的 ack 靜默期：期內句首喊名字不提前 ack（見 MeetingSession.lastStopAt）。 */
+const STOP_ACK_MUTE_MS = 10_000
 const MAX_PROCESSED_SEGMENT_IDS = 5000
 const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 
@@ -162,13 +194,13 @@ export async function handleBargeIn(
 ): Promise<void> {
   if (!session.isSpeaking) return
   const trimmed = speech.text.trim()
-  const isStopCommand = STOP_COMMAND_REGEX.test(trimmed)
-  if (!isStopCommand && trimmed.length < BARGE_IN_MIN_CHARS) return
+  const stopping = isStopCommand(trimmed)
+  if (!stopping && trimmed.length < BARGE_IN_MIN_CHARS) return
 
   // STT 事件晚到防護：用「說話者實際開口的時間」判斷，不是事件到達時間。
   // 開口時間早於蜜塔開始說話 → 對方是在安靜期講的（例如等答案等太久重問一次），
   // 不是打斷。明確停止指令不受此限。
-  if (!isStopCommand && speech.startTime !== undefined && session.sessionStartedAt > 0 && session.speechStartedAt > 0) {
+  if (!stopping && speech.startTime !== undefined && session.sessionStartedAt > 0 && session.speechStartedAt > 0) {
     const spokeAt = session.sessionStartedAt + speech.startTime * 1000
     if (spokeAt < session.speechStartedAt) {
       logger.info(
@@ -184,6 +216,7 @@ export async function handleBargeIn(
   session.speechGen++
   session.isSpeaking = false
   session.bargeEpoch++
+  if (stopping) session.lastStopAt = Date.now()
   // 讓路後進入喚醒靜默期：打斷者的話多半是「剛問過的問題」的延續，
   // 沒有這行插話引擎會把它當新問題再答一次（實測 2026-07-04 發生過重複回答）
   session.lastWakeAt = Date.now()
@@ -202,7 +235,7 @@ export async function handleBargeIn(
   }
 
   // 被打斷的回答改走聊天室，內容不遺失；明確叫停（閉嘴/安靜）則不轉貼
-  if (interrupted && !isStopCommand) {
+  if (interrupted && !stopping) {
     await sendChatBestEffort(session, `（先讓大家討論～完整回覆放這裡）${interrupted}`, 'chat', 'deferred')
   }
 }
@@ -220,16 +253,38 @@ export async function handlePartialSegment(
   // 只有句首呼喚才提早 ack：句中提及要等語意裁決，
   // 不然「我覺得蜜塔這個功能…」講到一半蜜塔就插嘴說「我收到了」。
   if (!partial.text || !isVocativeWake(partial.text)) return
+  // 叫停不 ack。這一層原本只看「有沒有在句首喊名字」，於是喊「蜜塔安靜」時
+  // partial 一到她就先說「好的，我收到了，請稍候」——你叫她閉嘴，她的反應是講更多話
+  //（實測 2026-08-04 使用者回報「叫她安靜反而變成收到問題」的來源）。
+  // partial 未定稿，「蜜塔安」還判不出來是叫停；這裡只求擋掉已經看得出來的那些，
+  // 漏掉的由定稿的 decideAddressing 收尾（它本來就會判 stop、不會真的回答）。
+  if (isStopCommand(partial.text)) {
+    session.lastStopAt = Date.now() // final 可能永遠不來（STT 斷句），靜默期從這裡就起算
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, text: partial.text.slice(0, 30) },
+      'partial wake looks like a stop command, not acking',
+    )
+    return
+  }
 
   const now = Date.now()
   if (session.isSpeaking) return
   // 剛派發過問題（final 已處理）→ 不重複 ack
   if (now - session.lastWakeAt < DEBOUNCE_MS) return
+  // 剛被叫停過 → 不 ack。連喊兩次「蜜塔閉嘴」時第二次的 partial 常只到「蜜塔」，
+  // 上面的 isStopCommand 看不出來，沒有這道閘她會回「好的我收到了」（實測 2026-08-16）
+  if (now - session.lastStopAt < STOP_ACK_MUTE_MS) {
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, sinceStopMs: now - session.lastStopAt },
+      'partial wake within stop-mute window, not acking',
+    )
+    return
+  }
   // 同一句的 partial 會重複推送 → 抑制期內只 ack 一次
   if (now - session.partialAckAt < PARTIAL_ACK_WINDOW_MS) return
   session.partialAckAt = now
 
-  const pendingVoice = PENDING_VOICE
+  const pendingVoice = nextPendingVoice(session)
   logger.info(
     { meetingInstanceId: session.meetingInstanceId, speaker: partial.speaker, text: partial.text.slice(0, 40) },
     'partial wake detected, speaking pending prompt early',
@@ -275,6 +330,22 @@ export async function handleTranscriptSegment(
     // 句中提及蜜塔：規則分不出「對她說」還是「談論她」→ 花一次便宜的 LLM 呼叫裁決。
     // 這裡**不等 turn 結束**：使用者剛喊了她的名字，等 2.5 秒才反應太慢。
     case 'ambiguous': {
+      // 叫停後的殘響碎片：實測 2026-08-17 連續叫停時，後面幾聲被 STT 轉成
+      // 「蜜塔不來」「蜜塔被傳」——喚醒詞＋兩三個不成句的字。送語意層裁決有一半機率
+      // 被判成閒聊，於是「才剛叫她閉嘴，她又開口回答『不來』」。
+      // 條件收得很窄：叫停靜默期內 ＋ 剝掉喚醒詞後 ≤3 字 ＋ 不是問句 → 當殘響丟棄，
+      // 順便省一次 LLM 呼叫。真的追問（帶問號或長句）不受影響。
+      if (
+        now - session.lastStopAt < STOP_ACK_MUTE_MS &&
+        (decision.candidate ?? '').length <= 3 &&
+        !/[?？嗎呢]/.test(decision.candidate ?? '')
+      ) {
+        logger.info(
+          { meetingInstanceId: session.meetingInstanceId, text: segment.text.slice(0, 30) },
+          'addressing: short fragment within stop-mute window, dropped as stop residue',
+        )
+        return
+      }
       const turn = await decideTurn({
         window: windowEndingWith(session, {
           speaker: segment.speaker,
@@ -326,6 +397,7 @@ export async function handleTranscriptSegment(
     case 'stop':
       session.lastEngagedAt = 0
       session.lastWakeAt = now
+      session.lastStopAt = now
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, reason: decision.reason, speaker: segment.speaker },
         'addressing: stop command, staying quiet',
@@ -579,7 +651,7 @@ export async function resolveAnswerRouted(
   )
 
   if (intent === 'chitchat') {
-    return { answer: await answerChitchat(question), route }
+    return { answer: await answerChitchat(session, question), route }
   }
 
   if (intent === 'context') {
@@ -672,7 +744,7 @@ async function dispatchQuestion(
 ): Promise<void> {
   // 記下這題：追問出口據此擋掉「同一題再答一次」（見 session.lastDispatchedQuestion）
   session.lastDispatchedQuestion = { text: question, at: Date.now() }
-  const pendingVoice = PENDING_VOICE
+  const pendingVoice = nextPendingVoice(session)
   // ack 在意圖分類**之前**送出，此時還不知道會走 RAG／逐字稿／閒聊哪條路，
   // 也還不知道對方到底是不是在提問 → 措辭必須中性。踩過兩次：
   //   舊版寫「正在查詢資料中……」→ 跟蜜塔打招呼也被宣告要去查資料庫（回報 07-28 A.2）
@@ -684,6 +756,10 @@ async function dispatchQuestion(
   const ackChat = opts?.speaker
     ? `👂 收到 ${opts.speaker}：「${question.slice(0, 40)}」，稍等一下～`
     : `👂 收到：「${question.slice(0, 40)}」，稍等一下～`
+  // 聊天室答案標明回的是哪一題：連續兩題語音、或多人同時提問時，答案完成順序
+  // 與提問順序無關（實測 2026-08-17 兩題並行，先問的後到），沒有這行對不上號。
+  // 只加在聊天室顯示，**不進 TTS 也不進 chatLog**（sendChatBestEffort 的 refLine 參數）。
+  const answerRef = `↪ 回 ${opts?.speaker ? `${opts.speaker} 問` : ''}「${question.slice(0, 25)}${question.length > 25 ? '…' : ''}」`
 
   if (source === 'voice') {
     // 嘴巴被佔用（正在回答上一題）→ 這題不丟棄，改走聊天室
@@ -695,7 +771,7 @@ async function dispatchQuestion(
       await sendChatBestEffort(session, ackChat, 'chat', 'ack')
       try {
         const { answer, route } = await resolveAnswerRouted(session, question, 'chat', opts?.intent)
-        await sendChatBestEffort(session, presentAnswer(answer), 'chat', route)
+        await sendChatBestEffort(session, presentAnswer(answer), 'chat', route, answerRef)
       } catch (err) {
         logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'voice→chat fallback failed')
         await sendChatBestEffort(session, ERROR_VOICE, 'chat', 'error')
@@ -746,7 +822,7 @@ async function dispatchQuestion(
       if (session.bargeEpoch !== epochAtStart) {
         clearTimeout(lockTimer)
         release()
-        await sendChatBestEffort(session, rawAnswer, 'chat', route)
+        await sendChatBestEffort(session, rawAnswer, 'chat', route, answerRef)
         logger.info(
           { meetingInstanceId: session.meetingInstanceId, route },
           'dispatchQuestion voice: interrupted during query, answer delivered via chat',
@@ -773,7 +849,7 @@ async function dispatchQuestion(
       if (session.bargeEpoch !== epochAtStart) {
         clearTimeout(lockTimer)
         release()
-        await sendChatBestEffort(session, rawAnswer, 'chat', route)
+        await sendChatBestEffort(session, rawAnswer, 'chat', route, answerRef)
         logger.info(
           { meetingInstanceId: session.meetingInstanceId, route },
           'dispatchQuestion voice: interrupted while waiting for prompt to finish, answer via chat',
@@ -800,7 +876,7 @@ async function dispatchQuestion(
       recordConversation(session, { speaker: '蜜塔', text: answer, source: 'voice', fromBot: true, at: Date.now() })
       // 語音回答同步貼聊天室：留下文字紀錄（會後隨 chatLog 併入逐字稿，標「（語音）」），
       // 長答案被截短唸出時，完整版也在這裡補上
-      await sendChatBestEffort(session, rawAnswer, 'voice', route)
+      await sendChatBestEffort(session, rawAnswer, 'voice', route, answerRef)
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, route, answerPreview: answer.slice(0, 60) },
         'dispatchQuestion voice: answer spoken',
@@ -822,7 +898,7 @@ async function dispatchQuestion(
 
     try {
       const { answer, route } = await resolveAnswerRouted(session, question, 'chat', opts?.intent)
-      await sendChatBestEffort(session, presentAnswer(answer), 'chat', route)
+      await sendChatBestEffort(session, presentAnswer(answer), 'chat', route, answerRef)
     } catch (err) {
       logger.error({ err, meetingInstanceId: session.meetingInstanceId }, 'dispatchQuestion chat failed')
       await sendChatBestEffort(session, '抱歉，查詢時發生錯誤，請稍後再試。', 'chat', 'error')
@@ -834,12 +910,24 @@ async function dispatchQuestion(
 
 const CHITCHAT_FALLBACK = '我在喔！有什麼需要幫忙的，隨時叫我～'
 
-async function answerChitchat(question: string): Promise<string> {
+async function answerChitchat(session: MeetingSession, question: string): Promise<string> {
+  // 近期對話當脈絡：沒有它，「我肚子好餓」只能得到查號台式的空泛回應。
+  // 只取最後 8 則、只給 LLM 看——不走檢索、不進逐字稿 QA。
+  const context = (session.chatLog ?? [])
+    .slice(-8)
+    .map((m) => `[${m.speaker}] ${m.text}`)
+    .join('\n')
   try {
     const text = await completeText({
-      system:
-        '你是在線的 AI 會議助理蜜塔（Meeta）。有人跟你寒暄或閒聊，請用一到兩句話友善回應，口語、繁體中文、40 字內。不要查資料、不要反問。',
-      prompt: question,
+      system: [
+        // 與 hybrid 合成共用同一條鐵律：客服腔是「像機器人」觀感的最大來源
+        //（實測 2026-08-17 對「Hi.」回了「哈囉，很高興為您服務！」）。
+        '開頭規則：第一個字就直接回應內容——不自我介紹、不說很高興為您服務這類客服話術。對方先打招呼才回招呼。',
+        '你是 AI 會議助理蜜塔（Meeta），正在跟同事開會。有人跟你寒暄或閒聊，像同事一樣接住那句話：',
+        '回應對方**實際說的內容**（他說肚子餓就回肚子餓這件事），不要換成任何通用問候。',
+        '一到兩句、口語、繁體中文、40 字內。不要查資料、不要反問、不要提供協助清單。',
+      ].join('\n'),
+      prompt: context ? `會議近期對話：\n${context}\n\n對方剛對你說：${question}` : question,
       maxTokens: 100,
     })
     return toTraditional(text.trim() || CHITCHAT_FALLBACK)

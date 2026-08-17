@@ -45,6 +45,7 @@ import {
   parseIntent,
   speakProactive,
   speechTiming,
+  sendChatBestEffort,
 } from '../../../../backend/src/sessions/wake-word-detector'
 import { completeText } from '../../../../backend/src/lib/llm'
 import * as dify from '../../../../backend/src/lib/dify'
@@ -81,6 +82,7 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     speechStartedAt: 0,
     speechEndsAt: 0,
     bargeEpoch: 0,
+    lastStopAt: 0,
     speechGen: 0,
     chatLog: [],
     sessionStartedAt: 0,
@@ -281,6 +283,58 @@ describe('handlePartialSegment — partial 快速喚醒', () => {
     await handlePartialSegment(session, { text: '蜜塔請問', speaker: 'A' })
     expect(mockBotProvider.speak).not.toHaveBeenCalled()
   })
+
+  it('叫停後的靜默期內，只到「蜜塔」的 partial → 不 ack（實測 2026-08-16 連喊兩次閉嘴）', async () => {
+    const session = makeSession({ lastStopAt: Date.now() - 3000 })
+    await handlePartialSegment(session, { text: '蜜塔', speaker: 'A' })
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+  })
+
+  it('叫停靜默期內的殘響碎片（「蜜塔不來」）→ 丟棄，不送語意層也不回答', async () => {
+    const session = makeSession({ lastStopAt: Date.now() - 3000 })
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-residue',
+      text: '蜜塔不來',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+    expect(mockBotProvider.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('sendChatBestEffort 的 refLine：聊天室看得到引用行，chatLog 存原文', async () => {
+    const session = makeSession()
+    await sendChatBestEffort(session, '答案內容', 'chat', undefined, '↪ 回 A 問「X」')
+    expect(vi.mocked(mockBotProvider.sendChat).mock.calls[0][1]).toBe('↪ 回 A 問「X」\n答案內容')
+    expect(session.chatLog.at(-1)?.text).toBe('答案內容')
+  })
+
+  it('聊天室顯示：句末標點後換行；chatLog 仍存原文', async () => {
+    const session = makeSession()
+    await sendChatBestEffort(session, '第一句。第二句；第三句「引文。」結尾。', 'chat')
+    expect(vi.mocked(mockBotProvider.sendChat).mock.calls[0][1]).toBe('第一句。\n第二句；\n第三句「引文。」結尾。')
+    expect(session.chatLog.at(-1)?.text).toBe('第一句。第二句；第三句「引文。」結尾。')
+  })
+
+  it('ack 輪替：抑制期外的第二次喚醒 → 不同的 ack 措辭（不像錄音機）', async () => {
+    const session = makeSession()
+    await handlePartialSegment(session, { text: '蜜塔請問A', speaker: 'A' })
+    // 跳過抑制期與 debounce，模擬下一題
+    session.partialAckAt = Date.now() - 13_000
+    session.lastWakeAt = Date.now() - 13_000
+    await handlePartialSegment(session, { text: '蜜塔請問B', speaker: 'B' })
+    const first = vi.mocked(mockBotProvider.speak).mock.calls[0][1]
+    const second = vi.mocked(mockBotProvider.speak).mock.calls[1][1]
+    expect(first).not.toBe(second)
+  })
+
+  it('partial 判為叫停 → 標記 lastStopAt（final 沒來也要起算靜默期）', async () => {
+    const session = makeSession()
+    await handlePartialSegment(session, { text: '蜜塔閉嘴', speaker: 'A' })
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+    expect(session.lastStopAt).toBeGreaterThan(0)
+  })
 })
 
 describe('語音問題但嘴巴被佔用 → 改走聊天室', () => {
@@ -407,7 +461,7 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
       end_time: 2,
     })
     const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
-    expect(chats.some((t) => t.startsWith('【資料檢索】') && t.includes('測試回答'))).toBe(true)
+    expect(chats.some((t) => t.includes('\n【資料檢索】') && t.includes('測試回答'))).toBe(true)
     const spoken = mockBotProvider.speak.mock.calls.map((c: any[]) => String(c[1]))
     expect(spoken.every((t) => !t.includes('【'))).toBe(true)
   })
@@ -425,7 +479,7 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
       end_time: 2,
     })
     const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
-    expect(chats.some((t) => t.startsWith('【閒聊】'))).toBe(true)
+    expect(chats.some((t) => t.includes('\n【閒聊】'))).toBe(true)
   })
 
   it('無知識庫 → 標【會議記錄】', async () => {
@@ -437,7 +491,7 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
       is_from_bot: false,
     })
     const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
-    expect(chats.some((t) => t.startsWith('【會議記錄】'))).toBe(true)
+    expect(chats.some((t) => t.includes('\n【會議記錄】'))).toBe(true)
   })
 
   it('REPLY_TAGS=off → 完全沒有標籤', async () => {

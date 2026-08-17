@@ -13,7 +13,11 @@
  */
 
 // 字元集涵蓋 STT 常見誤轉：實測 recallai_streaming 會把「蜜塔」轉成「米塔」「蜜桃」等。
-export const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪][塔搭達桃]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
+// 「茶」「麗」是 2026-08-04 實機補的——那場整句「蜜茶我想知道你冷場插話的時機」
+// 因為漏字完全沒被喚醒。誤轉集中在**她正在說話的時候**（AEC 雙講失真），
+// 而那正是使用者最需要叫得動她的時刻，所以字元集寧可寬：
+// 多收進來的句子還要過句首呼喚／分隔符判斷，最壞只是多花一次語意裁決。
+export const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪麗][塔搭達桃茶]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
 
 /** 同一次喚醒的重複觸發抑制期。 */
 export const DEBOUNCE_MS = 2000
@@ -42,8 +46,39 @@ export const FOLLOWUP_WINDOW_MS = 90_000
  * 「不用了，我們用另一個方案」是討論內容不是叫停，錨定讓它不會誤命中。
  * 措辭鬆散的叫停（「你先不用查了」）本層放過，留給語意決策層——
  * 這裡不追求覆蓋率，只求零延遲擋掉最常見、最刺眼的那幾句。
+ *
+ * 安靜的字元集同喚醒詞（黑：實測 2026-08-17「蜜塔安靜」在她說話時被轉成「蜜塔安黑」——
+ * 雙講期間的失真比安靜期更兇）：實測 2026-08-04「蜜塔安靜」被轉成「蜜塔安傑」，
+ * 於是她停是停了（barge-in 只看長度），卻沒被當成叫停——被打斷的答案照樣轉貼聊天室，
+ * 對話串也照樣開著，下一句就被當成新問題。叫停失敗最刺眼的就是這種「停不乾淨」。
  */
-export const STOP_COMMAND_REGEX = /^(閉嘴|安靜|住嘴|停|停止|別說了|不用了|不用說了|夠了)[。！!～~]*$/
+export const STOP_COMMAND_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|停|停止|別說了|不用了|不用說了|夠了)[。！!～~]*$/
+
+/**
+ * 叫停後面還接著講的形態（「蜜桃閉嘴他是念 Gemini 耶」——實測 2026-08-03 漏掉）。
+ *
+ * 詞表刻意比 {@link STOP_COMMAND_REGEX} **窄**，差別在能不能單獨成立為命令：
+ *   收：閉嘴／安靜／住嘴／別說了／夠了 —— 句首出現就是在叫人閉嘴，沒有第二種讀法
+ *   不收：停／停止／不用了 —— 討論裡太常見（「不用了，我們改用另一個方案」是內容），
+ *        這幾個只有整句都是它時才算數
+ */
+const STOP_COMMAND_PREFIX_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|別說了|夠了)/
+
+/** 剝掉開頭的喚醒詞（沒有就原樣回傳），讓叫停判斷不必在意有沒有喊名字。 */
+function stripWakeWord(text: string): string {
+  const m = WAKE_WORD_REGEX.exec(text)
+  return m ? text.slice(m.index + m[0].length) : text
+}
+
+/**
+ * 這句話是不是在叫停？**兩個呼叫點的唯一真相**——barge-in（handleBargeIn）與
+ * 定址判斷（本檔）共用它，兩處對「什麼算叫停」的認定分岔的話，
+ * 會出現「打斷得了、卻同時被當成新問題送去查資料」這種自相矛盾的行為。
+ */
+export function isStopCommand(text: string): boolean {
+  const rest = stripLeadingPunct(stripWakeWord(text)).trim()
+  return STOP_COMMAND_REGEX.test(rest) || STOP_COMMAND_PREFIX_REGEX.test(rest)
+}
 
 /**
  * 剝除喚醒詞後殘留的開頭標點與空白。
@@ -173,7 +208,7 @@ export function decideAddressing(state: AddressingState, u: Utterance): Addressi
     const candidate = stripLeadingPunct(u.text).trim()
     if (!candidate) return { kind: 'ignore', reason: 'open thread but empty text' }
     // 對話串裡回一句「不用了」是收回上一個呼喚，不是要問「不用了」
-    if (STOP_COMMAND_REGEX.test(candidate)) {
+    if (isStopCommand(u.text)) {
       return { kind: 'stop', reason: 'stop command in open thread' }
     }
     if (u.now - state.lastWakeAt < DEBOUNCE_MS) {
@@ -188,7 +223,7 @@ export function decideAddressing(state: AddressingState, u: Utterance): Addressi
   // 叫停先於 debounce 判定：「蜜塔閉嘴」多半緊接在她開口後 2 秒內，
   // 若讓 debounce 先攔下，這句就整個被丟掉、該有的閉嘴動作也不會發生。
   // 也先於 ambiguous：叫停不必花一次 LLM 去問「這是不是在跟我說話」。
-  if (STOP_COMMAND_REGEX.test(question)) {
+  if (isStopCommand(u.text)) {
     return { kind: 'stop', reason: `stop command「${question}」` }
   }
 
@@ -236,7 +271,7 @@ export function decideChatAddressing(
   // debounce 在確認有問題內容後才消耗，避免空喚醒吃掉緊接著的真問題。
   if (!question) return { kind: 'ignore', reason: 'wake word without question (chat)' }
   // 聊天室打「蜜塔 不用了」同樣是叫停（語音路徑同一套詞表）
-  if (STOP_COMMAND_REGEX.test(question)) return { kind: 'stop', reason: `stop command「${question}」` }
+  if (isStopCommand(u.text)) return { kind: 'stop', reason: `stop command「${question}」` }
   // 聊天室同樣有「打字討論蜜塔」的情形，判斷準則與語音一致
   if (!isVocativePosition(u.text, match.index) || !POST_WAKE_SEPARATOR_REGEX.test(after)) {
     return {

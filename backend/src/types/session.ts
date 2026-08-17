@@ -52,6 +52,16 @@ export interface MeetingSession {
    * 0 = 無待銜接的確認。
    */
   partialAckAt: number
+  /**
+   * 最近一次被叫停的時刻（epoch ms）。0 = 從未被叫停。
+   *
+   * 用途只有一個：叫停後的短時間內壓住 partial 快速 ack。實測 2026-08-16 連喊兩次
+   * 「蜜塔閉嘴」，第二次的 partial 先只到「蜜塔」——這一層看不出是叫停，
+   * 就先說了「好的，我收到了」；你叫她閉嘴，她回你一句話。叫停後緊接著的
+   * 句首喊名字，十之八九是再叫停或抱怨，不是新問題；就算真是新問題，
+   * 損失的也只是提前 ack，final 派發照常（會補說開場白）。
+   */
+  lastStopAt: number
   /** 正在用語音唸的內容（barge-in 被打斷時改貼聊天室用）。null = 沒在唸。 */
   currentSpeech: string | null
   /**
@@ -84,6 +94,8 @@ export interface MeetingSession {
   speechGen: number
   /** 進度句輪替索引：同一場會議不要每次都聽到同一句墊檔。 */
   progressVoiceIdx?: number
+  /** ack 輪替索引：同進度句，避免每題都是同一句「好的我收到了」。 */
+  pendingVoiceIdx?: number
   /**
    * 最後一次派發出去的問題原文與時刻——給「同一題不要答兩次」用。
    *

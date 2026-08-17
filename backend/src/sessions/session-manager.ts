@@ -8,7 +8,7 @@ import {
   handlePartialSegment,
   handleChatMessage,
   handleBargeIn,
-  PENDING_VOICE,
+  PENDING_VOICES,
   ERROR_VOICE,
   PROGRESS_VOICES,
 } from './wake-word-detector.js'
@@ -99,6 +99,7 @@ export async function startBotSession(params: {
     speechStartedAt: 0,
     speechEndsAt: 0,
     bargeEpoch: 0,
+    lastStopAt: 0,
     speechGen: 0,
     chatLog: [],
     sessionStartedAt: 0,
@@ -158,7 +159,7 @@ export async function startBotSession(params: {
     // 預熱固定台詞的 TTS（fire-and-forget）：把「我收到了」等句的合成成本
     // 移到 join 後閒置期，首次喚醒的回應延遲省 1–3 秒。
     botSession.adapter
-      .primeSpeech?.(botSession, [PENDING_VOICE, ERROR_VOICE, ...PROGRESS_VOICES])
+      .primeSpeech?.(botSession, [...PENDING_VOICES, ERROR_VOICE, ...PROGRESS_VOICES])
       ?.catch((err) => logger.warn({ err, meetingInstanceId }, 'primeSpeech failed (best-effort)'))
 
     // 沉默破冰：進場即開始監看（開場沒人講話也會觸發）

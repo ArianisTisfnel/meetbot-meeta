@@ -87,6 +87,7 @@ function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     chatLog: [],
     sessionStartedAt: 0,
     bargeEpoch: 0,
+    lastStopAt: 0,
     speechGen: 0,
     processedSegmentIds: new Set(),
     botSession: fakeBotSession(),
