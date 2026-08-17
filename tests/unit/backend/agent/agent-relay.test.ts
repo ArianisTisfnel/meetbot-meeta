@@ -90,6 +90,45 @@ describe('handleTranscriptionEvent（OpenAI 轉錄事件 → 既有 LiveHandlers
     expect(itemTexts.has('item-1')).toBe(false)
   })
 
+  it('completed → 同一段寫進逐字稿 sink（recordSegment），與 onSegment 相同內容', () => {
+    const recorded: unknown[] = []
+    ctx.session.recordSegment = (seg) => recorded.push(seg)
+    handleTranscriptionEvent(ctx.session, itemTexts, {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'rec-1',
+      transcript: '蜜塔，今天議程是什麼？',
+    })
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0]).toEqual(ctx.onSegment.mock.calls[0][0])
+  })
+
+  it('提示詞回音（幻覺）→ partial 與定稿都被丟棄，不進 handlers', () => {
+    const PROMPT =
+      '這是一場繁體中文與英文混雜的線上會議。會議助理的名字是「蜜塔」（Meeta），與會者會喊「蜜塔」來提問。'
+    // partial 逐字累積：前綴階段（「這是一場」曾實測觸發 barge-in）就要擋
+    handleTranscriptionEvent(ctx.session, itemTexts, {
+      type: 'conversation.item.input_audio_transcription.delta',
+      item_id: 'echo',
+      delta: '這是一場',
+    })
+    handleTranscriptionEvent(ctx.session, itemTexts, {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'echo',
+      transcript: PROMPT,
+    })
+    expect(ctx.onPartialSegment).not.toHaveBeenCalled()
+    expect(ctx.onSegment).not.toHaveBeenCalled()
+
+    // 真人句子恰好以「這是一場」開頭 → 偏離提示詞後恢復放行
+    handleTranscriptionEvent(ctx.session, itemTexts, {
+      type: 'conversation.item.input_audio_transcription.delta',
+      item_id: 'real',
+      delta: '這是一場硬仗',
+    })
+    expect(ctx.onPartialSegment).toHaveBeenCalledTimes(1)
+    expect(ctx.onPartialSegment.mock.calls[0][0].text).toBe('這是一場硬仗')
+  })
+
   it('空白 delta / 空白 transcript → 不觸發 handlers', () => {
     handleTranscriptionEvent(ctx.session, itemTexts, {
       type: 'conversation.item.input_audio_transcription.delta',

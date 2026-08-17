@@ -105,6 +105,23 @@ function resolveSpeaker(session: AgentSession): string | null {
  * delta 是增量文字 → 依 item_id 累積成「講到目前為止的整句」再餵 onPartialSegment
  * （handlePartialSegment 期望的 partial 是可跑喚醒 regex 的完整前綴，不是碎片）。
  */
+/**
+ * 提示詞回音偵測：gpt-4o-mini-transcribe 收到噪音／無語音內容時，會把
+ * TRANSCRIPTION_PROMPT **一字不差**吐回來當轉錄結果（實測 2026-08-16 22:46:49）。
+ * 提示詞裡有兩個「蜜塔」，所以每次回音都自帶喚醒詞——會觸發 barge-in、
+ * 被當成問題派發、答案還轉貼聊天室，一句幻覺引發三連環。
+ *
+ * 用「前綴」比對而非全等：partial 是逐字累積的（「這是一場」→「這是一場繁體…」），
+ * 只比全等擋不住半路的 partial 觸發 barge-in。真人句子恰好以「這是一場」開頭的，
+ * 講到第五個字就會偏離提示詞、恢復放行，最壞只損失開頭幾個 partial。
+ * ponytail: 只擋提示詞回音；其他噪音幻覺（「Hi.」「Han er på vej.」）不在此列，
+ * 若實測還會誤觸發，下一步是比對 Recall speech_on 時間軸（沒人在講話 → 丟棄）。
+ */
+function isPromptEcho(text: string): boolean {
+  const t = text.trim()
+  return t.length > 0 && TRANSCRIPTION_PROMPT.startsWith(t)
+}
+
 export function handleTranscriptionEvent(
   session: AgentSession,
   itemTexts: Map<string, string>,
@@ -114,7 +131,7 @@ export function handleTranscriptionEvent(
     const itemId = event.item_id ?? 'unknown'
     const acc = (itemTexts.get(itemId) ?? '') + (event.delta ?? '')
     itemTexts.set(itemId, acc)
-    if (!acc.trim()) return
+    if (!acc.trim() || isPromptEcho(acc)) return
     session.handlers.onPartialSegment?.({
       segmentId: `agent-partial:${itemId}`,
       text: acc,
@@ -131,14 +148,30 @@ export function handleTranscriptionEvent(
     itemTexts.delete(itemId)
     const text = (event.transcript ?? '').trim()
     if (!text) return
-    session.handlers.onSegment?.({
+    if (isPromptEcho(text)) {
+      // 記一行不丟進 handler：回音頻率是「該不該換提示詞措辭」的依據
+      logger.info({ agentId: session.agentId, at: elapsedSec(session) }, 'agent relay: prompt echo dropped')
+      return
+    }
+    // 這條路原本一行 log 都沒有，於是「她說話時到底聽不聽得到」完全無法觀測——
+    // 2026-08-04 查「叫她安靜要等 10 秒」時只能靠推論。定稿記一行（partial 量太大不記），
+    // 對照 dispatchQuestion 的開口時刻就看得出轉錄有沒有在她說話期間進來。
+    logger.info(
+      { agentId: session.agentId, at: elapsedSec(session), text: text.slice(0, 60) },
+      'agent relay: transcription completed',
+    )
+    const seg = {
       segmentId: `agent:${itemId}`,
       text,
       speaker: resolveSpeaker(session),
       startTime: elapsedSec(session),
       endTime: elapsedSec(session),
       language: null,
-    })
+    }
+    // 同一段也寫進會議逐字稿（recall-adapter 掛的 sink）：OpenAI STT 一句一段，
+    // 取代 recallai_streaming 靜音斷不開時的黏段（見 AgentSession.recordSegment）。
+    session.recordSegment?.(seg)
+    session.handlers.onSegment?.(seg)
     return
   }
 

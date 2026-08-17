@@ -7,6 +7,7 @@ import {
   buildAgentPageUrl,
   signAgentToken,
   registerAgentSession,
+  getAgentSession,
   markAgentAnchor,
 } from '../agent/agent-registry.js'
 import {
@@ -158,7 +159,11 @@ export function dispatchRecallEvent(event: any): void {
     if (seg) {
       // bot 自己的語音也要進逐字稿（會後要看得到蜜塔的回覆），
       // 但不轉給 handlers（避免喚醒詞/插話自迴圈）。
-      if (reg.segments.length < MAX_REALTIME_SEGMENTS) reg.segments.push(seg)
+      // agent 在線時**使用者的段落不收**：relay 的 OpenAI STT 已寫進同一個 buffer
+      //（一句一段），webhook 這邊的 recallai_streaming 靠靜音斷句，VAD 關不上時
+      // 好幾句黏成一大段（實測 2026-08-17），收進來只會與乾淨段重複又難讀。
+      const skipUserSegment = !isBot && isAgentLive(botId)
+      if (!skipUserSegment && reg.segments.length < MAX_REALTIME_SEGMENTS) reg.segments.push(seg)
       // agent 網頁在線時，喚醒/插話由 relay 的串流 STT 驅動；webhook 的 accuracy 模式
       // 逐字稿是分鐘級延遲，若仍觸發喚醒，同一句「蜜塔」會在答完幾分鐘後再答一次。
       // 這裡只保留逐字稿寫入；網頁斷線時（isAgentLive=false）自動恢復 webhook 喚醒 fallback。
@@ -376,6 +381,16 @@ export class RecallAdapter implements MeetingBotProvider {
     // 註冊 realtime handlers（webhook 進來時依 bot.id 找回）。
     // segments 與 session.state 共用同一個 array：webhook 累積、getTranscript 回退讀取。
     const segments: TranscriptSegment[] = []
+    // relay 的逐字稿 sink：OpenAI STT 的乾淨斷句寫進同一個 buffer
+    //（agent 在線時 webhook 的黏段不再收使用者語音，見 dispatchRecallEvent）。
+    if (agentId) {
+      const agentSession = getAgentSession(agentId)
+      if (agentSession) {
+        agentSession.recordSegment = (seg) => {
+          if (segments.length < MAX_REALTIME_SEGMENTS) segments.push(seg)
+        }
+      }
+    }
     if (realtimeEnabled) {
       registerRealtimeHandlers(bot.id, handlers, botName, segments)
     } else {
@@ -489,6 +504,13 @@ export class RecallAdapter implements MeetingBotProvider {
 
   async getTranscript(session: BotSession): Promise<TranscriptSegment[]> {
     const state = getState(session)
+    // buffer 裡有 relay（OpenAI STT）的段落 → 直接用 buffer，不抓最終逐字稿。
+    // 最終逐字稿出自 recallai_streaming，靜音斷不開時整段黏在一起（實測 2026-08-17），
+    // relay 段一句一段品質更好；bot 自己的語音（webhook isBot 段）也在同一個 buffer。
+    // 依 startTime 排序：webhook 段是分鐘級批次到達，插入順序與時間順序不一致。
+    if (state.segments.some((s) => s.segmentId?.startsWith('agent:'))) {
+      return [...state.segments].sort((a, b) => a.startTime - b.startTime)
+    }
     // 優先用最終逐字稿（完整、含後處理修正）；未就緒（會議進行中 / 會後處理中，常需數分鐘）
     // 則回退用 realtime webhook 累積的 segment，讓喚醒詞問答與摘要都拿得到內容。
     const finalSegments = await this.fetchFinalTranscript(state.botId).catch((err) => {

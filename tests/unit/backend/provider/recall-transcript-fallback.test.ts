@@ -98,4 +98,20 @@ describe('RecallAdapter.getTranscript：最終逐字稿 vs realtime 回退', () 
 
     expect(segs).toEqual(REALTIME_SEGMENTS)
   })
+
+  it('buffer 含 relay（agent:）段 → 直接用 buffer 依時間排序，完全不抓最終逐字稿', async () => {
+    // 最終逐字稿出自 recallai_streaming，VAD 關不上時整段黏住（實測 2026-08-17）；
+    // relay 段一句一段品質更好。bot 自己的 webhook 段（分鐘級晚到、插入順序亂）一併排序。
+    const adapter = new RecallAdapter()
+    const session = makeSession(adapter)
+    ;(session.state as { segments: TranscriptSegment[] }).segments = [
+      { segmentId: 'agent:i1', text: '第一句', speaker: 'Wendy', startTime: 5, endTime: 6, language: null },
+      { segmentId: 'rt-bot', text: '蜜塔的回答', speaker: '蜜塔', startTime: 8, endTime: 12, language: 'zh' },
+      { segmentId: 'agent:i2', text: '第二句', speaker: 'Wendy', startTime: 2, endTime: 3, language: null },
+    ]
+    const segs = await adapter.getTranscript(session)
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(segs.map((s) => s.segmentId)).toEqual(['agent:i2', 'agent:i1', 'rt-bot'])
+  })
 })

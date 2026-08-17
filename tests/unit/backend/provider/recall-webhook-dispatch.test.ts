@@ -184,7 +184,7 @@ describe('dispatchRecallEvent × agent 模式（方案 A）', () => {
     unregisterAgentSession(AGENT_ID)
   })
 
-  it('agent 網頁在線 ＋ 轉錄鏈就緒 → webhook 語音事件只寫逐字稿、不觸發喚醒（防分鐘級晚到重複回答）', () => {
+  it('agent 網頁在線 ＋ 轉錄鏈就緒 → webhook 使用者段不收（relay 段取代黏段）、bot 段照寫、不觸發喚醒', () => {
     const session = registerAgentSession(AGENT_ID, BOT_ID, BOT_NAME, handlers)
     session.pageWs = { readyState: 1, OPEN: 1, send: vi.fn(), close: vi.fn() } satisfies PageSocketLike
     session.openaiReady = true // 轉錄鏈健康：抑制 webhook 喚醒的前提
@@ -194,8 +194,11 @@ describe('dispatchRecallEvent × agent 模式（方案 A）', () => {
 
     dispatchRecallEvent(transcriptEvent('Wendy', '蜜塔請問'))
     dispatchRecallEvent(partialEvent('蜜塔'))
+    dispatchRecallEvent(transcriptEvent(BOT_NAME, '我是蜜塔的回答'))
 
-    expect(segments.map((s) => s.text)).toEqual(['蜜塔請問']) // 逐字稿照寫
+    // 使用者段不收：recallai_streaming 靜音斷不開會黏段（2026-08-17），
+    // 乾淨版由 relay 的 recordSegment 寫入；蜜塔自己的語音 relay 聽不到，仍靠 webhook。
+    expect(segments.map((s) => s.text)).toEqual(['我是蜜塔的回答'])
     expect(handlers.onSegment).not.toHaveBeenCalled() // 喚醒改由 relay 驅動
     expect(handlers.onPartialSegment).not.toHaveBeenCalled()
 
