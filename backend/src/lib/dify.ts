@@ -168,65 +168,6 @@ export async function getDocumentSegments(
 
 export const DIFY_NO_RESULT_SENTINEL = '抱歉 沒有檢索到相關資訊'
 
-export async function askQuestion(params: {
-  datasetId: string
-  question: string
-  mode: 'voice' | 'chat'
-  userId: string
-  conversationId?: string | null
-}): Promise<{ answer: string; conversationId: string }> {
-  const startedAt = Date.now()
-  const res = await fetch(`${env.DIFY_API_BASE}/chat-messages`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.DIFY_WORKFLOW_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      inputs: { dataset_id: params.datasetId, mode: params.mode },
-      query: params.question,
-      response_mode: 'blocking',
-      user: params.userId,
-      conversation_id: params.conversationId || '',
-    }),
-    signal: AbortSignal.timeout(env.DIFY_CHATFLOW_TIMEOUT_MS),
-  })
-
-  if (!res.ok) {
-    throw new AppError(
-      'EXTERNAL_SERVICE_ERROR',
-      503,
-      `Dify Chatflow error: ${res.status} ${await res.text().catch(() => '')}`,
-    )
-  }
-
-  const data = (await res.json()) as { answer?: string; conversation_id?: string }
-  // LLM 輸出偶爾夾簡體 → 統一轉繁體（會直接顯示在會議聊天室 / TTS 念出）。
-  const answer = toTraditional(data.answer ?? '抱歉，無法取得回答。')
-
-  if (answer === DIFY_NO_RESULT_SENTINEL) {
-    // 靜默失效偵測：RAG 可能因 DIFY_DATASET_API_KEY 未設定而失效
-    logger.warn(
-      { datasetId: params.datasetId },
-      'Dify Chatflow returned no-result sentinel — check DIFY_DATASET_API_KEY in Dify platform env vars',
-    )
-  } else {
-    logger.info(
-      {
-        datasetId: params.datasetId,
-        userId: params.userId,
-        conversationId: data.conversation_id ?? '',
-        answerLength: answer.length,
-        difyMs: Date.now() - startedAt,
-      },
-      'Dify Chatflow answered (RAG hit)',
-    )
-  }
-
-  return { answer, conversationId: data.conversation_id ?? '' }
-}
-
-
 /**
  * 從一個 SSE frame 取出 JSON payload（純函式，匯出供測試）。
  *
@@ -250,21 +191,20 @@ export function parseSsePayload(frame: string): Record<string, unknown> | null {
 
 
 /**
- * 同上，但走 `response_mode: 'streaming'`（SSE）。**目前未被呼叫**，保留備用。
+ * RAG 問答（Dify Chatflow），走 `response_mode: 'streaming'`（SSE）。
  *
- * 相對 blocking 的三個好處（都與「答案生成速度」無關）：
- *   - 不會撞到閘道器對單一長請求的固定逾時
- *   - 記錄 `ttftMs`（首字延遲）——「邊生成邊唸」能省多少時間就看這個數字
- *   - `onDelta` 是「邊收邊唸」的掛鉤
+ * 2026-08-16 從 blocking 換過來。換的理由與「答案生成速度」無關——本函式仍然
+ * 等整段收完才回傳，呼叫端開口的時刻**沒有變快**。真正拿到的是：
+ *   - 不會撞到閘道器對單一長請求的固定逾時（blocking 下 45 秒的問題會直接斷）
+ *   - 記錄 `ttftMs`（首字延遲）——要不要做「邊生成邊唸」就看這個數字
+ *   - `onDelta` 是「邊收邊唸」的掛鉤（目前無人使用）
  *
- * 回傳契約與 {@link askQuestion} 完全相同（完整答案字串），可直接替換。
- *
- * ⚠️ `onDelta` 的兩個注意事項：
+ * ⚠️ 之後要把 `onDelta` 接去 TTS 之前，先處理這兩件事：
  *   1. `resolveAnswer` 的 Dify 錯誤重試會重跑一次，onDelta 會從頭再來一輪
  *   2. hybrid 意圖最後會用 LLM 重新合成，最終答案**不等於**串流出來的內容
- *   兩者都代表 onDelta 目前只適合做量測/預熱，拿去直接播音前要先處理。
+ *   在那之前 onDelta 只適合做量測/預熱。
  */
-export async function askQuestionStreaming(params: {
+export async function askQuestion(params: {
   datasetId: string
   question: string
   mode: 'voice' | 'chat'

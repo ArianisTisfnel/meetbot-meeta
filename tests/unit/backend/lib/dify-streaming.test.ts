@@ -10,7 +10,7 @@ vi.mock('../../../../backend/src/types/env', () => ({
   },
 }))
 
-import { askQuestionStreaming as askQuestion, parseSsePayload, DIFY_NO_RESULT_SENTINEL } from '../../../../backend/src/lib/dify'
+import { askQuestion, parseSsePayload, DIFY_NO_RESULT_SENTINEL } from '../../../../backend/src/lib/dify'
 
 /** 把整段 SSE 文字切成指定的位元組塊，模擬網路分塊到達。 */
 function streamOf(sse: string, splitAtBytes?: number[]) {
