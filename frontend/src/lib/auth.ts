@@ -1,9 +1,23 @@
 import type { NextAuthOptions } from 'next-auth'
 import GoogleProvider from 'next-auth/providers/google'
 
+/**
+ * 向後端內部端點換取 API token（登入流程的唯一發 token 路徑）。
+ *
+ * 回 null 時務必留下訊息：這裡失敗**不會**讓登入失敗——NextAuth 照樣建立 session，
+ * 只是 session.authToken 是 null，於是之後每一個 API 呼叫都丟 "Not authenticated"。
+ * 使用者看到的是「登入成功但全站壞掉」，若這裡靜默回 null 就沒有任何線索指向原因
+ * （移除 Vexa 之前還有 docker exec 後路兜著，現在沒有了）。
+ */
 async function getTokenViaBackend(email: string, name?: string | null): Promise<string | null> {
   const secret = process.env.INTERNAL_AUTH_SECRET
-  if (!secret) return null
+  if (!secret) {
+    console.error(
+      '[auth] INTERNAL_AUTH_SECRET 未設定 → 無法取得 API token，登入後所有 API 都會 401。' +
+        '請在 frontend/.env.local 與 backend/.env 設同一組值（start.ps1 會自動補齊）。',
+    )
+    return null
+  }
   const base = process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
   try {
     const res = await fetch(`${base}/internal/token`, {
@@ -11,10 +25,25 @@ async function getTokenViaBackend(email: string, name?: string | null): Promise<
       headers: { 'x-internal-secret': secret, 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, name }),
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      console.error(
+        `[auth] /internal/token 回 ${res.status} → 無法取得 API token。` +
+          (res.status === 401
+            ? ' 前後端的 INTERNAL_AUTH_SECRET 不一致。'
+            : res.status === 503
+              ? ' 後端沒設 INTERNAL_AUTH_SECRET（端點停用）。'
+              : ''),
+      )
+      return null
+    }
     const data = (await res.json()) as { token?: string }
-    return data.token ?? null
-  } catch {
+    if (!data.token) {
+      console.error('[auth] /internal/token 回 200 但沒有 token 欄位 → 無法取得 API token。')
+      return null
+    }
+    return data.token
+  } catch (err) {
+    console.error(`[auth] 呼叫 ${base}/internal/token 失敗（後端沒起來？）→ 無法取得 API token。`, err)
     return null
   }
 }

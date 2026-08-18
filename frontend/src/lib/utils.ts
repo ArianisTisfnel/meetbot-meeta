@@ -18,7 +18,7 @@ export function formatDate(dateStr: string | null): string {
 
 /**
  * 取得使用者的顯示名稱。
- * Vexa 的 public.users.name 常為 null，此時退而取 email 的 @ 前段，
+ * app.users.name 常為 null（Google 沒給顯示名稱時），此時退而取 email 的 @ 前段，
  * 避免「名稱」與「email」兩欄顯示相同字串。
  */
 export function displayName(
