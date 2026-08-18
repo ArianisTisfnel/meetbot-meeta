@@ -45,7 +45,9 @@ describe('createProject', () => {
 
     expect(result.role).toBe('owner')
     expect(result.permissions.canDelete).toBe(true)
-    expect(mockDify.createDataset).toHaveBeenCalledWith('Test Project')
+    expect(mockDify.createDataset).toHaveBeenCalledWith(
+      expect.stringMatching(/^Test Project-[0-9a-f]{8}$/),
+    )
     expect(mockPrisma.project.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ difyDatasetId: 'dataset-xyz', ownerUserId: 1 }),

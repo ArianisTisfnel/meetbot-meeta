@@ -94,6 +94,34 @@ export function UploadIcon(p: IconProps) {
   )
 }
 
+export function DownloadIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M8 2.5V10.5" />
+      <path d="m4.5 7 3.5 3.5L11.5 7" />
+      <path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2" />
+    </Svg>
+  )
+}
+
+export function ChevronDownIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M4 6l4 4 4-4" />
+    </Svg>
+  )
+}
+
+export function ReportIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M5.5 2.5h5a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h1" />
+      <path d="M5.75 1.5h4.5a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-4.5a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5z" />
+      <path d="M5.5 8.1 6.75 9.35 9.5 6.5" />
+    </Svg>
+  )
+}
+
 export function MailIcon(p: IconProps) {
   return (
     <Svg {...p}>
