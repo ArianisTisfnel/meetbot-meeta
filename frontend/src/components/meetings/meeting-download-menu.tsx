@@ -1,7 +1,8 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { ActionItem } from '@/types/api'
-import { useMeetingTranscript } from '@/hooks/use-meeting'
+import { meetingTranscriptQueryOptions } from '@/hooks/use-meeting'
 import { DownloadIcon, ChevronDownIcon, DocIcon, ReportIcon } from '@/components/ui/icons'
 import { cn, downloadTextFile, todayDateString } from '@/lib/utils'
 import { stripLegacyMarkdown } from './meeting-transcript'
@@ -47,8 +48,9 @@ function buildReportDocument(params: {
 }
 
 /**
- * 下載按鈕：點擊彈出「逐字稿／會議報告」二選一選單，點選單以外處關閉。
- * 逐字稿是懶載入——選了才發請求，避免每次進頁面都拉一份用不到的逐字稿。
+ * 下載按鈕：點擊彈出「逐字稿／會議報告」二選一選單，點選單以外處或按 Esc 關閉。
+ * 逐字稿是懶載入——選了才發請求（走 fetchQuery，與畫面上的逐字稿共用同一份快取），
+ * 避免每次進頁面都拉一份用不到的逐字稿。
  */
 export function MeetingDownloadMenu({
   projectId,
@@ -60,33 +62,11 @@ export function MeetingDownloadMenu({
   decisions,
 }: Props) {
   const [open, setOpen] = useState(false)
-  const [wantTranscript, setWantTranscript] = useState(false)
+  const [downloading, setDownloading] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const queryClient = useQueryClient()
 
   const reportReady = typeof summary === 'string' && summary.length > 0
-
-  const { data: transcriptData, isError: transcriptError } = useMeetingTranscript(
-    projectId,
-    meetingId,
-    wantTranscript,
-  )
-
-  useEffect(() => {
-    if (!wantTranscript || !transcriptData) return
-    setWantTranscript(false)
-    if (!transcriptData.markdown) {
-      toast.error('此次會議無逐字稿內容')
-      return
-    }
-    downloadTextFile(`會議逐字稿-${todayDateString()}.txt`, stripLegacyMarkdown(transcriptData.markdown))
-    toast.success('已下載會議逐字稿')
-  }, [wantTranscript, transcriptData])
-
-  useEffect(() => {
-    if (!wantTranscript || !transcriptError) return
-    setWantTranscript(false)
-    toast.error('逐字稿載入失敗，請稍後再試')
-  }, [wantTranscript, transcriptError])
 
   useEffect(() => {
     if (!open) return
@@ -95,14 +75,38 @@ export function MeetingDownloadMenu({
         setOpen(false)
       }
     }
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
     document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
   }, [open])
 
-  const handlePickTranscript = () => {
+  const handlePickTranscript = async () => {
     setOpen(false)
-    if (!hasTranscript) return
-    setWantTranscript(true)
+    if (!hasTranscript || downloading) return
+    setDownloading(true)
+    // 逐字稿存在 Storage，冷快取時可能等上數秒——先給 loading toast，別讓畫面看起來沒反應
+    const toastId = toast.loading('正在準備會議逐字稿…')
+    try {
+      const data = await queryClient.fetchQuery(
+        meetingTranscriptQueryOptions(projectId, meetingId),
+      )
+      if (!data.markdown) {
+        toast.error('此次會議無逐字稿內容', { id: toastId })
+        return
+      }
+      downloadTextFile(`會議逐字稿-${todayDateString()}.txt`, stripLegacyMarkdown(data.markdown))
+      toast.success('已下載會議逐字稿', { id: toastId })
+    } catch {
+      toast.error('逐字稿載入失敗，請稍後再試', { id: toastId })
+    } finally {
+      setDownloading(false)
+    }
   }
 
   const handlePickReport = () => {
@@ -123,23 +127,29 @@ export function MeetingDownloadMenu({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        disabled={downloading}
+        aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
-          'inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          'inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
           open && 'border-honey-deep bg-accent',
         )}
       >
         <DownloadIcon className="size-3.5" />
-        下載
+        {downloading ? '下載中…' : '下載'}
         <ChevronDownIcon className={cn('size-3 transition-transform', open && 'rotate-180')} />
       </button>
 
       {open && (
-        <div className="absolute left-0 top-[calc(100%+8px)] z-20 w-72 rounded-lg border bg-popover p-1.5 shadow-lg">
+        <div
+          role="menu"
+          className="absolute left-0 top-[calc(100%+8px)] z-20 w-72 rounded-lg border bg-popover p-1.5 shadow-lg"
+        >
           <button
             type="button"
+            role="menuitem"
             onClick={handlePickTranscript}
-            disabled={!hasTranscript}
+            disabled={!hasTranscript || downloading}
             className="flex w-full items-start gap-2.5 rounded-md p-2 text-left hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
           >
             <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-honey-deep">
@@ -155,6 +165,7 @@ export function MeetingDownloadMenu({
           <div className="my-1 h-px bg-border" />
           <button
             type="button"
+            role="menuitem"
             onClick={handlePickReport}
             disabled={!reportReady}
             className="flex w-full items-start gap-2.5 rounded-md p-2 text-left hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
@@ -165,7 +176,12 @@ export function MeetingDownloadMenu({
             <span className="flex flex-col gap-0.5">
               <span className="text-sm font-medium">下載會議報告</span>
               <span className="text-xs text-muted-foreground">
-                {reportReady ? '摘要、交辦事項與決議整理' : '摘要尚未生成'}
+                {/* summary sentinel：null = 還在生成（前端仍在輪詢）；'' = 已嘗試但無內容，不會再有 */}
+                {reportReady
+                  ? '摘要、交辦事項與決議整理'
+                  : summary === null
+                    ? '摘要生成中'
+                    : '此次會議無摘要'}
               </span>
             </span>
           </button>
