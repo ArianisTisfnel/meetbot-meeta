@@ -26,6 +26,7 @@
 | 裝新東西 | **不用做** | 沒有新的外部依賴 |
 | 重新登入 | **不用做** | 舊 token 會一起被遷移過來，瀏覽器裡的 session 繼續有效 |
 | 清 Vexa 容器 | **不用手動** | `docker compose up -d --remove-orphans` 會順手清掉 `meetbot-vexa-lite` |
+| 刪本機的 Vexa 殘留（約 11 GB） | **可做，但先確認順序** | 見下面「把 Vexa 從本機清乾淨」 |
 
 ---
 
@@ -96,6 +97,59 @@ npx prisma db execute --schema prisma/schema.prisma --file scripts/sql/02-post-d
 
 ---
 
+## 把 Vexa 從本機清乾淨（約可回收 11 GB）
+
+> ⚠️ **順序很重要：先跑過一次 `start.bat` 再刪。**
+> `public` schema 是身份資料遷移的**來源**，遷移沒跑就刪掉 = 你的專案永久認不回擁有者。
+> 確認方式：`app.users` 有資料就代表遷移完成了。
+
+```powershell
+# 0) 前提檢查：app.users 有資料嗎？（沒有就先跑 start.bat，別往下做）
+docker exec meetbot-postgres psql -U meetbot -d meetbot -c "SELECT id, email FROM app.users;"
+```
+
+### ① `vexa/` 資料夾（約 640 MB）
+
+submodule 已從 repo 移除，拉完新 code 之後它在你本機只是個沒人管的資料夾：
+
+```powershell
+git submodule deinit -f vexa 2>$null    # 舊 clone 才需要，報錯可忽略
+Remove-Item -Recurse -Force vexa
+Remove-Item -Recurse -Force ".git\modules\vexa" -ErrorAction SilentlyContinue
+```
+
+### ② Docker image 與 volume（約 10.5 GB，大頭）
+
+```powershell
+docker rmi vexaai/vexa-lite:latest
+docker volume rm meetbot_vexa-recordings meetbot_vexa-init-marker
+# 如果你當初有單獨跑過 vexa 自己的 compose，還會多一個：
+docker volume rm vexa_postgres-data
+```
+
+### ③ DB 的 `public` schema（小，但**不可逆**）
+
+裡面是 Vexa 的舊表。移除 Vexa 後**沒有任何程式碼會讀它**，
+`schemas = ["app"]` 下 db push 也不會動它，所以留著只是佔一點空間。
+
+要刪之前先確認裡面沒有你還想留的東西——尤其 `public.transcriptions`
+（Vexa 時代的原始逐字稿，**只存在這裡**，我們自己從來沒把 segment 落 DB）：
+
+```powershell
+docker exec meetbot-postgres psql -U meetbot -d meetbot -c "SELECT (SELECT count(*) FROM public.meetings) AS meetings, (SELECT count(*) FROM public.transcriptions) AS transcriptions;"
+
+# 先備份（想反悔時的唯一退路）
+docker exec meetbot-postgres pg_dump -U meetbot -d meetbot -n public > vexa-public-backup.sql
+
+# 確認過再刪
+docker exec meetbot-postgres psql -U meetbot -d meetbot -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+```
+
+> 最後那個 `CREATE SCHEMA public` 不要省略：很多 PostgreSQL 工具預設 search_path 指向它，
+> 整個 schema 不存在會讓一些連線工具報奇怪的錯。
+
+---
+
 ## 想把 .env 清乾淨（可選，不影響運作）
 
 `backend/.env` 這些已經沒有任何程式讀它們：
@@ -112,9 +166,7 @@ BOT_PRIMARY_PROVIDER / BOT_ADMISSION_TIMEOUT_MS
 VEXA_API_URL / VEXA_ADMIN_API_URL / VEXA_ADMIN_API_KEY
 ```
 
-DB 裡的 `public` schema（Vexa 的舊表）也可以留著——`schemas = ["app"]` 下
-db push 不會動它。確定不需要歷史資料後才 `DROP SCHEMA public CASCADE`，
-**別在遷移當天就刪**（那是身份資料遷移的來源）。
+DB 裡的 `public` schema 見上面「把 Vexa 從本機清乾淨 ③」。
 
 ---
 
