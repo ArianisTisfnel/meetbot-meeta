@@ -14,7 +14,12 @@ import {
   FOLLOWUP_WINDOW_MS,
   type AddressingState,
 } from '../../../../backend/src/sessions/addressing'
-import { parseTurnDecision } from '../../../../backend/src/sessions/response-policy'
+import {
+  parseTurnDecision,
+  dropQuestionCopiedFromEarlierEntry,
+  type TurnDecision,
+} from '../../../../backend/src/sessions/response-policy'
+import type { ConversationEntryLike } from '../../../../backend/src/sessions/interjection-prompts'
 
 const NOW = 1_700_000_000_000
 const fresh = (): AddressingState => ({ lastWakeAt: 0, lastEngagedAt: 0 })
@@ -247,5 +252,86 @@ describe('parseTurnDecision — 語意層輸出解析', () => {
 
   it('喚醒詞開頭的真問題不受影響', () => {
     expect(parseTurnDecision('{"addressed":"address","question":"蜜塔在嗎"}').question).toBe('蜜塔在嗎')
+  })
+})
+
+// 實測 2026-08-18（第 14 次真會議的同一類錯誤）：長會議裡蜜塔被叫過很多次時，
+// 模型會把前面某一則的問題原封不動搬來配給最後一則——最後一則只是「等一下」這種 STT 半句，
+// 卻配上第一則的「蜜塔，剛才誰在講資料庫搬遷」送去檢索。
+// prompt 那側已加了取材範圍、反例與 lastLineIsFiller 閘門，命中率上去但壓不到零，
+// 這一層是結構性的第二道防線（與 meaningfulQuestion 同一個設計）。
+describe('dropQuestionCopiedFromEarlierEntry — question 只能取自最後一則', () => {
+  const entry = (speaker: string, text: string): ConversationEntryLike => ({
+    speaker,
+    text,
+    source: 'voice',
+    fromBot: false,
+  })
+  const decision = (over: Partial<TurnDecision> = {}): TurnDecision => ({
+    addressed: 'address',
+    question: '',
+    intent: 'factual',
+    interject: false,
+    ...over,
+  })
+
+  const window = [
+    entry('Arianis', '蜜塔，剛才誰在講資料庫搬遷'),
+    entry('Arianis', '這個是'),
+    entry('Ray', '等一下'),
+  ]
+
+  it('逐字抄自前面某一則 → 抹成空字串（擷不出問題就閉嘴）', () => {
+    const d = dropQuestionCopiedFromEarlierEntry(
+      decision({ question: '蜜塔，剛才誰在講資料庫搬遷' }),
+      window,
+    )
+    expect(d.question).toBe('')
+    expect(d.addressed).toBe('address') // 只動 question，退回方向仍由呼叫端決定
+  })
+
+  it('抄前面那一則、但把喚醒詞剝掉了也要擋', () => {
+    expect(
+      dropQuestionCopiedFromEarlierEntry(decision({ question: '剛才誰在講資料庫搬遷' }), window).question,
+    ).toBe('')
+  })
+
+  it('取自最後一則 → 不動', () => {
+    const w = [entry('Arianis', '蜜塔，報名截止日是什麼時候'), entry('Arianis', '那名額有限制嗎')]
+    expect(
+      dropQuestionCopiedFromEarlierEntry(decision({ question: '那名額有限制嗎' }), w).question,
+    ).toBe('那名額有限制嗎')
+  })
+
+  it('最後一則的忠實濃縮不算抄襲（判準刻意只認逐字相同）', () => {
+    const w = [entry('小華', '先講進度'), entry('小明', '蜜塔，我想問報名截止日是什麼時候啊')]
+    expect(
+      dropQuestionCopiedFromEarlierEntry(decision({ question: '報名截止日是什麼時候' }), w).question,
+    ).toBe('報名截止日是什麼時候')
+  })
+
+  it('有人重複講同一句話 → 不誤殺（最後一則本身就是那句）', () => {
+    const w = [entry('小明', '蜜塔，報名截止日是什麼時候'), entry('小明', '蜜塔，報名截止日是什麼時候')]
+    expect(
+      dropQuestionCopiedFromEarlierEntry(decision({ question: '蜜塔，報名截止日是什麼時候' }), w).question,
+    ).toBe('蜜塔，報名截止日是什麼時候')
+  })
+
+  // 兩個出口的取材範圍相反：插話本來就該去撿被閒聊蓋過去、沒人回答的問題。
+  it('addressed 不是 address 時完全不生效（插話出口不可被波及）', () => {
+    const w = [entry('小明', '初賽是線上還是要到現場啊？'), entry('小華', '等等要不要順便訂飲料')]
+    const d = dropQuestionCopiedFromEarlierEntry(
+      decision({ addressed: 'none', interject: true, question: '初賽是線上還是要到現場啊？' }),
+      w,
+    )
+    expect(d.question).toBe('初賽是線上還是要到現場啊？')
+  })
+
+  it('窗只有一則、或 question 為空 → 直接放行', () => {
+    const w = [entry('小明', '蜜塔，報名截止日是什麼時候')]
+    expect(
+      dropQuestionCopiedFromEarlierEntry(decision({ question: '蜜塔，報名截止日是什麼時候' }), w).question,
+    ).toBe('蜜塔，報名截止日是什麼時候')
+    expect(dropQuestionCopiedFromEarlierEntry(decision({ question: '' }), window).question).toBe('')
   })
 })

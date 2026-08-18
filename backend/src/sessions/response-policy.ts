@@ -16,7 +16,7 @@
  */
 import { completeText } from '../lib/llm.js'
 import { logger } from '../middleware/logger.js'
-import { WAKE_WORD_REGEX } from './addressing.js'
+import { WAKE_WORD_REGEX, stripLeadingPunct } from './addressing.js'
 import type { AnswerRoute } from './reply-tags.js'
 import type { ConversationEntryLike } from './interjection-prompts.js'
 import { formatConversation, TURN_DECISION_SYSTEM } from './interjection-prompts.js'
@@ -105,7 +105,7 @@ export async function decideTurn(params: {
       temperature: 0, // 判定要穩定：同一段對話必須永遠同一個結果
       purpose: 'interjection',
     })
-    return parseTurnDecision(raw)
+    return dropQuestionCopiedFromEarlierEntry(parseTurnDecision(raw), params.window)
   } catch (err) {
     logger.warn({ err }, 'decideTurn failed')
     return FAILED_DECISION
@@ -159,4 +159,50 @@ const WAKE_WORD_ONLY_REGEX = new RegExp(
  */
 function meaningfulQuestion(question: string): string {
   return question && WAKE_WORD_ONLY_REGEX.test(question) ? '' : question
+}
+
+/**
+ * `addressed=address` 時，question 只能取自**最後一則**（prompt ② 段的規則）。
+ *
+ * 實測 2026-08-18：長會議裡蜜塔被叫過很多次時，模型會把**前面某一則**的問題原封不動搬過來
+ * 當成本輪要回答的題目——最後一則明明只是「等一下」這種 STT 半句，卻配上第一則的
+ * 「蜜塔，剛才誰在講資料庫搬遷」送去檢索。prompt 那側已寫明取材範圍、加了反例、
+ * 也加了機械式的 `lastLineIsFiller` 閘門，命中率上去了但壓不到零（temperature 已經是 0）。
+ *
+ * 與上面的 {@link meaningfulQuestion} 同一個設計：**一定成立的約束放到解析後的結構層**，
+ * 線上與離線評測才不會只有一邊擋得住。兩個刻意的窄化：
+ *   1. 只認**逐字相同**，不碰忠實濃縮——prompt 允許濃縮，收太寬會誤殺正常回答；
+ *   2. **只在 addressed=address 時生效**——插話那個出口本來就該去撿前面沒人回答的問題
+ *      （見 TURN_DECISION_SYSTEM ② 段：兩個出口的取材範圍相反）。
+ *
+ * 抹成空字串而不是改判 none 是刻意的：兩個呼叫端都寫成「判 address 卻擷不出問題就閉嘴」，
+ * 沿用那條既有路徑，不必在本檔重複決定退回方向。
+ */
+export function dropQuestionCopiedFromEarlierEntry(
+  decision: TurnDecision,
+  window: ConversationEntryLike[],
+): TurnDecision {
+  if (decision.addressed !== 'address' || !decision.question || window.length < 2) return decision
+
+  const norm = (s: string) => stripLeadingPunct(s).trim()
+  const question = norm(decision.question)
+  if (!question) return decision
+
+  // 最後一則本身就包含這個問題 → 合法（含有人重複講同一句話的情形），不動。
+  const last = norm(window[window.length - 1]?.text ?? '')
+  if (last && last.includes(question)) return decision
+
+  const copied = window.slice(0, -1).some((entry) => {
+    const text = norm(entry.text)
+    if (!text) return false
+    // 前面那一則可能帶著喚醒詞（「蜜塔，剛才誰在講X」），剝掉再比一次
+    return text === question || norm(text.replace(WAKE_WORD_REGEX, '')) === question
+  })
+  if (!copied) return decision
+
+  logger.warn(
+    { question: decision.question.slice(0, 60) },
+    'decideTurn: question copied verbatim from an earlier entry -> dropped (see prompt ② 取材範圍)',
+  )
+  return { ...decision, question: '' }
 }

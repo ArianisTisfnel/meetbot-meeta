@@ -330,6 +330,105 @@
           "why": "叫停之後再問新問題必須照常回應——叫停不是把蜜塔關掉"
         }
       ]
+    },
+    {
+      "name": "A.5 整場簡報蜜塔本身：反覆提到她但沒有在叫她",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，上次會議的重點是什麼",
+          "expect": { "respond": true },
+          "why": "開場真的問了她一次——後面每一則都落在 90 秒成本閘門內，判準只能靠語意層。這裡只驗有沒有回應，不驗路由（走 rag 或 transcript 取決於知識庫收了什麼）"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "接下來第二段是如果只叫名字，蜜塔會不會回應，因為上一版有這個問題",
+          "gapMs": 8000,
+          "expect": { "respond": false },
+          "why": "在簡報她的測試段落，不是在叫她"
+        },
+        {
+          "speaker": "Ray",
+          "text": "對，那時候只要提到蜜塔加逗號她就會去檢索，很奇怪",
+          "gapMs": 6000,
+          "expect": { "respond": false },
+          "why": "在檢討她過去的行為 → mention"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "然後這邊就是蜜塔的冷場插話，可以看到她有幫我們整理前面的問題",
+          "gapMs": 7000,
+          "expect": { "respond": false },
+          "why": "「蜜塔的X」是的字結構 → mention"
+        }
+      ]
+    },
+    {
+      "name": "A.6 唸稿：照唸規格文字裡的喚醒詞",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，這場會的知識庫掛好了嗎",
+          "expect": { "respond": true },
+          "why": "先真的問一次，把追問窗打開"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "我唸一下文件：本系統的助理名為蜜塔（Meeta），與會者會喊「蜜塔」來提問",
+          "gapMs": 9000,
+          "expect": { "respond": false },
+          "why": "照唸說明文字，引號裡的喚醒詞不是呼叫（2026-08-18 真會議連續誤觸三次）"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "喚醒詞包含蜜塔、Meeta 跟一些常見的誤轉錄字",
+          "gapMs": 5000,
+          "expect": { "respond": false },
+          "why": "同上，仍在唸規格"
+        }
+      ]
+    },
+    {
+      "name": "A.7 追問窗內的殘缺片段與全場招呼",
+      "kb": true,
+      "turns": [
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，剛才誰在講資料庫搬遷",
+          "expect": { "respond": true, "route": "transcript" },
+          "why": "正常提問，打開追問窗"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "這個是",
+          "gapMs": 6000,
+          "expect": { "respond": false },
+          "why": "STT 切出來的半句，沒有完整語意（2026-08-18 真會議誤答）"
+        },
+        {
+          "speaker": "Ray",
+          "text": "等一下",
+          "gapMs": 4000,
+          "expect": { "respond": false },
+          "why": "殘缺片段，且是講給人聽的"
+        },
+        {
+          "speaker": "小華",
+          "text": "大家好",
+          "gapMs": 7000,
+          "expect": { "respond": false },
+          "why": "對全場打招呼，不是對蜜塔（2026-08-18 真會議誤答）"
+        },
+        {
+          "speaker": "Arianis",
+          "text": "那他有說搬到哪裡嗎",
+          "gapMs": 6000,
+          "expect": { "respond": true },
+          "why": "哨兵：擋掉片段之後，真正的追問仍要接得住（只驗有沒有回應，路由不設限）"
+        }
+      ]
     }
   ]
 }
