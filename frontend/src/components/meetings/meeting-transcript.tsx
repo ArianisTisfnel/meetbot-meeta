@@ -14,7 +14,7 @@ interface Props {
  * 內容為後端存進 Storage 的純文字（`[mm:ss] speaker: text` 逐行），原樣呈現。
  * stripLegacyMarkdown：清掉舊版檔案殘留的「# 會議逐字稿」標題與 ** 粗體標記。
  */
-function stripLegacyMarkdown(text: string): string {
+export function stripLegacyMarkdown(text: string): string {
   return text
     .replace(/^#\s*會議逐字稿\s*\n+/, '')
     .replace(/\*\*/g, '')

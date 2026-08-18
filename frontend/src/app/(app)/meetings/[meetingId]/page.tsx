@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useMeeting, useBotLeave } from '@/hooks/use-meeting'
 import { LiveTranscript } from '@/components/meetings/live-transcript'
 import { MeetingSummary } from '@/components/meetings/meeting-summary'
+import { MeetingDownloadMenu } from '@/components/meetings/meeting-download-menu'
 import { MeetingTranscript } from '@/components/meetings/meeting-transcript'
 import { DeleteMeetingButton } from '@/components/meetings/delete-meeting-button'
 import { BotStatusIndicator } from '@/components/meetings/bot-status-indicator'
@@ -110,6 +111,15 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
 
       {meeting.status === 'ENDED' && (
         <>
+          <MeetingDownloadMenu
+            projectId={null}
+            meetingId={meetingId}
+            hasTranscript={meeting.hasTranscript}
+            summary={meeting.summary}
+            actionItems={meeting.actionItems}
+            keyTopics={meeting.keyTopics}
+            decisions={meeting.decisions}
+          />
           <MeetingSummary
             summary={meeting.summary}
             actionItems={meeting.actionItems}
