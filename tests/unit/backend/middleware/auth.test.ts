@@ -6,27 +6,28 @@ vi.mock('../../../../backend/src/lib/prisma', () => ({
 }))
 
 import { Hono } from 'hono'
-import { authMiddleware, requireBotScopes } from '../../../../backend/src/middleware/auth'
-
-// ── helpers ──────────────────────────────────────────────────────────
+import { authMiddleware } from '../../../../backend/src/middleware/auth'
 
 function createApp() {
   const app = new Hono()
   app.use('*', authMiddleware)
   app.get('/test', (c) =>
     c.json({
-      vexaUserId: c.get('vexaUserId' as never),
-      vexaToken: c.get('vexaToken' as never),
-      vexaTokenScopes: c.get('vexaTokenScopes' as never),
+      userId: c.get('userId' as never),
+      userEmail: c.get('userEmail' as never),
+      userName: c.get('userName' as never),
     }),
   )
   return app
 }
 
-const VALID_TOKEN_ROW = [{ user_id: 1, id: 42, scopes: ['bot', 'browser', 'tx'] }]
-const VALID_USER_ROW = [{ id: 1, email: 'test@example.com', name: 'Test User', max_concurrent_bots: 1 }]
-
-// ── authMiddleware ────────────────────────────────────────────────────
+const VALID_TOKEN_WITH_USER = {
+  id: 42,
+  token: 'valid-token',
+  userId: 1,
+  expiresAt: null,
+  user: { id: 1, email: 'test@example.com', name: 'Test User', maxConcurrentBots: 1 },
+}
 
 describe('authMiddleware', () => {
   beforeEach(() => {
@@ -42,7 +43,7 @@ describe('authMiddleware', () => {
   })
 
   it('returns 401 when token does not exist in db', async () => {
-    mockPrisma.$queryRaw.mockResolvedValueOnce([])
+    mockPrisma.userToken.findUnique.mockResolvedValueOnce(null)
     const app = createApp()
     const res = await app.request('/test', {
       headers: { Authorization: 'Bearer invalid-token' },
@@ -52,10 +53,11 @@ describe('authMiddleware', () => {
     expect(body.error_code).toBe('UNAUTHORIZED')
   })
 
-  it('returns 401 when token is expired (query returns empty due to expires_at filter)', async () => {
-    // The SQL query already filters: expires_at IS NULL OR expires_at > NOW()
-    // An expired token yields an empty result set — same as non-existent token
-    mockPrisma.$queryRaw.mockResolvedValueOnce([])
+  it('returns 401 when token is expired', async () => {
+    mockPrisma.userToken.findUnique.mockResolvedValueOnce({
+      ...VALID_TOKEN_WITH_USER,
+      expiresAt: new Date(Date.now() - 1000),
+    })
     const app = createApp()
     const res = await app.request('/test', {
       headers: { Authorization: 'Bearer expired-token' },
@@ -65,10 +67,8 @@ describe('authMiddleware', () => {
     expect(body.error_code).toBe('UNAUTHORIZED')
   })
 
-  it('injects vexaUserId, vexaToken, vexaTokenScopes on valid token', async () => {
-    mockPrisma.$queryRaw
-      .mockResolvedValueOnce(VALID_TOKEN_ROW)
-      .mockResolvedValueOnce(VALID_USER_ROW)
+  it('injects userId, userEmail, userName on valid token', async () => {
+    mockPrisma.userToken.findUnique.mockResolvedValueOnce(VALID_TOKEN_WITH_USER)
 
     const app = createApp()
     const res = await app.request('/test', {
@@ -76,58 +76,8 @@ describe('authMiddleware', () => {
     })
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.vexaUserId).toBe(1)
-    expect(body.vexaToken).toBe('valid-token')
-    expect(body.vexaTokenScopes).toEqual(['bot', 'browser', 'tx'])
-  })
-})
-
-// ── requireBotScopes ─────────────────────────────────────────────────
-
-describe('requireBotScopes', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('returns null when all required scopes are present', async () => {
-    mockPrisma.$queryRaw
-      .mockResolvedValueOnce(VALID_TOKEN_ROW)
-      .mockResolvedValueOnce(VALID_USER_ROW)
-
-    let result: Response | null = null
-    const app = new Hono()
-    app.use('*', authMiddleware)
-    app.get('/test', (c) => {
-      result = requireBotScopes(c as never)
-      return result ?? c.json({ ok: true })
-    })
-
-    const res = await app.request('/test', {
-      headers: { Authorization: 'Bearer valid-token' },
-    })
-    expect(res.status).toBe(200)
-    expect(result).toBeNull()
-  })
-
-  it('returns 403 INSUFFICIENT_SCOPE with missing scopes when tx is absent', async () => {
-    const tokenRowNoTx = [{ user_id: 1, id: 42, scopes: ['bot', 'browser'] }]
-    mockPrisma.$queryRaw
-      .mockResolvedValueOnce(tokenRowNoTx)
-      .mockResolvedValueOnce(VALID_USER_ROW)
-
-    const app = new Hono()
-    app.use('*', authMiddleware)
-    app.get('/test', (c) => {
-      const err = requireBotScopes(c as never)
-      return err ?? c.json({ ok: true })
-    })
-
-    const res = await app.request('/test', {
-      headers: { Authorization: 'Bearer partial-scope-token' },
-    })
-    expect(res.status).toBe(403)
-    const body = await res.json()
-    expect(body.error_code).toBe('INSUFFICIENT_SCOPE')
-    expect(body.details.missing).toContain('tx')
+    expect(body.userId).toBe(1)
+    expect(body.userEmail).toBe('test@example.com')
+    expect(body.userName).toBe('Test User')
   })
 })

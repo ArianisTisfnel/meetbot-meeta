@@ -1,60 +1,23 @@
-import { execFileSync } from 'child_process'
 import type { NextAuthOptions } from 'next-auth'
 import GoogleProvider from 'next-auth/providers/google'
 
-const VEXA_ADMIN_API_KEY = process.env.VEXA_ADMIN_API_KEY ?? ''
-
-// Admin API (8057) only binds to 127.0.0.1 inside the container, so Docker port
-// forwarding can't reach it. We use docker exec to call it from within the container.
-function getVexaContainerId(): string | null {
-  try {
-    // 1) 先用 ancestor 精確過濾。
-    const byAncestor = execFileSync(
-      'docker',
-      ['ps', '--filter', 'ancestor=vexaai/vexa-lite:latest', '-q'],
-      { timeout: 3000 },
-    )
-      .toString()
-      .trim()
-      .split('\n')
-      .filter(Boolean)[0]
-    if (byAncestor) return byAncestor
-
-    // 2) Fallback：當 vexaai/vexa-lite:latest tag 飄移（被重新 pull 指到新 image，
-    //    但執行中的容器仍是舊 image）時，ancestor filter 會失效。改列出所有執行中
-    //    容器、比對其「建立時的 image 名稱」前綴，避開 tag 飄移問題。
-    const ids = execFileSync('docker', ['ps', '-q'], { timeout: 3000 })
-      .toString()
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-    for (const id of ids) {
-      const image = execFileSync('docker', ['inspect', id, '--format', '{{.Config.Image}}'], {
-        timeout: 3000,
-      })
-        .toString()
-        .trim()
-      if (image.startsWith('vexaai/vexa-lite')) return id
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-function dockerExecCurl(containerId: string, args: string[]): unknown {
-  const result = execFileSync('docker', ['exec', containerId, 'curl', '-s', ...args], { timeout: 8000 })
-  return JSON.parse(result.toString())
-}
-
 /**
- * 優先路徑：請後端（有 DB 存取）直接 get-or-create 使用者與 token，
- * 登入不再依賴 vexa-lite 容器。INTERNAL_AUTH_SECRET 未設定時回 null，
- * 由呼叫端退回 docker exec 舊路。
+ * 向後端內部端點換取 API token（登入流程的唯一發 token 路徑）。
+ *
+ * 回 null 時務必留下訊息：這裡失敗**不會**讓登入失敗——NextAuth 照樣建立 session，
+ * 只是 session.authToken 是 null，於是之後每一個 API 呼叫都丟 "Not authenticated"。
+ * 使用者看到的是「登入成功但全站壞掉」，若這裡靜默回 null 就沒有任何線索指向原因
+ * （移除 Vexa 之前還有 docker exec 後路兜著，現在沒有了）。
  */
 async function getTokenViaBackend(email: string, name?: string | null): Promise<string | null> {
   const secret = process.env.INTERNAL_AUTH_SECRET
-  if (!secret) return null
+  if (!secret) {
+    console.error(
+      '[auth] INTERNAL_AUTH_SECRET 未設定 → 無法取得 API token，登入後所有 API 都會 401。' +
+        '請在 frontend/.env.local 與 backend/.env 設同一組值（start.ps1 會自動補齊）。',
+    )
+    return null
+  }
   const base = process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
   try {
     const res = await fetch(`${base}/internal/token`, {
@@ -62,40 +25,25 @@ async function getTokenViaBackend(email: string, name?: string | null): Promise<
       headers: { 'x-internal-secret': secret, 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, name }),
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      console.error(
+        `[auth] /internal/token 回 ${res.status} → 無法取得 API token。` +
+          (res.status === 401
+            ? ' 前後端的 INTERNAL_AUTH_SECRET 不一致。'
+            : res.status === 503
+              ? ' 後端沒設 INTERNAL_AUTH_SECRET（端點停用）。'
+              : ''),
+      )
+      return null
+    }
     const data = (await res.json()) as { token?: string }
-    return data.token ?? null
-  } catch {
-    return null
-  }
-}
-
-async function getOrCreateVexaToken(email: string, name?: string | null): Promise<string | null> {
-  const containerId = getVexaContainerId()
-  if (!containerId) return null
-
-  try {
-    // 帶上 Google 的顯示名稱，讓 Vexa public.users.name 有值
-    // （否則成員列表只能 fallback 顯示 email 前段，見 U8/U16）
-    const body: { email: string; name?: string } = { email }
-    if (name) body.name = name
-
-    const user = dockerExecCurl(containerId, [
-      '-X', 'POST',
-      '-H', `X-Admin-API-Key: ${VEXA_ADMIN_API_KEY}`,
-      '-H', 'Content-Type: application/json',
-      '-d', JSON.stringify(body),
-      'http://localhost:8057/admin/users',
-    ]) as { id?: number }
-    if (!user.id) return null
-
-    const token = dockerExecCurl(containerId, [
-      '-X', 'POST',
-      '-H', `X-Admin-API-Key: ${VEXA_ADMIN_API_KEY}`,
-      `http://localhost:8057/admin/users/${user.id}/tokens?scopes=bot,browser,tx`,
-    ]) as { token?: string }
-    return token.token ?? null
-  } catch {
+    if (!data.token) {
+      console.error('[auth] /internal/token 回 200 但沒有 token 欄位 → 無法取得 API token。')
+      return null
+    }
+    return data.token
+  } catch (err) {
+    console.error(`[auth] 呼叫 ${base}/internal/token 失敗（後端沒起來？）→ 無法取得 API token。`, err)
     return null
   }
 }
@@ -118,11 +66,8 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async jwt({ token, account, profile }) {
       if (account && profile?.email) {
-        // 優先走後端內部端點（免 Docker）；未設定密鑰或後端不在時退回容器舊路
-        const vexaToken =
-          (await getTokenViaBackend(profile.email, profile.name)) ??
-          (await getOrCreateVexaToken(profile.email, profile.name))
-        token.vexaToken = vexaToken
+        const authToken = await getTokenViaBackend(profile.email, profile.name)
+        token.authToken = authToken
       }
       if (account) {
         // Google access token（約 1 小時效期）：一鍵建立會議的 Calendar API 呼叫用。
@@ -133,7 +78,7 @@ export const authOptions: NextAuthOptions = {
       return token
     },
     async session({ session, token }) {
-      ;(session as any).vexaToken = token.vexaToken
+      ;(session as any).authToken = token.authToken
       ;(session as any).googleAccessToken = token.googleAccessToken
       ;(session as any).googleAccessTokenExpires = token.googleAccessTokenExpires
       return session

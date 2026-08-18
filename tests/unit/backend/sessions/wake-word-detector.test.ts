@@ -55,7 +55,7 @@ import type { MeetingSession } from '../../../../backend/src/types/session'
 import type { BotSession } from '../../../../backend/src/provider/types'
 
 const fakeBotSession: BotSession = {
-  provider: 'vexa',
+  provider: 'recall',
   platform: 'google_meet',
   nativeMeetingId: 'abc-defg-hij',
   providerMeetingId: 42,
@@ -66,11 +66,9 @@ const fakeBotSession: BotSession = {
 function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
   return {
     meetingInstanceId: 'meet-1',
-    vexaMeetingId: 1,
     platform: 'google_meet',
     nativeMeetingId: 'abc-defg-hij',
     difyDatasetId: 'dataset-abc',
-    creatorVexaToken: 'tok-123',
     isSpeaking: false,
     lastWakeAt: 0,
     lastEngagedAt: 0,
@@ -328,7 +326,7 @@ describe('喚醒詞剝除後的開頭標點清理', () => {
       sender: 'User',
       text: 'Meeta. 報名費多少?',
       timestamp: Date.now(),
-      is_from_bot: false,
+      isFromBot: false,
     })
     // 第一則是 ack，答案在後面；檢查送進 Dify 的問題不帶前置句點
     const dify = await import('../../../../backend/src/lib/dify')
@@ -386,7 +384,7 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
       sender: 'User',
       text: '蜜塔 報名費是多少',
       timestamp: Date.now(),
-      is_from_bot: false,
+      isFromBot: false,
     })
     const texts = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
     // 哨兵句沒有標點，是給程式精確比對用的內部訊號，不該原樣呈現給使用者
@@ -431,7 +429,7 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
       sender: 'User',
       text: '蜜塔，我們剛剛的結論是什麼',
       timestamp: Date.now(),
-      is_from_bot: false,
+      isFromBot: false,
     })
     const chats = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
     expect(chats.some((t) => t.startsWith('【會議記錄】'))).toBe(true)
@@ -568,7 +566,7 @@ describe('answerFromTranscript — 純文字會議的脈絡來源', () => {
     await handleChatMessage(session, {
       sender: '小明',
       text: '蜜塔 我們剛剛的結論是什麼？',
-      is_from_bot: false,
+      isFromBot: false,
     } as any)
     const texts = mockBotProvider.sendChat.mock.calls.map((c: any[]) => String(c[1]))
     expect(texts.some((t) => t.includes('Claude 回答'))).toBe(true)
@@ -584,13 +582,13 @@ describe('handleChatMessage — 聊天室喚醒詞', () => {
     vi.clearAllMocks()
   })
 
-  it('聊天室輸入 is_from_bot: true → 不處理', async () => {
+  it('聊天室輸入 isFromBot: true → 不處理', async () => {
     const session = makeSession()
     await handleChatMessage(session, {
       sender: 'Bot',
       text: '蜜塔，Bot 自己說的',
       timestamp: Date.now(),
-      is_from_bot: true,
+      isFromBot: true,
     })
     expect(mockBotProvider.sendChat).not.toHaveBeenCalled()
   })
@@ -601,7 +599,7 @@ describe('handleChatMessage — 聊天室喚醒詞', () => {
       sender: 'User',
       text: '蜜塔，這份文件是什麼？',
       timestamp: Date.now(),
-      is_from_bot: false,
+      isFromBot: false,
     })
     expect(mockBotProvider.sendChat).toHaveBeenCalled()
   })

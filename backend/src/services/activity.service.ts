@@ -1,5 +1,5 @@
-import { Prisma } from '@prisma/client'
 import type { ActivityAction } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
@@ -9,7 +9,7 @@ import { logger } from '../middleware/logger.js'
  */
 export async function recordActivity(params: {
   projectId: string
-  actorVexaUserId: number
+  actorUserId: number
   action: ActivityAction
   targetLabel: string
   metadata?: Prisma.InputJsonValue
@@ -18,7 +18,7 @@ export async function recordActivity(params: {
     await prisma.activityLog.create({
       data: {
         projectId: params.projectId,
-        actorVexaUserId: params.actorVexaUserId,
+        actorUserId: params.actorUserId,
         action: params.action,
         targetLabel: params.targetLabel,
         metadata: params.metadata,
@@ -34,16 +34,15 @@ export async function recordActivity(params: {
  */
 export async function listActivity(
   projectId: string,
-  vexaUserId: number,
+  userId: number,
   params: { page?: number; perPage?: number } = {},
 ) {
-  // 存取權限檢查（擁有者或具任一權限的成員）
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
-    include: { members: { where: { vexaUserId } } },
+    include: { members: { where: { userId } } },
   })
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
-  const isOwner = project.ownerVexaUserId === vexaUserId
+  const isOwner = project.ownerUserId === userId
   if (!isOwner) {
     const m = project.members[0]
     if (!m || (!m.canView && !m.canEdit && !m.canMeeting)) {
@@ -63,13 +62,14 @@ export async function listActivity(
     prisma.activityLog.count({ where: { projectId } }),
   ])
 
-  const actorIds = [...new Set(items.map((i) => i.actorVexaUserId))]
-  let actorMap = new Map<number, { email: string | null; name: string | null }>()
+  const actorIds = [...new Set(items.map((i) => i.actorUserId))]
+  let actorMap = new Map<number, { email: string; name: string | null }>()
   if (actorIds.length > 0) {
-    const rows = await prisma.$queryRaw<Array<{ id: number; email: string | null; name: string | null }>>`
-      SELECT id, email, name FROM public.users WHERE id IN (${Prisma.join(actorIds)})
-    `
-    actorMap = new Map(rows.map((r) => [r.id, { email: r.email, name: r.name }]))
+    const users = await prisma.user.findMany({
+      where: { id: { in: actorIds } },
+      select: { id: true, email: true, name: true },
+    })
+    actorMap = new Map(users.map((u) => [u.id, { email: u.email, name: u.name }]))
   }
 
   return {
@@ -79,9 +79,9 @@ export async function listActivity(
       targetLabel: i.targetLabel,
       metadata: i.metadata ?? null,
       actor: {
-        vexaUserId: i.actorVexaUserId,
-        email: actorMap.get(i.actorVexaUserId)?.email ?? null,
-        name: actorMap.get(i.actorVexaUserId)?.name ?? null,
+        userId: i.actorUserId,
+        email: actorMap.get(i.actorUserId)?.email ?? null,
+        name: actorMap.get(i.actorUserId)?.name ?? null,
       },
       createdAt: i.createdAt,
     })),

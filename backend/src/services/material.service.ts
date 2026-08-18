@@ -20,14 +20,14 @@ function sha256(buffer: Buffer): string {
   return crypto.createHash('sha256').update(buffer).digest('hex')
 }
 
-async function requireEditAccess(projectId: string, vexaUserId: number) {
+async function requireEditAccess(projectId: string, userId: number) {
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
-    include: { members: { where: { vexaUserId } } },
+    include: { members: { where: { userId } } },
   })
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
 
-  const isOwner = project.ownerVexaUserId === vexaUserId
+  const isOwner = project.ownerUserId === userId
   if (isOwner) return project
 
   const m = project.members[0]
@@ -37,14 +37,14 @@ async function requireEditAccess(projectId: string, vexaUserId: number) {
   return project
 }
 
-async function requireViewAccess(projectId: string, vexaUserId: number) {
+async function requireViewAccess(projectId: string, userId: number) {
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
-    include: { members: { where: { vexaUserId } } },
+    include: { members: { where: { userId } } },
   })
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
 
-  const isOwner = project.ownerVexaUserId === vexaUserId
+  const isOwner = project.ownerUserId === userId
   if (isOwner) return project
 
   const m = project.members[0]
@@ -56,7 +56,7 @@ async function requireViewAccess(projectId: string, vexaUserId: number) {
 
 export async function uploadMaterial(
   projectId: string,
-  vexaUserId: number,
+  userId: number,
   file: {
     buffer: Buffer
     filename: string
@@ -72,7 +72,7 @@ export async function uploadMaterial(
     throw new AppError('FILE_TOO_LARGE', 413, '檔案大小超過 15 MB 限制')
   }
 
-  const project = await requireEditAccess(projectId, vexaUserId)
+  const project = await requireEditAccess(projectId, userId)
 
   // ② SHA-256 deduplication
   const hash = sha256(file.buffer)
@@ -139,7 +139,7 @@ export async function uploadMaterial(
         storagePath,
         difyDocumentId: documentId,
         difyBatch: batch,
-        uploadedByVexaUserId: vexaUserId,
+        uploadedByUserId: userId,
       },
     })
   } catch (err) {
@@ -167,21 +167,22 @@ export async function uploadMaterial(
         materialId: material.id,
         action: 'UPLOAD',
         filenameSnapshot: file.filename,
-        performedByVexaUserId: vexaUserId,
+        performedByUserId: userId,
       },
     })
     .catch((e: unknown) => logger.error({ err: e }, 'Failed to write MaterialEditHistory for UPLOAD'))
 
   await recordActivity({
     projectId,
-    actorVexaUserId: vexaUserId,
+    actorUserId: userId,
     action: 'MATERIAL_UPLOAD',
     targetLabel: file.filename,
   })
 
-  const uploaderRows = await prisma.$queryRaw<Array<{ id: number; name: string | null }>>`
-    SELECT id, name FROM public.users WHERE id = ${vexaUserId} LIMIT 1
-  `
+  const uploader = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, name: true },
+  })
 
   return {
     id: material.id,
@@ -191,8 +192,8 @@ export async function uploadMaterial(
     mimeType: material.mimeType,
     indexingStatus: material.indexingStatus,
     uploadedBy: {
-      vexaUserId,
-      name: uploaderRows[0]?.name ?? null,
+      userId,
+      name: uploader?.name ?? null,
     },
     uploadedAt: material.uploadedAt,
   }
@@ -200,10 +201,10 @@ export async function uploadMaterial(
 
 export async function listMaterials(
   projectId: string,
-  vexaUserId: number,
+  userId: number,
   params: { page?: number; perPage?: number; status?: string } = {},
 ) {
-  await requireViewAccess(projectId, vexaUserId)
+  await requireViewAccess(projectId, userId)
 
   const { page = 1, perPage = 20, status } = params
 
@@ -222,13 +223,14 @@ export async function listMaterials(
     prisma.material.count({ where }),
   ])
 
-  const uploaderIds = [...new Set(materials.map((m) => m.uploadedByVexaUserId))]
+  const uploaderIds = [...new Set(materials.map((m) => m.uploadedByUserId))]
   let uploaderMap = new Map<number, { name: string | null }>()
   if (uploaderIds.length > 0) {
-    const rows = await prisma.$queryRaw<Array<{ id: number; name: string | null }>>`
-      SELECT id, name FROM public.users WHERE id IN (${Prisma.join(uploaderIds)})
-    `
-    uploaderMap = new Map(rows.map((r) => [r.id, { name: r.name }]))
+    const users = await prisma.user.findMany({
+      where: { id: { in: uploaderIds } },
+      select: { id: true, name: true },
+    })
+    uploaderMap = new Map(users.map((u) => [u.id, { name: u.name }]))
   }
 
   return {
@@ -240,8 +242,8 @@ export async function listMaterials(
       mimeType: m.mimeType,
       indexingStatus: m.indexingStatus,
       uploadedBy: {
-        vexaUserId: m.uploadedByVexaUserId,
-        name: uploaderMap.get(m.uploadedByVexaUserId)?.name ?? null,
+        userId: m.uploadedByUserId,
+        name: uploaderMap.get(m.uploadedByUserId)?.name ?? null,
       },
       uploadedAt: m.uploadedAt,
     })),
@@ -251,8 +253,8 @@ export async function listMaterials(
   }
 }
 
-export async function getMaterial(projectId: string, materialId: string, vexaUserId: number) {
-  await requireViewAccess(projectId, vexaUserId)
+export async function getMaterial(projectId: string, materialId: string, userId: number) {
+  await requireViewAccess(projectId, userId)
 
   const material = await prisma.material.findUnique({
     where: { id: materialId },
@@ -262,9 +264,10 @@ export async function getMaterial(projectId: string, materialId: string, vexaUse
     throw new AppError('NOT_FOUND', 404, '檔案不存在')
   }
 
-  const uploaderRows = await prisma.$queryRaw<Array<{ id: number; name: string | null }>>`
-    SELECT id, name FROM public.users WHERE id = ${material.uploadedByVexaUserId} LIMIT 1
-  `
+  const uploader = await prisma.user.findUnique({
+    where: { id: material.uploadedByUserId },
+    select: { id: true, name: true },
+  })
 
   return {
     id: material.id,
@@ -275,16 +278,16 @@ export async function getMaterial(projectId: string, materialId: string, vexaUse
     indexingStatus: material.indexingStatus,
     indexingError: material.indexingError ?? null,
     uploadedBy: {
-      vexaUserId: material.uploadedByVexaUserId,
-      name: uploaderRows[0]?.name ?? null,
+      userId: material.uploadedByUserId,
+      name: uploader?.name ?? null,
     },
     uploadedAt: material.uploadedAt,
     updatedAt: material.updatedAt,
   }
 }
 
-export async function deleteMaterial(projectId: string, materialId: string, vexaUserId: number) {
-  await requireEditAccess(projectId, vexaUserId)
+export async function deleteMaterial(projectId: string, materialId: string, userId: number) {
+  await requireEditAccess(projectId, userId)
 
   const material = await prisma.material.findUnique({
     where: { id: materialId },
@@ -295,19 +298,16 @@ export async function deleteMaterial(projectId: string, materialId: string, vexa
     throw new AppError('NOT_FOUND', 404, '檔案不存在')
   }
 
-  // ① Delete Dify document (best-effort)
   if (material.difyDocumentId) {
     await deleteDocument(material.project.difyDatasetId, material.difyDocumentId).catch(
       (e: unknown) => logger.error({ err: e }, 'deleteMaterial: failed to delete Dify document'),
     )
   }
 
-  // ② Delete Storage file (best-effort)
   await deleteFile(material.storagePath).catch((e: unknown) =>
     logger.error({ err: e }, 'deleteMaterial: failed to delete Storage file'),
   )
 
-  // ③ Soft delete Material
   await prisma.material
     .update({
       where: { id: materialId },
@@ -315,7 +315,6 @@ export async function deleteMaterial(projectId: string, materialId: string, vexa
     })
     .catch((e: unknown) => logger.error({ err: e }, 'deleteMaterial: failed to soft-delete Material'))
 
-  // ④ MaterialEditHistory (best-effort)
   await prisma.materialEditHistory
     .create({
       data: {
@@ -323,7 +322,7 @@ export async function deleteMaterial(projectId: string, materialId: string, vexa
         materialId,
         action: 'DELETE',
         filenameSnapshot: material.filename,
-        performedByVexaUserId: vexaUserId,
+        performedByUserId: userId,
       },
     })
     .catch((e: unknown) =>
@@ -332,7 +331,7 @@ export async function deleteMaterial(projectId: string, materialId: string, vexa
 
   await recordActivity({
     projectId,
-    actorVexaUserId: vexaUserId,
+    actorUserId: userId,
     action: 'MATERIAL_DELETE',
     targetLabel: material.filename,
   })

@@ -12,9 +12,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "Docker Desktop is ready." -ForegroundColor Green
 
-# 2. Start local infrastructure (Postgres, MinIO, vexa-lite) via docker-compose.
-Write-Host "Starting local infrastructure (Postgres, MinIO, vexa-lite)..." -ForegroundColor Cyan
-docker compose up -d
+# 2. Start local infrastructure (Postgres, MinIO) via docker-compose.
+Write-Host "Starting local infrastructure (Postgres, MinIO)..." -ForegroundColor Cyan
+# --remove-orphans：清掉 compose 檔裡已不存在的服務所留下的容器（例如移除 Vexa 之後
+# 還跑在背景的 meetbot-vexa-lite）。少了它，舊容器會一直活著，佔埠又讓人以為還在用。
+docker compose up -d --remove-orphans
 if ($LASTEXITCODE -ne 0) {
     Write-Host "docker compose up failed." -ForegroundColor Red
     exit 1
@@ -48,10 +50,36 @@ if ($LASTEXITCODE -ne 0) { Write-Host "Warning: frontend npm install failed." -F
 Write-Host "Dependencies ready." -ForegroundColor Green
 
 # 4. Apply Prisma schema (db push) and generate Prisma client
-Write-Host "Applying Prisma schema (db push)..." -ForegroundColor Cyan
 Set-Location "$rootDir\backend"
-npx prisma db push 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Host "Warning: prisma db push failed." -ForegroundColor Yellow }
+
+# 4a. 一次性遷移的前置段（移除 Vexa）。
+# 沒有這一步，db push 會因為「刪掉有資料的欄位」被判定成破壞性變更而失敗，
+# 而且是靜默失敗——app.users / app.user_tokens 不會被建出來，結果是登入 500、全站 401。
+# 內容與理由見 backend\scripts\sql\01-pre-db-push.sql（冪等，跑過就是 no-op）。
+Write-Host "Running pre-push migration (one-time, idempotent)..." -ForegroundColor Cyan
+npx prisma db execute --schema prisma/schema.prisma --file scripts/sql/01-pre-db-push.sql 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Warning: pre-push migration failed; db push may fail next." -ForegroundColor Yellow
+}
+
+# db push 的輸出**不再吞掉**：它失敗代表整個後端不能用，
+# 以前只印一行黃字 Warning 就往下走，等於把最關鍵的錯誤藏起來。
+Write-Host "Applying Prisma schema (db push)..." -ForegroundColor Cyan
+$pushOutput = npx prisma db push 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "prisma db push FAILED - the backend will not work until this is fixed:" -ForegroundColor Red
+    $pushOutput | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+} else {
+    # 4b. 一次性遷移的後置段：把身份資料（使用者與未過期 token）從 Vexa 的 public schema
+    # 搬進 app schema。不做的話，既有專案／會議會認錯擁有者（不是遺失，是錯給人）。
+    # 內容與理由見 backend\scripts\sql\02-post-db-push.sql（冪等，app.users 有資料就跳過）。
+    Write-Host "Migrating identity data into app schema (one-time, idempotent)..." -ForegroundColor Cyan
+    $migrateOutput = npx prisma db execute --schema prisma/schema.prisma --file scripts/sql/02-post-db-push.sql 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Warning: identity migration failed - existing projects may show the wrong owner:" -ForegroundColor Yellow
+        $migrateOutput | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+    }
+}
 
 Write-Host "Generating Prisma client..." -ForegroundColor Cyan
 npx prisma generate 2>&1 | Out-Null
@@ -107,6 +135,48 @@ if (Test-Path $envFile) {
         Set-EnvValue 'RECALL_WEBHOOK_TOKEN' $newToken
         Write-Host "RECALL_WEBHOOK_TOKEN was empty -> generated one (written to backend\.env)." -ForegroundColor Gray
     }
+}
+
+# INTERNAL_AUTH_SECRET：前端 NextAuth 登入時，拿它跟後端 /internal/token 換 authToken。
+#
+# 這個密鑰以前是可選的（沒設就退回 docker exec 打 vexa-lite 的 Admin API），移除 Vexa 之後
+# 它是**唯一**的發 token 路徑。沒設的話失敗方式特別惡劣：NextAuth 仍然登入成功，
+# 但 session 裡的 authToken 是 null，之後每個 API 呼叫都丟 "Not authenticated"，
+# 畫面上看起來像「登入了但全站壞掉」，沒有任何訊息指向真正的原因。
+#
+# 前後端必須同值，所以這裡一次寫兩個檔（已存在的值優先沿用，不會蓋掉手動設定的）。
+function Get-EnvValueFrom([string]$file, [string]$key) {
+    if (-not (Test-Path $file)) { return $null }
+    $line = Select-String -Path $file -Pattern "^\s*$key=" | Select-Object -Last 1
+    if (-not $line) { return $null }
+    $v = ($line.Line -replace "^\s*$key=", '').Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($v)) { return $null }
+    return $v
+}
+function Set-EnvValueIn([string]$file, [string]$key, [string]$value) {
+    if (-not (Test-Path $file)) { New-Item -ItemType File -Path $file | Out-Null }
+    $content = [System.IO.File]::ReadAllText($file)
+    if ($content -match "(?m)^\s*$key=") {
+        $content = $content -replace "(?m)^\s*$key=.*$", "$key=`"$value`""
+    } else {
+        $content = $content.TrimEnd() + "`n$key=`"$value`"`n"
+    }
+    [System.IO.File]::WriteAllText($file, $content, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+$frontendEnvFile = "$rootDir\frontend\.env.local"
+$authSecret = Get-EnvValueFrom $envFile 'INTERNAL_AUTH_SECRET'
+if (-not $authSecret) { $authSecret = Get-EnvValueFrom $frontendEnvFile 'INTERNAL_AUTH_SECRET' }
+if (-not $authSecret) {
+    $authSecret = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    Write-Host "INTERNAL_AUTH_SECRET was empty -> generated one (written to backend\.env and frontend\.env.local)." -ForegroundColor Gray
+}
+if ((Get-EnvValueFrom $envFile 'INTERNAL_AUTH_SECRET') -ne $authSecret) {
+    Set-EnvValueIn $envFile 'INTERNAL_AUTH_SECRET' $authSecret
+}
+if ((Get-EnvValueFrom $frontendEnvFile 'INTERNAL_AUTH_SECRET') -ne $authSecret) {
+    Set-EnvValueIn $frontendEnvFile 'INTERNAL_AUTH_SECRET' $authSecret
+    Write-Host "Synced INTERNAL_AUTH_SECRET into frontend\.env.local (front and back must match)." -ForegroundColor Gray
 }
 
 # PATH 上找不到就退回 winget MSI 的預設安裝路徑（裝完當下的舊 shell 還沒有新 PATH）

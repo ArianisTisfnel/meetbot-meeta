@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/error-handler.js'
 import { recordActivity } from './activity.service.js'
@@ -9,25 +8,25 @@ type MemberPermissions = {
   canMeeting?: boolean
 }
 
-export async function requireOwner(projectId: string, vexaUserId: number) {
+export async function requireOwner(projectId: string, userId: number) {
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
   })
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
-  if (project.ownerVexaUserId !== vexaUserId) {
+  if (project.ownerUserId !== userId) {
     throw new AppError('PERMISSION_DENIED', 403, '只有擁有者可執行此操作')
   }
   return project
 }
 
-async function requireViewAccess(projectId: string, vexaUserId: number) {
+async function requireViewAccess(projectId: string, userId: number) {
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
-    include: { members: { where: { vexaUserId } } },
+    include: { members: { where: { userId } } },
   })
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
 
-  const isOwner = project.ownerVexaUserId === vexaUserId
+  const isOwner = project.ownerUserId === userId
   if (!isOwner) {
     const m = project.members[0]
     if (!m || (!m.canView && !m.canEdit && !m.canMeeting)) {
@@ -37,26 +36,28 @@ async function requireViewAccess(projectId: string, vexaUserId: number) {
   return project
 }
 
-export async function getMembers(projectId: string, vexaUserId: number) {
-  const project = await requireViewAccess(projectId, vexaUserId)
+export async function getMembers(projectId: string, userId: number) {
+  const project = await requireViewAccess(projectId, userId)
 
-  const ownerRows = await prisma.$queryRaw<
-    Array<{ id: number; email: string; name: string | null }>
-  >`SELECT id, email, name FROM public.users WHERE id = ${project.ownerVexaUserId} LIMIT 1`
+  const owner = await prisma.user.findUnique({
+    where: { id: project.ownerUserId },
+    select: { id: true, email: true, name: true },
+  })
 
   const allMembers = await prisma.projectMember.findMany({
     where: { projectId },
   })
 
-  let memberUserRows: Array<{ id: number; email: string; name: string | null }> = []
+  let memberUsers: Array<{ id: number; email: string; name: string | null }> = []
   if (allMembers.length > 0) {
-    const memberUserIds = allMembers.map((m) => m.vexaUserId)
-    memberUserRows = await prisma.$queryRaw<
-      Array<{ id: number; email: string; name: string | null }>
-    >`SELECT id, email, name FROM public.users WHERE id IN (${Prisma.join(memberUserIds)})`
+    const memberUserIds = allMembers.map((m) => m.userId)
+    memberUsers = await prisma.user.findMany({
+      where: { id: { in: memberUserIds } },
+      select: { id: true, email: true, name: true },
+    })
   }
 
-  const userMap = new Map(memberUserRows.map((u) => [u.id, u]))
+  const userMap = new Map(memberUsers.map((u) => [u.id, u]))
 
   // 待處理邀請（讓擁有者看到「邀請中」的人）。僅擁有者可見管理；一般成員也能看到名單。
   const pending = await prisma.projectInvitation.findMany({
@@ -66,15 +67,15 @@ export async function getMembers(projectId: string, vexaUserId: number) {
 
   return {
     owner: {
-      vexaUserId: ownerRows[0]?.id ?? project.ownerVexaUserId,
-      email: ownerRows[0]?.email ?? null,
-      name: ownerRows[0]?.name ?? null,
+      userId: owner?.id ?? project.ownerUserId,
+      email: owner?.email ?? null,
+      name: owner?.name ?? null,
     },
     members: allMembers.map((m) => {
-      const user = userMap.get(m.vexaUserId)
+      const user = userMap.get(m.userId)
       return {
         id: m.id,
-        vexaUserId: m.vexaUserId,
+        userId: m.userId,
         email: user?.email ?? null,
         name: user?.name ?? null,
         canView: m.canView,
@@ -97,14 +98,14 @@ export async function getMembers(projectId: string, vexaUserId: number) {
 
 export async function updateMemberPermissions(
   projectId: string,
-  ownerVexaUserId: number,
-  targetVexaUserId: number,
+  ownerUserId: number,
+  targetUserId: number,
   permissions: MemberPermissions,
 ) {
-  await requireOwner(projectId, ownerVexaUserId)
+  await requireOwner(projectId, ownerUserId)
 
   const member = await prisma.projectMember.findUnique({
-    where: { projectId_vexaUserId: { projectId, vexaUserId: targetVexaUserId } },
+    where: { projectId_userId: { projectId, userId: targetUserId } },
   })
   if (!member) throw new AppError('NOT_FOUND', 404, '成員不存在')
 
@@ -118,14 +119,15 @@ export async function updateMemberPermissions(
     data,
   })
 
-  const targetRows = await prisma.$queryRaw<Array<{ email: string | null }>>`
-    SELECT email FROM public.users WHERE id = ${targetVexaUserId} LIMIT 1
-  `
+  const targetUser = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { email: true },
+  })
   await recordActivity({
     projectId,
-    actorVexaUserId: ownerVexaUserId,
+    actorUserId: ownerUserId,
     action: 'MEMBER_PERMISSION_UPDATE',
-    targetLabel: targetRows[0]?.email ?? `使用者 #${targetVexaUserId}`,
+    targetLabel: targetUser?.email ?? `使用者 #${targetUserId}`,
     metadata: {
       canView: updated.canView,
       canEdit: updated.canEdit,
@@ -135,7 +137,7 @@ export async function updateMemberPermissions(
 
   return {
     id: updated.id,
-    vexaUserId: updated.vexaUserId,
+    userId: updated.userId,
     canView: updated.canView,
     canEdit: updated.canEdit,
     canMeeting: updated.canMeeting,
@@ -145,31 +147,32 @@ export async function updateMemberPermissions(
 
 export async function removeMember(
   projectId: string,
-  ownerVexaUserId: number,
-  targetVexaUserId: number,
+  ownerUserId: number,
+  targetUserId: number,
 ) {
-  const project = await requireOwner(projectId, ownerVexaUserId)
+  const project = await requireOwner(projectId, ownerUserId)
 
-  if (targetVexaUserId === project.ownerVexaUserId) {
+  if (targetUserId === project.ownerUserId) {
     throw new AppError('PERMISSION_DENIED', 403, '不可移除專案擁有者')
   }
 
   const member = await prisma.projectMember.findUnique({
-    where: { projectId_vexaUserId: { projectId, vexaUserId: targetVexaUserId } },
+    where: { projectId_userId: { projectId, userId: targetUserId } },
   })
   if (!member) throw new AppError('NOT_FOUND', 404, '成員不存在')
 
   // 取得被移除者 email 作為歷史快照（刪除後就查不到關聯了）
-  const targetRows = await prisma.$queryRaw<Array<{ email: string | null }>>`
-    SELECT email FROM public.users WHERE id = ${targetVexaUserId} LIMIT 1
-  `
+  const targetUser = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { email: true },
+  })
 
   await prisma.projectMember.delete({ where: { id: member.id } })
 
   await recordActivity({
     projectId,
-    actorVexaUserId: ownerVexaUserId,
+    actorUserId: ownerUserId,
     action: 'MEMBER_REMOVE',
-    targetLabel: targetRows[0]?.email ?? `使用者 #${targetVexaUserId}`,
+    targetLabel: targetUser?.email ?? `使用者 #${targetUserId}`,
   })
 }

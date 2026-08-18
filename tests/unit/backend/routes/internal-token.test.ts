@@ -3,8 +3,14 @@ import { vi, describe, it, expect, beforeEach } from 'vitest'
 const mockEnv = vi.hoisted(() => ({ INTERNAL_AUTH_SECRET: 'test-secret-1234567890' as string | undefined }))
 vi.mock('../../../../backend/src/types/env', () => ({ env: mockEnv }))
 
-const mockPrisma = vi.hoisted(() => ({ $queryRaw: vi.fn() }))
+const mockPrisma = vi.hoisted(() => ({
+  user: { upsert: vi.fn() },
+  userToken: { findFirst: vi.fn(), create: vi.fn() },
+}))
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
+vi.mock('../../../../backend/src/middleware/logger', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+}))
 
 import internalRoutes from '../../../../backend/src/routes/internal'
 
@@ -24,7 +30,7 @@ describe('POST /internal/token — 登入鑄 token（免 Docker）', () => {
     mockEnv.INTERNAL_AUTH_SECRET = 'test-secret-1234567890'
   })
 
-  it('未設定 INTERNAL_AUTH_SECRET → 503（端點停用，前端退回舊路）', async () => {
+  it('未設定 INTERNAL_AUTH_SECRET → 503（端點停用）', async () => {
     mockEnv.INTERNAL_AUTH_SECRET = undefined
     const res = await post({ email: 'a@b.c' }, 'whatever')
     expect(res.status).toBe(503)
@@ -41,26 +47,25 @@ describe('POST /internal/token — 登入鑄 token（免 Docker）', () => {
   })
 
   it('既有使用者＋有效 token → 直接重用（不再增生新 token）', async () => {
-    mockPrisma.$queryRaw
-      .mockResolvedValueOnce([{ id: 7 }]) // SELECT user
-      .mockResolvedValueOnce([{ token: 'existing-token' }]) // SELECT token
+    mockPrisma.user.upsert.mockResolvedValueOnce({ id: 7, email: 'kai@test.io', name: null })
+    mockPrisma.userToken.findFirst.mockResolvedValueOnce({ token: 'existing-token' })
+
     const res = await post({ email: 'Kai@Test.io' }, 'test-secret-1234567890')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ token: 'existing-token' })
-    expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(2)
+    expect(mockPrisma.userToken.create).not.toHaveBeenCalled()
   })
 
   it('新使用者 → 建 user＋發新 token', async () => {
-    mockPrisma.$queryRaw
-      .mockResolvedValueOnce([]) // SELECT user → 無
-      .mockResolvedValueOnce([{ id: 42 }]) // INSERT user
-      .mockResolvedValueOnce([]) // SELECT token → 無
-      .mockResolvedValueOnce([]) // INSERT token
+    mockPrisma.user.upsert.mockResolvedValueOnce({ id: 42, email: 'new@user.io', name: '小新' })
+    mockPrisma.userToken.findFirst.mockResolvedValueOnce(null)
+    mockPrisma.userToken.create.mockResolvedValueOnce({})
+
     const res = await post({ email: 'new@user.io', name: '小新' }, 'test-secret-1234567890')
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(typeof body.token).toBe('string')
     expect(body.token.length).toBe(64) // randomBytes(32).hex
-    expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(4)
+    expect(mockPrisma.userToken.create).toHaveBeenCalledOnce()
   })
 })

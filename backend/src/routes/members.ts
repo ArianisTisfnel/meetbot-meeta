@@ -7,7 +7,7 @@ import type { AppEnv } from '../types/hono.js'
 const app = new Hono<AppEnv>()
 
 app.get('/projects/:projectId/members', async (c) => {
-  const result = await memberService.getMembers(c.req.param('projectId'), c.get('vexaUserId'))
+  const result = await memberService.getMembers(c.req.param('projectId'), c.get('userId'))
   return c.json(result)
 })
 
@@ -24,7 +24,7 @@ app.post('/projects/:projectId/members', async (c) => {
   const { email, canView, canEdit, canMeeting } = inviteMemberSchema.parse(body)
   const invitation = await invitationService.createInvitation(
     c.req.param('projectId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     email,
     { canView, canEdit, canMeeting },
   )
@@ -35,7 +35,7 @@ app.post('/projects/:projectId/members', async (c) => {
 app.post('/projects/:projectId/invitations/:invitationId/resend', async (c) => {
   const result = await invitationService.resendInvitation(
     c.req.param('projectId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     c.req.param('invitationId'),
   )
   return c.json(result)
@@ -45,7 +45,7 @@ app.post('/projects/:projectId/invitations/:invitationId/resend', async (c) => {
 app.delete('/projects/:projectId/invitations/:invitationId', async (c) => {
   await invitationService.revokeInvitation(
     c.req.param('projectId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     c.req.param('invitationId'),
   )
   return c.body(null, 204)
@@ -62,7 +62,7 @@ app.patch('/projects/:projectId/members/:targetUserId', async (c) => {
   const permissions = updateMemberSchema.parse(body)
   const result = await memberService.updateMemberPermissions(
     c.req.param('projectId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     parseInt(c.req.param('targetUserId')),
     permissions,
   )
@@ -72,7 +72,7 @@ app.patch('/projects/:projectId/members/:targetUserId', async (c) => {
 app.delete('/projects/:projectId/members/:targetUserId', async (c) => {
   await memberService.removeMember(
     c.req.param('projectId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     parseInt(c.req.param('targetUserId')),
   )
   return c.body(null, 204)

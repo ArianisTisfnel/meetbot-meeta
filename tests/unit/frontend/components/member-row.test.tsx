@@ -10,7 +10,7 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 function makeMember(overrides: Partial<ProjectMember> = {}): ProjectMember {
   return {
     id: 'm1',
-    vexaUserId: 2,
+    userId: 2,
     email: 'member@example.com',
     name: '成員',
     canView: true,

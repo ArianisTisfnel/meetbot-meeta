@@ -2,6 +2,20 @@ import { vi } from 'vitest'
 
 export const mockPrisma = {
   $queryRaw: vi.fn(),
+  $transaction: vi.fn(),
+  user: {
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    upsert: vi.fn(),
+    update: vi.fn(),
+  },
+  userToken: {
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+  },
   project: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -24,7 +38,6 @@ export const mockPrisma = {
     update: vi.fn(),
     delete: vi.fn(),
   },
-  $transaction: vi.fn(),
   material: {
     findFirst: vi.fn(),
     findMany: vi.fn(),

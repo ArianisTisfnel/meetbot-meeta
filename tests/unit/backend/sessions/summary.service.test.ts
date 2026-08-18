@@ -1,15 +1,10 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mockPrisma } from '../../../mocks/prisma.mock'
-import { mockVexa } from '../../../mocks/vexa.mock'
 
 vi.mock('../../../../backend/src/lib/prisma', () => ({ prisma: mockPrisma }))
-vi.mock('../../../../backend/src/lib/vexa', () => mockVexa)
 vi.mock('../../../../backend/src/types/env', () => ({
   env: {
-    VEXA_API_URL: 'http://vexa.test',
-    VEXA_WS_URL: 'ws://vexa.test',
     DIFY_API_BASE: 'http://dify.test',
-    BOT_ADMISSION_TIMEOUT_MS: 30000,
   },
 }))
 vi.mock('../../../../backend/src/lib/dify', () => ({
@@ -29,6 +24,9 @@ vi.mock('../../../../backend/src/lib/storage', () => ({
 const mockIsEndOfTurn = vi.hoisted(() => vi.fn().mockResolvedValue(null))
 vi.mock('../../../../backend/src/lib/eou', () => ({ isEndOfTurn: mockIsEndOfTurn }))
 
+const mockBotProvider = vi.hoisted(() => ({ getTranscript: vi.fn() }))
+vi.mock('../../../../backend/src/provider/index', () => ({ botProvider: mockBotProvider }))
+
 import {
   formatTranscriptAsMarkdown,
   formatSeconds,
@@ -42,7 +40,7 @@ import * as difyMod from '../../../../backend/src/lib/dify'
 import * as storageMod from '../../../../backend/src/lib/storage'
 import type { TranscriptSegment } from '../../../../backend/src/provider/types'
 
-/** 統一 schema 的 segment（formatTranscriptAsMarkdown / waitForTranscriptStable 用）。 */
+/** 統一 schema 的 segment。 */
 function makeSeg(
   start: number,
   text = `seg-text-${start}`,
@@ -58,16 +56,8 @@ function makeSeg(
   }
 }
 
-/** Vexa REST 原始 segment（generateSummaryAsync 無 session 時的 REST fallback 用）。 */
-function makeRestSeg(start: number, text = `seg-text-${start}`, speaker: string | null = 'Alice') {
-  return { segment_id: `seg-${start}`, text, speaker, start, end: start + 5, language: 'zh', completed: true }
-}
-
 const baseParams = {
   meetingInstanceId: 'meet-uuid-1',
-  platform: 'google_meet',
-  nativeMeetingId: 'abc-defg-hij',
-  creatorVexaToken: 'tok-123',
   difyDatasetId: null,
 }
 
@@ -265,9 +255,8 @@ describe('generateSummaryAsync', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
-    // 預設：有 2 段逐字稿，且每次回傳相同（穩定偵測在 3 次 poll 後完成）。
-    // generateSummaryAsync 無 session → 走 Vexa REST fallback，故 mock 回傳 REST 原始 segment。
-    mockVexa.getTranscriptions.mockResolvedValue([makeRestSeg(1), makeRestSeg(2)])
+    // 預設：有 2 段逐字稿（且每次回傳相同 → 穩定偵測在 3 次 poll 後完成）。
+    mockBotProvider.getTranscript.mockResolvedValue([makeSeg(1), makeSeg(2)])
     mockPrisma.meetingInstance.update.mockResolvedValue({})
   })
 
@@ -283,8 +272,10 @@ describe('generateSummaryAsync', () => {
     await vi.advanceTimersByTimeAsync(SUMMARY_POLL_INTERVAL_MS)
   }
 
+  const fakeSession = { botId: 'recall-bot-1' } as any
+
   it('正常流程：Storage 上傳、Dify file upload、Dify workflow 均被呼叫，DB 更新摘要', async () => {
-    const promise = generateSummaryAsync(baseParams)
+    const promise = generateSummaryAsync({ ...baseParams, session: fakeSession })
     await advanceUntilStable()
     await promise
 
@@ -308,8 +299,7 @@ describe('generateSummaryAsync', () => {
   })
 
   it('逐字稿為空 → 不呼叫 Dify，summary 更新為空字串 sentinel', async () => {
-    mockVexa.getTranscriptions.mockResolvedValue([])
-
+    // 無 session → fetchSegments returns []
     const promise = generateSummaryAsync(baseParams)
     await advanceUntilStable()
     await promise
@@ -324,7 +314,7 @@ describe('generateSummaryAsync', () => {
   it('Dify workflow 拋錯 → catch 後 summary 更新為空字串 sentinel', async () => {
     vi.mocked(difyMod.generateSummary).mockRejectedValueOnce(new Error('Dify workflow failed'))
 
-    const promise = generateSummaryAsync(baseParams)
+    const promise = generateSummaryAsync({ ...baseParams, session: fakeSession })
     await advanceUntilStable()
     await promise
 
@@ -336,7 +326,7 @@ describe('generateSummaryAsync', () => {
   it('Storage 上傳失敗 → warn log，繼續執行 Dify 摘要不中斷', async () => {
     vi.mocked(storageMod.upsertFile).mockRejectedValueOnce(new Error('Storage error'))
 
-    const promise = generateSummaryAsync(baseParams)
+    const promise = generateSummaryAsync({ ...baseParams, session: fakeSession })
     await advanceUntilStable()
     await promise
 

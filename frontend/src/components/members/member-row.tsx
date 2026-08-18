@@ -11,8 +11,8 @@ type PermissionKey = 'canView' | 'canEdit' | 'canMeeting'
 interface Props {
   member: ProjectMember
   canManage: boolean
-  onRemove: (vexaUserId: number) => void
-  onUpdate: (vexaUserId: number, permissions: Partial<Pick<ProjectMember, PermissionKey>>) => void
+  onRemove: (userId: number) => void
+  onUpdate: (userId: number, permissions: Partial<Pick<ProjectMember, PermissionKey>>) => void
   isUpdating?: boolean
 }
 
@@ -44,7 +44,7 @@ export function MemberRow({ member, canManage, onRemove, onUpdate, isUpdating }:
                 <Checkbox
                   checked={member[key]}
                   disabled={isUpdating}
-                  onCheckedChange={(v) => onUpdate(member.vexaUserId, { [key]: Boolean(v) })}
+                  onCheckedChange={(v) => onUpdate(member.userId, { [key]: Boolean(v) })}
                 />
                 {label}
               </label>
@@ -63,7 +63,7 @@ export function MemberRow({ member, canManage, onRemove, onUpdate, isUpdating }:
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => onRemove(member.vexaUserId)}
+            onClick={() => onRemove(member.userId)}
             aria-label="移除成員"
           >
             <TrashIcon />

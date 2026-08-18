@@ -2,40 +2,10 @@
  * 純逐字稿正規化函式（無任何環境變數 / 網路依賴，方便單元測試）。
  *
  * 各 provider 的原始 segment 格式都在這裡被 map 成統一的 {@link TranscriptSegment}。
- * 這是整個 failover 任務最容易出 bug 的地方，務必維持純函式並以測試覆蓋。
+ * 務必維持純函式並以測試覆蓋。
  */
 import type { TranscriptSegment } from './types.js'
 import { toTraditional } from '../lib/zh.js'
-
-/**
- * Vexa WS 推送的 segment → 統一 schema。
- * Vexa WS 欄位為 start/end（或舊版 start_time/end_time），speaker 可能在 seg 或外層 msg。
- */
-export function normalizeVexaWsSegment(seg: any, msgSpeaker?: string): TranscriptSegment {
-  return {
-    segmentId: seg.segment_id ?? null,
-    text: seg.text ?? '',
-    speaker: seg.speaker || msgSpeaker || null,
-    startTime: seg.start ?? seg.start_time ?? 0,
-    endTime: seg.end ?? seg.end_time ?? 0,
-    language: seg.language ?? null,
-  }
-}
-
-/**
- * Vexa REST API 的 segment → 統一 schema。
- * REST 欄位為 start/end（Pydantic alias），非 start_time/end_time。
- */
-export function normalizeVexaRestSegment(seg: any): TranscriptSegment {
-  return {
-    segmentId: seg.segment_id ?? null,
-    text: seg.text ?? '',
-    speaker: seg.speaker ?? null,
-    startTime: seg.start ?? 0,
-    endTime: seg.end ?? 0,
-    language: seg.language ?? null,
-  }
-}
 
 function firstNum(candidates: unknown[]): number | undefined {
   for (const c of candidates) {

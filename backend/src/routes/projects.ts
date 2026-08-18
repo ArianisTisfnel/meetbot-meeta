@@ -7,7 +7,7 @@ const app = new Hono<AppEnv>()
 
 app.get('/projects', async (c) => {
   const q = c.req.query()
-  const result = await projectService.listProjects(c.get('vexaUserId'), {
+  const result = await projectService.listProjects(c.get('userId'), {
     search: q.search,
     type: (q.type as 'all' | 'owned' | 'shared') || 'all',
     order: (q.order as 'asc' | 'desc') || 'desc',
@@ -22,12 +22,12 @@ const createProjectSchema = z.object({ name: z.string().min(1) })
 app.post('/projects', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const { name } = createProjectSchema.parse(body)
-  const project = await projectService.createProject(c.get('vexaUserId'), name)
+  const project = await projectService.createProject(c.get('userId'), name)
   return c.json(project, 201)
 })
 
 app.get('/projects/:projectId', async (c) => {
-  const project = await projectService.getProject(c.req.param('projectId'), c.get('vexaUserId'))
+  const project = await projectService.getProject(c.req.param('projectId'), c.get('userId'))
   return c.json(project)
 })
 
@@ -38,14 +38,14 @@ app.patch('/projects/:projectId', async (c) => {
   const { name } = updateProjectSchema.parse(body)
   const result = await projectService.updateProject(
     c.req.param('projectId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     name,
   )
   return c.json(result)
 })
 
 app.delete('/projects/:projectId', async (c) => {
-  await projectService.deleteProject(c.req.param('projectId'), c.get('vexaUserId'))
+  await projectService.deleteProject(c.req.param('projectId'), c.get('userId'))
   return c.body(null, 204)
 })
 

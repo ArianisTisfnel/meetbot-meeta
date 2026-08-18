@@ -1,60 +1,43 @@
 /**
  * 驗證後端 /projects API 完整 CRUD 流程：
- *   1. 取得 Vexa token（透過 docker exec Admin API）
+ *   1. 取得 API token（POST /internal/token，共享密鑰 INTERNAL_AUTH_SECRET）
  *   2. 未帶 token → 401
  *   3. 帶 token GET → 200，body 為分頁陣列
  *   4. 建立 project → 回傳含 id 的物件
  *   5. 再次 GET → 新 project 出現在列表
  *   6. 刪除 project → 成功（cleanup）
  *
- * 前提：後端在 localhost:4000 運行，vexa-lite 容器正在運行
+ * 前提：後端在 localhost:4000 運行，且 backend/.env 有 INTERNAL_AUTH_SECRET。
+ * （移除 Vexa 之前這裡是 docker exec 進 vexa-lite 打 Admin API 拿 token，
+ *   身份層搬進 app schema 之後改走後端自己的內部端點。）
  */
-import { execFileSync } from 'child_process'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 
 const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:4000'
-const ADMIN_KEY = process.env.VEXA_ADMIN_API_KEY ?? 'my-local-admin-token-2026'
+const INTERNAL_SECRET = process.env.INTERNAL_AUTH_SECRET ?? ''
 const TEST_EMAIL = 'test-integration@example.com'
 
-function getVexaToken(): string {
-  const idResult = execFileSync(
-    'docker',
-    ['ps', '--filter', 'ancestor=vexaai/vexa-lite:latest', '-q'],
-    { timeout: 5000 }
-  )
-  const containerId = idResult.toString().trim().split('\n')[0]
-  if (!containerId) throw new Error('vexa-lite 容器未啟動')
-
-  function dockerCurl(args: string[]): unknown {
-    const r = execFileSync('docker', ['exec', containerId, 'curl', '-s', ...args], {
-      timeout: 10000,
-    })
-    return JSON.parse(r.toString())
+async function getApiToken(): Promise<string> {
+  if (!INTERNAL_SECRET) {
+    throw new Error('INTERNAL_AUTH_SECRET 未設定（backend/.env 與此測試環境需同值）')
   }
-
-  const user = dockerCurl([
-    '-X', 'POST',
-    '-H', `X-Admin-API-Key: ${ADMIN_KEY}`,
-    '-H', 'Content-Type: application/json',
-    '-d', JSON.stringify({ email: TEST_EMAIL }),
-    'http://localhost:8057/admin/users',
-  ]) as { id: number }
-
-  const tokenResp = dockerCurl([
-    '-X', 'POST',
-    '-H', `X-Admin-API-Key: ${ADMIN_KEY}`,
-    `http://localhost:8057/admin/users/${user.id}/tokens`,
-  ]) as { token: string }
-
-  return tokenResp.token
+  const res = await fetch(`${BACKEND}/internal/token`, {
+    method: 'POST',
+    headers: { 'x-internal-secret': INTERNAL_SECRET, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: TEST_EMAIL, name: 'Integration Test' }),
+  })
+  if (!res.ok) throw new Error(`/internal/token 回 ${res.status}`)
+  const data = (await res.json()) as { token?: string }
+  if (!data.token) throw new Error('/internal/token 沒有回 token')
+  return data.token
 }
 
 describe('Backend /projects API', () => {
   let token: string
   let createdProjectId: string
 
-  beforeAll(() => {
-    token = getVexaToken()
+  beforeAll(async () => {
+    token = await getApiToken()
   })
 
   afterAll(async () => {

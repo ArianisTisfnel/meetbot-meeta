@@ -1,10 +1,8 @@
 import { prisma } from '../lib/prisma.js'
 import { logger } from '../middleware/logger.js'
-import * as vexaClient from '../lib/vexa.js'
 import * as dify from '../lib/dify.js'
 import { upsertFile } from '../lib/storage.js'
 import { botProvider, type BotSession, type TranscriptSegment } from '../provider/index.js'
-import { normalizeRestSegment } from '../provider/vexa-adapter.js'
 import { isEndOfTurn } from '../lib/eou.js'
 
 export const SUMMARY_INITIAL_WAIT_MS = 5_000
@@ -137,9 +135,8 @@ export async function generateSummaryAsync(params: {
   meetingInstanceId: string
   platform: string
   nativeMeetingId: string
-  creatorVexaToken: string
   difyDatasetId: string | null
-  /** 會議結束時仍在記憶體的 bot session；有則用 provider 抽象層取逐字稿（provider-agnostic）。 */
+  /** 會議結束時仍在記憶體的 bot session；有則用 provider 抽象層取逐字稿。 */
   session?: BotSession
   /** 聊天室訊息（含蜜塔回覆），併入逐字稿。 */
   chatLog?: ChatLogEntry[]
@@ -147,14 +144,10 @@ export async function generateSummaryAsync(params: {
   sessionStartedAt?: number
 }): Promise<void> {
   try {
-    // 正常結束路徑：用 provider 抽象層取逐字稿（涵蓋 Vexa / Recall）。
-    // 重啟復原路徑（無 session）：退回 Vexa REST（DB 只持久化 Vexa 識別碼，見 session-manager 限制說明）。
+    // 用 provider 抽象層取逐字稿；session 不在時無法補抓（重啟後 bot session 已消失）。
     const fetchSegments: () => Promise<TranscriptSegment[]> = params.session
       ? () => botProvider.getTranscript(params.session!)
-      : () =>
-          vexaClient
-            .getTranscriptions(params.platform, params.nativeMeetingId, params.creatorVexaToken)
-            .then((raw) => raw.map(normalizeRestSegment))
+      : () => Promise.resolve([])
 
     const segments = await waitForTranscriptStable(fetchSegments)
 

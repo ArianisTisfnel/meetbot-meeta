@@ -16,7 +16,8 @@ import {
   DEBOUNCE_MS,
   STOP_COMMAND_REGEX,
 } from './addressing.js'
-import type { MeetingSession, VexaChatMessage } from '../types/session.js'
+import type { MeetingSession } from '../types/session.js'
+import type { ChatMessageEvent } from '../provider/types.js'
 
 // 意圖四分類的定義已移到 response-policy.ts（它現在是每輪語意決策的產出之一）。
 // 這裡 re-export 保持既有 import 路徑不變（scripts/eval-meeting.ts、單元測試）。
@@ -347,9 +348,9 @@ function consumePartialAck(session: MeetingSession, now: number): boolean {
 
 export async function handleChatMessage(
   session: MeetingSession,
-  chatMsg: VexaChatMessage,
+  chatMsg: ChatMessageEvent,
 ): Promise<void> {
-  if (chatMsg.is_from_bot) return
+  if (chatMsg.isFromBot) return
 
   const now = Date.now()
   const decision = decideChatAddressing(session, { text: chatMsg.text, speaker: chatMsg.sender, now })

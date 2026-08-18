@@ -16,15 +16,15 @@
 
 ### 1.1 雙層 Schema 隔離
 
+> ⚠️ **2026-08 起不再有雙 schema。** 身份層（使用者與 API token）原本寄生在 Vexa 的
+> `public.users` / `public.api_tokens`，移除 Vexa 之後整套搬進 `app` schema 自管。
+> 現在**只有 `app` 一個 schema**，也不再有任何 `public.*` 的 `$queryRaw`。
+
 ```
-Supabase PostgreSQL
-├── schema: public          ← Vexa-lite 自動管理（只讀，透過 prisma db pull 同步定義）
-│   ├── users               ← 使用者基本資料、max_concurrent_bots
-│   ├── meetings            ← Bot 會議記錄、狀態、bot_container_id
-│   ├── transcriptions      ← 逐字稿 segments
-│   └── meeting_sessions    ← 會議 session 對應
-│
-└── schema: app             ← 應用獨立管理（Prisma migrate）
+PostgreSQL
+└── schema: app             ← 應用獨立管理（Prisma db push）
+    ├── users                  ← 使用者（email / name / max_concurrent_bots）
+    ├── user_tokens            ← API token（Bearer 驗證的來源）
     ├── projects
     ├── project_members
     ├── project_invitations    ← 待處理的專案邀請（可邀請尚未註冊者）
@@ -34,16 +34,22 @@ Supabase PostgreSQL
     └── meeting_instances
 ```
 
-> **`public` schema 實際存取**：App 只讀取 `public.users`、`public.meetings`、`public.transcriptions`、
-> `public.api_tokens` 四張表，**一律以 `prisma.$queryRaw` 存取**（不建立對應 Prisma model，避免 migrate 衝突）。
-> 因此 `datasource.schemas` 只宣告 `["app"]`（見 §二）。
+> `datasource.schemas` 只宣告 `["app"]`（見 §二）。Vexa 時代留在 `public` 的舊表
+> （users / meetings / transcriptions / api_tokens）程式已完全不碰，db push 也不會動到它們；
+> 留著是為了保存歷史資料，確認不需要後可自行 `DROP SCHEMA public CASCADE`。
 
-### 1.2 跨 Schema 關聯策略
+### 1.2 使用者關聯鍵
 
-- **不建立跨 schema 外鍵約束**（FK），避免 Vexa 升級時 migration 卡住
-- 以 `vexa_user_id`（Integer，對應 `public.users.id`）作為使用者的**邏輯關聯鍵**
-- 以 `vexa_meeting_id`（Integer，對應 `public.meetings.id`）作為會議的**邏輯關聯鍵**
-- App 對 `public` schema 採**唯讀**模式，Vexa 表定義透過 `prisma db pull` 同步
+- 使用者以 `app.users.id`（Integer）關聯，欄位名沿用 `*_vexa_user_id`（見下方 `@map`）：
+  **只是沒有改欄位名，語意已經是 app 自己的 user id**。改名要改 8 張表的欄位，
+  沒有相應好處，還會讓既有資料需要一次 migration。
+- Prisma model 上的欄位名已一律改成 `ownerUserId` / `userId` / `createdByUserId` …，
+  程式碼裡不再出現 `vexa` 字樣；`@map` 負責對應到 DB 的實體欄位名。
+- 各關聯表**不建立**指向 `users` 的 FK 約束（沿用原本的邏輯 FK 策略，刪使用者不連鎖爆炸）。
+
+> **既有資料遷移**：`app.users` 的 id 必須沿用 Vexa `public.users.id`，否則所有
+> `*_user_id` 會指到錯的人。遷移 SQL 見 `backend/scripts/sql/02-post-db-push.sql`
+> （`start.ps1` 會自動跑，冪等）。
 
 ### 1.3 Soft Delete 策略
 
@@ -67,8 +73,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")  // 連線字串需加 ?schema=app
-  // 只宣告 app；public 表（users/meetings/transcriptions/api_tokens）一律以 $queryRaw 存取，
-  // 不建立 Prisma model，避免 Vexa 升級時 migrate 衝突。
+  directUrl = env("DIRECT_URL")   // Prisma CLI（db push / db execute）走 session pooler
   schemas  = ["app"]
 }
 
@@ -76,12 +81,43 @@ datasource db {
 // app schema：應用核心業務邏輯
 // ══════════════════════════════════════════════════
 
+/// 使用者（2026-08 從 Vexa public.users 搬進來，id 沿用原值）
+model User {
+  id                Int         @id @default(autoincrement())
+  /// Google 登入的已驗證 email，全站唯一
+  email             String      @unique
+  /// Google 顯示名稱，可能為 null（前端 displayName() 會退回 email 前段）
+  name              String?
+  /// 同時可派出的 bot 數上限（GET /me 與建立會議前的並發檢查）
+  maxConcurrentBots Int         @default(1) @map("max_concurrent_bots")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  tokens            UserToken[]
+
+  @@map("users")
+  @@schema("app")
+}
+
+/// API token（Authorization: Bearer 的驗證來源）
+/// 由 POST /internal/token 於 NextAuth 登入時 get-or-create，前端存在 session 裡。
+model UserToken {
+  id        Int       @id @default(autoincrement())
+  token     String    @unique
+  userId    Int       @map("user_id")
+  user      User      @relation(fields: [userId], references: [id])
+  /// null = 永不過期（目前登入流程一律不設期限）
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("user_tokens")
+  @@schema("app")
+}
+
 /// 專案實例
 model Project {
   id              String    @id @default(uuid())
   name            String
   /// 所有者 ID，邏輯關聯 public.users.id（無 FK 約束）
-  ownerVexaUserId Int       @map("owner_vexa_user_id")
+  ownerUserId Int       @map("owner_vexa_user_id")
   /// 對應此專案的 Dify Knowledge Base ID（建立專案時同步建立）
   difyDatasetId   String    @map("dify_dataset_id")
   createdAt       DateTime  @default(now()) @map("created_at")
@@ -96,7 +132,7 @@ model Project {
   activityLogs     ActivityLog[]
   meetingInstances MeetingInstance[]
 
-  @@index([ownerVexaUserId])
+  @@index([ownerUserId])
   @@index([deletedAt])
   @@map("projects")
   @@schema("app")
@@ -107,7 +143,7 @@ model ProjectMember {
   id                  String   @id @default(uuid())
   projectId           String   @map("project_id")
   /// 參與者 ID，邏輯關聯 public.users.id
-  vexaUserId          Int      @map("vexa_user_id")
+  userId          Int      @map("vexa_user_id")
   /// 檢視權＝成員「基準權限」：恆為 true、不可取消（要移除存取請用 removeMember）。
   /// 內容：查看資料清單、歷史紀錄、成員清單、會議逐字稿。
   /// 應用層在 updateMemberPermissions 會把任何 canView=false 的請求強制矯正回 true。
@@ -117,15 +153,15 @@ model ProjectMember {
   /// 會議權：建立會議實例、邀請/移除 Bot、更新會議名稱（預設 false，由所有者授權）
   canMeeting          Boolean  @default(false) @map("can_meeting")
   /// 邀請人 ID，邏輯關聯 public.users.id（目前只有所有者可邀請）
-  invitedByVexaUserId Int      @map("invited_by_vexa_user_id")
+  invitedByUserId Int      @map("invited_by_vexa_user_id")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   project Project @relation(fields: [projectId], references: [id])
 
   /// 同一使用者在同一專案只能有一筆參與者紀錄
-  @@unique([projectId, vexaUserId])
-  @@index([vexaUserId])
+  @@unique([projectId, userId])
+  @@index([userId])
   @@map("project_members")
   @@schema("app")
 }
@@ -143,8 +179,8 @@ model ProjectInvitation {
   canEdit              Boolean          @default(false) @map("can_edit")
   canMeeting           Boolean          @default(false) @map("can_meeting")
   status               InvitationStatus @default(PENDING)
-  invitedByVexaUserId  Int              @map("invited_by_vexa_user_id")
-  acceptedByVexaUserId Int?             @map("accepted_by_vexa_user_id")
+  invitedByUserId  Int              @map("invited_by_vexa_user_id")
+  acceptedByUserId Int?             @map("accepted_by_vexa_user_id")
   expiresAt            DateTime         @map("expires_at")
   acceptedAt           DateTime?        @map("accepted_at")
   createdAt            DateTime         @default(now()) @map("created_at")
@@ -182,7 +218,7 @@ model Material {
   /// 索引失敗時的錯誤訊息
   indexingError        String?        @map("indexing_error")
   /// 上傳者 ID，邏輯關聯 public.users.id
-  uploadedByVexaUserId Int            @map("uploaded_by_vexa_user_id")
+  uploadedByUserId Int            @map("uploaded_by_vexa_user_id")
   uploadedAt           DateTime       @default(now()) @map("uploaded_at")
   updatedAt            DateTime       @updatedAt @map("updated_at")
   /// Soft delete：刪除時設定，同步刪除 Storage 和 Dify 文件
@@ -209,7 +245,7 @@ model MaterialEditHistory {
   /// 操作當下的檔名快照（避免日後 material 資料變動導致歷史失真）
   filenameSnapshot      String     @map("filename_snapshot")
   /// 操作者 ID，邏輯關聯 public.users.id
-  performedByVexaUserId Int        @map("performed_by_vexa_user_id")
+  performedByUserId Int        @map("performed_by_vexa_user_id")
   performedAt           DateTime   @default(now()) @map("performed_at")
 
   project  Project  @relation(fields: [projectId], references: [id])
@@ -227,7 +263,7 @@ model MaterialEditHistory {
 model ActivityLog {
   id              String         @id @default(uuid())
   projectId       String         @map("project_id")
-  actorVexaUserId Int            @map("actor_vexa_user_id")
+  actorUserId Int            @map("actor_vexa_user_id")
   action          ActivityAction
   /// 事件對象的快照字串（檔名 / 成員 email / 會議名稱），避免日後關聯變動導致歷史失真
   targetLabel     String         @map("target_label")
@@ -247,25 +283,17 @@ model MeetingInstance {
   /// 關聯的專案（可為 null：使用者選擇不關聯任何專案時建立獨立會議實例）
   /// null 時 Bot 仍可提供逐字稿與摘要，但 Dify Q&A 功能停用（無 Knowledge Base）
   projectId            String?       @map("project_id")
-  /// 對應 Vexa 的 meeting ID（整數，邀請 Bot 後由 POST /bots 回傳）
-  /// 在 Bot 成功加入前為 null（PENDING 狀態）
-  vexaMeetingId        Int?          @map("vexa_meeting_id")
-  /// Google Meet 的 native_meeting_id（例如 "abc-defg-hij"）
-  /// 由 googleMeetUrl 解析取得，用於呼叫 Vexa Bot API（/speak、/chat 等）
-  /// 在 Bot 成功加入前為 null
-  vexaNativeMeetingId  String?       @map("vexa_native_meeting_id")
+  /// Google Meet 的 native meeting id（例如 "abc-defg-hij"）
+  /// 由 googleMeetUrl 解析取得；在 Bot 成功加入前為 null
+  nativeMeetingId      String?       @map("vexa_native_meeting_id")
   /// 會議名稱（可自訂，預設由系統生成，例如「會議 2026-05-26 14:30」）
   name                 String
   /// Google Meet URL（使用者輸入或從 meet.new 取得）
   googleMeetUrl        String        @map("google_meet_url")
   status               MeetingStatus @default(PENDING)
-  /// 邀請 Bot 的使用者 ID（邏輯關聯 public.users.id）
-  createdByVexaUserId  Int           @map("created_by_vexa_user_id")
-  /// 邀請 Bot 時所使用的 API token 記錄 ID（邏輯關聯 public.api_tokens.id）
-  /// 用於服務重啟後恢復 MeetingSession（重新建立 WebSocket、呼叫 Vexa Bot API）
-  /// 不存 token 字串，只存指向 public.api_tokens 的整數 ID，避免資料重複
-  creatorApiTokenId    Int           @map("creator_api_token_id")
-  /// 會議實際開始時間（Vexa Bot 成功加入後記錄）
+  /// 邀請 Bot 的使用者 ID（邏輯關聯 app.users.id）
+  createdByUserId      Int           @map("created_by_vexa_user_id")
+  /// 會議實際開始時間（Bot 成功加入後記錄）
   startedAt            DateTime?     @map("started_at")
   /// 會議結束時間（Bot 離開後記錄）
   endedAt              DateTime?     @map("ended_at")
@@ -292,10 +320,9 @@ model MeetingInstance {
   project Project? @relation(fields: [projectId], references: [id])
 
   @@index([projectId, createdAt(sort: Desc)])   // 專案會議清單分頁（projectId IS NOT NULL 查詢）
-  @@index([createdByVexaUserId, createdAt(sort: Desc)])  // 全局 Meetings 頁面分頁（跨專案 + 無專案）
-  @@index([vexaMeetingId])
+  @@index([createdByUserId, createdAt(sort: Desc)])  // 全局 Meetings 頁面分頁（跨專案 + 無專案）
   @@index([status])
-  @@index([createdByVexaUserId, status])   // activeBotCount 查詢（GET /me 及建立會議前並發檢查）
+  @@index([createdByUserId, status])   // activeBotCount 查詢（GET /me 及建立會議前並發檢查）
   @@map("meeting_instances")
   @@schema("app")
 }
@@ -346,12 +373,12 @@ enum ActivityAction {
 }
 
 enum MeetingStatus {
-  PENDING // 會議實例已建立，Bot 尚未加入（Vexa API 呼叫中）
+  PENDING // 會議實例已建立，Bot 尚未加入（Recall dispatch 進行中）
   ACTIVE  // Bot 已成功加入會議，逐字稿進行中
   ENDED   // 會議已結束（正常）：Bot 主動離開或使用者呼叫 POST /bot/leave
   FAILED  // 異常終止態（但非不可逆）：
           //   - 服務重啟時發現的 zombie PENDING（5 分鐘超時清理）
-          //   - Bot 異常終止：Vexa 回報 meeting.status = "failed"（Bot 在 active 前被踢出或逾時）
+          //   - Bot 異常終止：provider 回報 bot 結束於 admitted 之前（被踢出或逾時）
           //     → 由 handleSessionClose(id, 'failed') 設定，不觸發摘要工作流
           //   - 使用者主動取消 PENDING（POST .../cancel）也會落入 FAILED
           //   ⚠️ FAILED 與 ENDED 皆不可刪除（保護歷史查詢紀錄）
@@ -365,63 +392,10 @@ enum MeetingStatus {
 }
 
 // ══════════════════════════════════════════════════
-// public schema：Vexa 管理，App 只讀。
-// ⚠️ 以下 model 定義「不寫入 schema.prisma」（datasource.schemas 只有 "app"）——
-//    僅作為欄位參考。實際存取一律走 prisma.$queryRaw（見 06-後端架構.md §四 auth、§五之一 逐字稿）。
-//    App 實際用到的 public 表：users、meetings、transcriptions、api_tokens。
+// public schema：已不再使用（2026-08 移除 Vexa）
+// 身份層搬進 app.users / app.user_tokens 之後，程式碼沒有任何一處讀 public.*，
+// 也不再有 $queryRaw。舊表留在 DB 只是為了保存歷史資料。
 // ══════════════════════════════════════════════════
-
-// model ApiToken {            // public.api_tokens：vexaToken 驗證 + 取得 user_id / scopes
-//   id        Int       @id @default(autoincrement())
-//   token     String
-//   userId    Int       @map("user_id")
-//   scopes    String[]                       // text[]：bot / browser / tx
-//   expiresAt DateTime? @map("expires_at")
-//   @@map("api_tokens")
-//   @@schema("public")
-// }
-
-// model User {
-//   id                Int      @id @default(autoincrement())
-//   email             String
-//   name              String?
-//   maxConcurrentBots Int      @map("max_concurrent_bots")
-//   createdAt         DateTime @map("created_at")
-//   data              Json
-//   @@map("users")
-//   @@schema("public")
-// }
-
-// model Meeting {
-//   id                 Int       @id @default(autoincrement())
-//   userId             Int       @map("user_id")
-//   platform           String
-//   platformSpecificId String?   @map("platform_specific_id")
-//   status             String
-//   botContainerId     String?   @map("bot_container_id")
-//   startTime          DateTime? @map("start_time")
-//   endTime            DateTime? @map("end_time")
-//   data               Json
-//   createdAt          DateTime  @map("created_at")
-//   updatedAt          DateTime  @map("updated_at")
-//   @@map("meetings")
-//   @@schema("public")
-// }
-
-// model Transcription {
-//   id         Int      @id @default(autoincrement())
-//   meetingId  Int      @map("meeting_id")
-//   startTime  Float    @map("start_time")
-//   endTime    Float    @map("end_time")
-//   text       String
-//   speaker    String?
-//   language   String?
-//   createdAt  DateTime? @map("created_at")
-//   sessionUid String?  @map("session_uid")
-//   segmentId  String?  @map("segment_id")
-//   @@map("transcriptions")
-//   @@schema("public")
-// }
 ```
 
 ---
@@ -429,8 +403,10 @@ enum MeetingStatus {
 ## 三、Table 關聯圖
 
 ```
-public.users (Vexa)
-    │ (邏輯關聯，無 FK)
+app.users
+    ├─── app.user_tokens.user_id             ──►  [1:N]（唯一有 FK 約束的一條）
+    │
+    │ (以下為邏輯關聯，無 FK：欄位名保留 *_vexa_user_id，語意已是 app.users.id)
     ├─── app.projects.owner_vexa_user_id
     ├─── app.project_members.vexa_user_id
     ├─── app.project_members.invited_by_vexa_user_id
@@ -440,10 +416,6 @@ public.users (Vexa)
     ├─── app.material_edit_history.performed_by_vexa_user_id
     ├─── app.activity_logs.actor_vexa_user_id
     └─── app.meeting_instances.created_by_vexa_user_id
-
-public.meetings (Vexa)
-    │ (邏輯關聯，無 FK)
-    └─── app.meeting_instances.vexa_meeting_id
 
 app.projects
     ├─── app.project_members.project_id      ──►  [1:N]
@@ -546,26 +518,22 @@ if (existing && existing.deletedAt) {
 ```typescript
 ```
 
-### 4.4 MeetingInstance 的 vexaMeetingId / vexaNativeMeetingId 為何可為 null
+### 4.4 MeetingInstance 的 nativeMeetingId 為何可為 null
 
-建立會議實例時，需呼叫 Vexa API（`POST /bots`）讓 Bot 加入 Google Meet。
-此 API 呼叫為非同步，且可能失敗。因此：
+建立會議實例時要先請 provider（Recall）派 bot 進 Google Meet，這是非同步且可能失敗的。因此：
 
-- **建立中**（`status = PENDING`）：`vexaMeetingId = null`、`vexaNativeMeetingId = null`
-- **成功加入**（`status = ACTIVE`）：
-  - `vexaMeetingId` = Vexa 回傳的 `meeting.id`（整數，用於查詢逐字稿）
-  - `vexaNativeMeetingId` = 由 `googleMeetUrl` 解析出的 Meet code（例如 `abc-defg-hij`），
-    用於呼叫 Vexa 的 `/speak`、`/chat`、`DELETE /bots` 等 Bot 控制 API
-- **加入失敗**：保留 `PENDING` 狀態並記錄錯誤，UI 顯示重試選項
+- **建立中**（`status = PENDING`）：`nativeMeetingId = null`
+- **成功加入**（`status = ACTIVE`）：`nativeMeetingId` = 由 `googleMeetUrl` 解析出的
+  Meet code（例如 `abc-defg-hij`）
+- **加入失敗**：轉為 `FAILED`，UI 顯示重新邀請選項
+
+> **provider 端的 bot id 不落 DB。** Vexa 時代還有一個 `vexa_meeting_id`（整數）用來查逐字稿，
+> Recall 用的是字串 bot id，且逐字稿走 webhook 推送、活在記憶體裡，沒有「用 id 回頭查」這條路，
+> 所以該欄位隨 Vexa 一併刪除。代價是重啟後接不回進行中的會議（見 13 §已知限制）。
 
 > **無關聯專案的會議**：建立時 `projectId = null`，`MeetingSession.difyDatasetId = null`。
 > Bot Session 中 `dispatchQuestion` 收到喚醒詞後，若 `difyDatasetId` 為 null，
 > 以最近 30 段逐字稿作為 context，透過 Claude（`claude-sonnet-4-6`）直接回答；不呼叫 Dify Chatflow。
-
-> **為何需要兩個不同的 ID？**
-> Vexa 的逐字稿查詢（`public.transcriptions`）使用整數 `meeting_id`，
-> 而 Bot 控制 API（`/speak`、`/chat` 等）使用 `{platform}/{native_meeting_id}` 路徑，
-> 兩者不可互換。
 
 ### 4.5 Dify Dataset 與專案的關係
 
@@ -589,17 +557,14 @@ if (existing && existing.deletedAt) {
 ```typescript
 interface MeetingSession {
   meetingInstanceId: string         // app.meeting_instances.id
-  vexaMeetingId: number             // public.meetings.id（整數，用於查詢逐字稿）
   platform: string                  // 固定為 "google_meet"
   nativeMeetingId: string           // Google Meet code，例如 "abc-defg-hij"
-                                    // 用於呼叫 Vexa Bot API（/speak、/chat、DELETE /bots）
   difyDatasetId: string | null      // 決定查詢哪個 Knowledge Base（null = 無關聯專案，Q&A 功能停用）
-  creatorVexaToken: string          // 邀請者的 vexa-token（用於呼叫 Vexa Bot API）
-                                    // 服務重啟時從 public.api_tokens WHERE id = creatorApiTokenId 取得
+  botSession: BotSession | null     // provider 端的 session（Recall bot id + live stream + adapter）
+                                    // 說話/發聊天室/取逐字稿全部委派給 botSession.adapter
   isSpeaking: boolean               // 防語音重疊（TTS 播放中時為 true）
   lastWakeAt: number                // 防重複觸發的 timestamp（ms）
   processedSegmentIds: Set<string>  // 已處理過的 segmentId，防止喚醒詞重複觸發
-  wsConnection: WebSocket           // 指向 Vexa API Gateway 的 /ws 多工 WebSocket
   difyConversationId: string | null // Dify 多輪對話 ID（null = 下次重開新對話）
                                     // 超過 5 分鐘未問問題後自動重置，避免 conversation 過期或過長
   lastQuestionAt: number            // 上次問問題的 timestamp（ms），用於閒置重置計算
@@ -613,7 +578,10 @@ const activeSessions = new Map<string, MeetingSession>()
 > **`platform` 與 `nativeMeetingId` 的來源**：
 > 建立 `MeetingInstance` 時，`googleMeetUrl`（例如 `https://meet.google.com/abc-defg-hij`）
 > 可解析出 `platform = "google_meet"` 與 `nativeMeetingId = "abc-defg-hij"`，
-> 並存入 `meeting_instances.vexa_native_meeting_id` 欄位，供 session 恢復時使用。
+> 並存入 `meeting_instances.vexa_native_meeting_id` 欄位（Prisma 上叫 `nativeMeetingId`）。
+>
+> ⚠️ session 本身**無法**在重啟後恢復：`botSession` 是活的連線與記憶體緩衝，
+> 進程一死就沒了。啟動時一律把殘留的 ACTIVE 會議收尾成 ENDED（見 13 §已知限制）。
 
 ### 4.7 成員邀請生命週期（`project_invitations`）
 
@@ -648,6 +616,8 @@ const activeSessions = new Map<string, MeetingSession>()
 
 | 資料表 | 索引欄位 | 用途 |
 |--------|---------|------|
+| `users` | `email` UNIQUE | 登入時 get-or-create、成員查詢 |
+| `user_tokens` | `token` UNIQUE | 每個 API request 的 Bearer 驗證（熱路徑） |
 | `projects` | `owner_vexa_user_id` | 查詢某使用者擁有的所有專案 |
 | `projects` | `deleted_at` | 過濾已刪除的專案 |
 | `project_members` | `(project_id, vexa_user_id)` UNIQUE | 防重複加入 + 查詢成員 |
@@ -663,7 +633,6 @@ const activeSessions = new Map<string, MeetingSession>()
 | `material_edit_history` | `material_id` | 單一檔案的操作歷史 |
 | `meeting_instances` | `(project_id, created_at DESC)` | 專案會議清單分頁（project_id IS NOT NULL 查詢） |
 | `meeting_instances` | `(created_by_vexa_user_id, created_at DESC)` | 全局 Meetings 頁面分頁（跨專案 + 無專案） |
-| `meeting_instances` | `vexa_meeting_id` | 接收 Vexa WS 狀態事件時查找對應實例 |
 | `meeting_instances` | `status` | 查詢所有進行中的會議（ACTIVE），用於服務重啟後恢復 session |
 | `meeting_instances` | `(created_by_vexa_user_id, status)` | activeBotCount 查詢（`GET /me` 及建立會議前的並發檢查） |
 
@@ -680,41 +649,40 @@ const activeSessions = new Map<string, MeetingSession>()
 DATABASE_URL="postgresql://postgres:[PWD]@db.[PROJ].supabase.co:5432/postgres?schema=app"
 ```
 
-其餘（Supabase Storage / Dify / Anthropic / Vexa / 邀請信 SMTP 等）一律以 06 §十 為準。
+其餘（Supabase Storage / Dify / Anthropic / Recall / 邀請信 SMTP 等）一律以 06 §十 為準。
 
 ---
 
-## 七、Migration 步驟
+## 七、Migration / 建置步驟
+
+本專案是 **`db push` 工作流**，沒有 `migrations/` 目錄。日常只要跑 `start.ps1`
+（它會依序做完下面 2～4 步）；手動做的話：
 
 ```bash
-# 1. 啟動 Vexa-lite，等待 public schema migrate 完成
-docker compose up -d vexa-lite
+# 1. 起本機基礎設施（Postgres + MinIO）
+docker compose up -d --remove-orphans
 
-# 2. 建立 app schema
-# 在 Supabase SQL Editor 執行：
-# CREATE SCHEMA IF NOT EXISTS app;
-# GRANT ALL ON SCHEMA app TO postgres;
-# GRANT USAGE ON SCHEMA app TO authenticated;
+# 2. 一次性遷移前置：先抹平破壞性差異，否則 db push 會因「刪掉有資料的欄位」失敗
+cd backend
+npx prisma db execute --schema prisma/schema.prisma --file scripts/sql/01-pre-db-push.sql
 
-# 3. 同步 Vexa 的 public schema 定義（只讀參考）
-#    ⚠️ 危險操作：prisma db pull 會重寫 schema.prisma 中「所有 public schema model」，
-#    包括可能覆蓋你手動保留的 User/Meeting/Transcription 定義，也可能誤改 app schema block。
-#    建議只在「初次建立專案時」執行一次，之後如需更新 Vexa public schema，
-#    手動對照差異後再修改，不要直接 re-run prisma db pull。
-npx prisma db pull
-# → 自動補充 public schema 的 model 定義到 schema.prisma
-# → 執行後務必 diff 確認：只保留 User、Meeting、Transcription；
-#    刪除 Vexa 其他用不到的 model；確認 app schema models 未被覆蓋
+# 3. 套用 schema（會自動建立 app schema 與所有表）
+npx prisma db push
+npx prisma generate
 
-# 4. 執行 app schema 的初始 migration
-npx prisma migrate dev --name init_app_schema
+# 4. 一次性遷移後置：把身份資料從 Vexa 的 public.users / public.api_tokens 搬進 app schema
+#    ⚠️ 不做的話，既有專案／會議的擁有者會對應到錯的人（不是資料遺失，是資料錯給人）
+npx prisma db execute --schema prisma/schema.prisma --file scripts/sql/02-post-db-push.sql
 
-# 5. 確認 Supabase Storage bucket 已建立
-# bucket name: meeting-materials
-# visibility: private
-# file size limit: 15 MB
-# allowed MIME types: application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document, text/plain, text/markdown
+# 5. 確認 Storage bucket 已建立（本機 MinIO 由 compose 的 minio-init 自動建）
+# bucket name: meeting-materials / private / 15 MB
+# allowed MIME: application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document, text/plain, text/markdown
 ```
+
+兩個 SQL 都是**冪等**的：跑過就是 no-op，全新環境也安全。內容與理由見檔案開頭註解。
+
+> `prisma db pull` 在移除 Vexa 之後**不再需要**（原本用途是同步 Vexa 的 public schema 定義）。
+> `schemas = ["app"]` 下 db push 也不會動到 public 的舊表。
 
 ---
 
