@@ -11,33 +11,34 @@ meetbot 是一個 AI 會議助理，讓「蜜塔（Meeta）」機器人加入 Go
 
 | 層次 | 技術 |
 |------|------|
-| Backend | Hono（Node.js 20+）+ Prisma multiSchema + Vitest |
+| Backend | Hono（Node.js 20+）+ Prisma + Vitest |
 | Frontend | Next.js 15 App Router + shadcn/ui + TanStack Query v5 |
-| 資料庫 | Supabase PostgreSQL（雙 schema） |
-| 外部服務 | Vexa-lite（Bot/逐字稿）、Dify（RAG/摘要）、Supabase Storage、Anthropic Claude |
+| 資料庫 | PostgreSQL（本機 Docker / Supabase），單一 `app` schema |
+| 外部服務 | Recall.ai（Bot/逐字稿）、Dify（RAG/摘要）、Supabase Storage 或 MinIO、Anthropic Claude、Gemini |
 
 ---
 
-## 雙 Schema 架構（最重要）
+## Schema 架構
 
-```
-public schema  ← Vexa 管理，只讀。使用 prisma.$queryRaw 存取，禁止建立 FK 約束
-app schema     ← 我們管理，Prisma migrate 控制
-```
+**2026-08 起單一 `app` schema。** 身份層（使用者、API token）原本寄生在 Vexa 的
+`public.users` / `public.api_tokens`，移除 Vexa 後整套搬進 `app.users` / `app.user_tokens`，
+程式碼**不再有任何 `public.*` 的 `$queryRaw`**。
 
-- 跨 schema 關聯以**整數邏輯 FK**（`vexa_user_id`、`vexa_meeting_id`）記錄，無 DB constraint
-- `prisma.$queryRaw` 用於所有 `public.*` 查詢
+- 使用者關聯欄位名仍是 `*_vexa_user_id`（`@map` 保留 DB 欄位名，只是沒改名），
+  Prisma model 上一律是 `ownerUserId` / `userId` / `createdByUserId`
+- 這些欄位**不建 FK 約束**（沿用原本的邏輯 FK 策略）；唯一有 FK 的是 `user_tokens.user_id`
+- 舊的 `public` 表留在 DB 但沒有程式碼碰它；`schemas = ["app"]` 下 db push 也不會動到
 
 ---
 
 ## 關鍵設計決策（避免重踩的坑）
 
-1. **per-session WebSocket**：每個活躍會議用邀請者自己的 token 建立獨立 WS 連線。原因：Vexa WS 授權以 `meeting.user_id == current_user.id` 判斷，單一服務 token 只能訂閱自己建立的會議
+1. **provider 抽象層**：上層（session/喚醒詞/插話/摘要）只認 `MeetingBotProvider` 介面，**不得出現 provider 名稱的條件分支**。目前唯一實作是 `RecallAdapter`；逐字稿與聊天室訊息走 Recall webhook 推送（不再有 per-session WebSocket，那是 Vexa 時代的產物）
 2. **in-memory activeSessions Map**：Bot session 狀態全在記憶體，**不可多進程部署**（PM2 fork mode 是唯一安全方案）
-3. **DB 轉 ACTIVE 時機**：建立 meeting 後 DB 維持 PENDING，待 Vexa WS 送來 `{type:"meeting.status", payload:{status:"active"}}` 才轉 ACTIVE
+3. **DB 轉 ACTIVE 時機**：建立 meeting 後 DB 維持 PENDING，待 bot **真的被准入**才轉 ACTIVE。ACTIVE 的語意是「蜜塔在會議裡」，並發上限與前端狀態都靠它，提前設會讓人以為成功又白佔額度
 4. **handleSessionClose 原子鎖**：先從 Map delete，再做後續處理，確保摘要只觸發一次
 5. **summary sentinel**：`summary = null` = 摘要尚未生成（前端繼續輪詢）；`summary = ''` = 已嘗試但無內容（前端停止輪詢）；有字串 = 正常
-6. **逐字稿欄位 alias**：Vexa REST API 回傳 `start`/`end`（Pydantic alias），非 `start_time`/`end_time`，需手動映射到 camelCase `startTime`/`endTime`
+6. **逐字稿只活在記憶體**：segment 沒落 DB，會議結束或後端重啟後就取不回來（`GET .../transcriptions` 回空陣列並留 warn log，重啟時 ACTIVE 會議一律收尾成 ENDED）。會後的 Markdown 逐字稿有存 Storage，不受影響。詳見 `docs/13-系統現況與路線圖.md § 已知限制`
 
 ---
 
@@ -50,7 +51,7 @@ meetbot/
 ├── tests/
 │   ├── unit/         ← Vitest 單元測試（mock 外部依賴）
 │   ├── integration/  ← 整合測試（需真實服務，手動執行）
-│   └── mocks/        ← 外部服務 mock（prisma/dify/supabase/vexa）
+│   └── mocks/        ← 外部服務 mock（prisma/dify/supabase）
 ├── docs/
 │   ├── 02~07-*.md    ← 設計文件（需求/Schema/API/前端/後端架構/細節）
 │   ├── 08-評估提示詞.md ← 實作前的設計評估記錄
@@ -87,10 +88,8 @@ cd backend && npm run dev
 npx vitest run
 
 # DB schema 同步（本專案是 db push 工作流，無 migrations 目錄；需 .env 有 DIRECT_URL）
+# ⚠️ 前後各有一段一次性遷移 SQL（移除 Vexa），start.ps1 會自動跑；手動做見 docs/03 §七
 npx prisma db push
-
-# DB pull（同步 Vexa public schema）
-npx prisma db pull   # ⚠️ 執行後務必 diff，只保留 User/Meeting/Transcription
 ```
 
 ---
