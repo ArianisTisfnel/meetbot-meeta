@@ -66,7 +66,7 @@ async function loadKbContentCard(session: MeetingSession, difyDatasetId: string)
 
 // ── startBotSession ─────────────────────────────────────────────────────────
 //
-// 取代舊的 createSession：透過 provider 抽象層派 bot（含 Vexa→Recall failover），
+// 取代舊的 createSession：透過 provider 抽象層派 bot，
 // 在背景等待 bot 被 admitted。**不阻塞 HTTP 呼叫端**（createMeeting 立即回 PENDING）：
 //   - admitted（join resolve）→ DB 轉 ACTIVE、發歡迎訊息
 //   - 兩個 provider 都進不去（join reject）→ DB 轉 FAILED

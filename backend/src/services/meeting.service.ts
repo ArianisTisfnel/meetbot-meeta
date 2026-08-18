@@ -190,7 +190,7 @@ export async function leaveMeeting(meetingInstanceId: string): Promise<{
 // ── Cancel pending meeting ───────────────────────────────────────────────────
 
 /**
- * 取消等待中（PENDING）的會議：撤除可能已派出的 Vexa bot、關閉 WS session，並標記為 FAILED。
+ * 取消等待中（PENDING）的會議：撤除可能已派出的 bot、關閉 session，並標記為 FAILED。
  * 與 leaveMeeting 不同，不觸發摘要（會議從未真正開始）。
  * 適用情境：蜜塔卡在加入中、或想在逾時自動轉 FAILED 前手動清掉。
  */
