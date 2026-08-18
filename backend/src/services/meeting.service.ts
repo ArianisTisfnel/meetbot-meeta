@@ -353,7 +353,14 @@ export async function reinviteBot(params: {
   let targetMeetingId = meetingInstanceId
   if (meeting.status === 'ENDED') {
     // 保留原會議紀錄，另建新實例。
-    // createdByUserId 沿用原紀錄（重邀不換擁有者）。
+    //
+    // createdByUserId = 紀錄擁有者，決定誰能改名／刪除，以及這場會議算誰的歷史。
+    // **沿用原紀錄**——重邀是「把蜜塔再請回同一場會議」，不是換人接管這筆紀錄。
+    // 寫成本次邀請者的話，A 建的全局會議被 B 重邀之後 A 就失去控制權了（PR #13 審查發現）。
+    //
+    // （移除 Vexa 前這裡還要換掉 creatorApiTokenId：per-session WS 用邀請者自己的 token
+    //   建連線，Vexa 以 meeting.user_id == current_user.id 判斷授權。Recall 不用 per-user
+    //   token，該欄位已隨 Vexa 一起刪除——但上面那條「擁有者不換人」是政策，與 provider 無關。）
     const newMeeting = await prisma.meetingInstance.create({
       data: {
         projectId: meeting.projectId,

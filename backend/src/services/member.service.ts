@@ -59,6 +59,7 @@ export async function getMembers(projectId: string, userId: number) {
 
   const userMap = new Map(memberUsers.map((u) => [u.id, u]))
 
+  // 待處理邀請（讓擁有者看到「邀請中」的人）。僅擁有者可見管理；一般成員也能看到名單。
   const pending = await prisma.projectInvitation.findMany({
     where: { projectId, status: 'PENDING' },
     orderBy: { createdAt: 'desc' },
@@ -108,8 +109,8 @@ export async function updateMemberPermissions(
   })
   if (!member) throw new AppError('NOT_FOUND', 404, '成員不存在')
 
-  // canView is the baseline permission for all members and cannot be revoked.
-  // To remove access, use removeMember instead.
+  // 檢視權是每個成員的基準權限，恆為 true，不可被取消（編輯/會議為其上的加購能力）。
+  // 要移除存取請改用 removeMember。任何想把 canView 設為 false 的請求都強制矯正回 true。
   const data = { ...permissions }
   if (data.canView === false) data.canView = true
 
@@ -160,6 +161,7 @@ export async function removeMember(
   })
   if (!member) throw new AppError('NOT_FOUND', 404, '成員不存在')
 
+  // 取得被移除者 email 作為歷史快照（刪除後就查不到關聯了）
   const targetUser = await prisma.user.findUnique({
     where: { id: targetUserId },
     select: { email: true },

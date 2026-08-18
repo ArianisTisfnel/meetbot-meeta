@@ -191,6 +191,7 @@ app.patch('/projects/:projectId/meetings/:meetingId', async (c) => {
 
 // POST /projects/:projectId/meetings/:meetingId/bot/leave
 app.post('/projects/:projectId/meetings/:meetingId/bot/leave', async (c) => {
+  // bot/leave 需要會議權（canMeeting）：在後端強制驗證，不可只靠前端隱藏按鈕。
   await meetingService.requireProjectMeetingManageAccess(
     c.req.param('projectId'),
     c.req.param('meetingId'),
@@ -202,6 +203,7 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/leave', async (c) => {
 
 // POST /projects/:projectId/meetings/:meetingId/cancel
 app.post('/projects/:projectId/meetings/:meetingId/cancel', async (c) => {
+  // cancel 同樣需要會議權（canMeeting）。
   await meetingService.requireProjectMeetingManageAccess(
     c.req.param('projectId'),
     c.req.param('meetingId'),
@@ -213,6 +215,7 @@ app.post('/projects/:projectId/meetings/:meetingId/cancel', async (c) => {
 
 // POST /projects/:projectId/meetings/:meetingId/bot/reinvite
 app.post('/projects/:projectId/meetings/:meetingId/bot/reinvite', async (c) => {
+  // 先確認會議歸屬此專案且使用者有存取權；canMeeting 由 reinviteBot 內部再驗證
   await meetingService.getProjectMeeting(
     c.req.param('projectId'),
     c.req.param('meetingId'),
@@ -245,7 +248,7 @@ app.get('/projects/:projectId/meetings/:meetingId/transcriptions', async (c) => 
   return c.json(result)
 })
 
-// DELETE /projects/:projectId/meetings/:meetingId — 專案內刪除會議記錄
+// DELETE /projects/:projectId/meetings/:meetingId — 專案內刪除會議記錄（需擁有者）
 app.delete('/projects/:projectId/meetings/:meetingId', async (c) => {
   await meetingService.deleteMeeting(
     c.req.param('meetingId'),
@@ -258,6 +261,7 @@ app.delete('/projects/:projectId/meetings/:meetingId', async (c) => {
 // GET /projects/:projectId/meetings/:meetingId/transcript — 專案內會後完整逐字稿
 app.get('/projects/:projectId/meetings/:meetingId/transcript', async (c) => {
   const meetingId = c.req.param('meetingId')
+  // 存取權限驗證（getProjectMeeting 內含 canView 檢查）
   await meetingService.getProjectMeeting(c.req.param('projectId'), meetingId, c.get('userId'))
   const markdown = await meetingService.getMeetingTranscriptMarkdown(meetingId)
   return c.json({ markdown })

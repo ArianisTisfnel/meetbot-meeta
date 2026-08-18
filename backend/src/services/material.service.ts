@@ -64,6 +64,7 @@ export async function uploadMaterial(
     displayName?: string
   },
 ) {
+  // ① Validate MIME type and size
   if (!ALLOWED_MIME_TYPES.has(file.mimeType)) {
     throw new AppError('UNSUPPORTED_MEDIA_TYPE', 415, '僅支援 PDF、DOCX、TXT、MD')
   }
@@ -73,6 +74,7 @@ export async function uploadMaterial(
 
   const project = await requireEditAccess(projectId, userId)
 
+  // ② SHA-256 deduplication
   const hash = sha256(file.buffer)
 
   const existing = await prisma.material.findFirst({
@@ -86,12 +88,16 @@ export async function uploadMaterial(
   }
 
   if (existing && existing.deletedAt) {
+    // Free up the unique slot so we can insert a new record
     await prisma.material.update({
       where: { id: existing.id },
       data: { sha256: `DELETED_${existing.id}` },
     })
   }
 
+  // ③ Upload to Storage: {projectId}/{uuid}/{safeName}
+  // 物件 key 只用 ASCII 安全字元（避開跨 provider 的 key 編碼問題）。
+  // 原始檔名仍存於 DB（filename / displayName），這裡只用清理過的安全名稱當儲存 key。
   const safeName =
     file.filename.replace(/[^A-Za-z0-9._-]/g, '_').replace(/_+/g, '_') || 'file'
   const fileUuid = crypto.randomUUID()
@@ -102,6 +108,7 @@ export async function uploadMaterial(
   let batch: string | undefined
 
   try {
+    // ④ Upload to Dify (use project's difyDatasetId, not projectId)
     const difyResult = await uploadDocument(project.difyDatasetId, {
       buffer: file.buffer,
       filename: file.filename,
@@ -110,6 +117,7 @@ export async function uploadMaterial(
     documentId = difyResult.documentId
     batch = difyResult.batch
   } catch (err) {
+    // ④ failed → rollback Storage
     await deleteFile(storagePath).catch((e: unknown) =>
       logger.error({ err: e }, 'Rollback: failed to delete storage file'),
     )
@@ -119,6 +127,7 @@ export async function uploadMaterial(
   let material: Awaited<ReturnType<typeof prisma.material.create>>
 
   try {
+    // ⑤ Prisma create Material
     material = await prisma.material.create({
       data: {
         projectId,
@@ -134,6 +143,7 @@ export async function uploadMaterial(
       },
     })
   } catch (err) {
+    // ⑤ failed → rollback Storage + Dify
     await deleteFile(storagePath).catch((e: unknown) =>
       logger.error({ err: e }, 'Rollback: failed to delete storage file'),
     )
@@ -149,6 +159,7 @@ export async function uploadMaterial(
     throw err
   }
 
+  // ⑥ MaterialEditHistory (best-effort, no rollback on failure)
   await prisma.materialEditHistory
     .create({
       data: {

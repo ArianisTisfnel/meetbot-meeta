@@ -16,6 +16,7 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase()
 }
 
+/** 產生原始 token（回傳給使用者 / 連結），與其 SHA-256 hash（存 DB）。 */
 function generateToken(): { token: string; tokenHash: string } {
   const token = randomBytes(32).toString('base64url')
   return { token, tokenHash: hashToken(token) }
@@ -79,7 +80,7 @@ export async function createInvitation(
       projectId,
       email,
       tokenHash,
-      // canView is the baseline permission for all members and cannot be revoked
+      // 檢視權是成員基準權限，恆為 true（編輯/會議為其上的加購能力）
       canView: true,
       canEdit: permissions.canEdit,
       canMeeting: permissions.canMeeting,
@@ -106,6 +107,7 @@ export async function createInvitation(
 
   return {
     ...toInvitationDto(invitation),
+    // 回傳原始連結，方便擁有者在未設定 SMTP 時手動轉交（token 之後不會再出現）
     acceptUrl: url,
     emailSent,
   }
@@ -244,6 +246,7 @@ async function acceptInvitationRecord(
   }
 
   if (invitation.status === 'ACCEPTED') {
+    // 冪等：已接受過就直接回成功
     return { projectId: invitation.projectId, alreadyAccepted: true }
   }
   if (invitation.status !== 'PENDING') {
@@ -257,6 +260,7 @@ async function acceptInvitationRecord(
     throw new AppError('INVITATION_EXPIRED', 410, '此邀請連結已過期，請聯絡邀請人重寄')
   }
 
+  // 既是成員（race）→ 標記接受、冪等返回
   const existingMember = await prisma.projectMember.findUnique({
     where: { projectId_userId: { projectId: invitation.projectId, userId } },
   })
