@@ -212,12 +212,7 @@ export function buildLiveHandlers(meetingInstanceId: string): LiveHandlers {
     onChat: (msg) => {
       const s = activeSessions.get(meetingInstanceId)
       if (!s || !s.botSession) return
-      handleChatMessage(s, {
-        sender: msg.sender,
-        text: msg.text,
-        timestamp: msg.timestamp,
-        is_from_bot: msg.isFromBot,
-      }).catch((err) => logger.error({ err, meetingInstanceId }, 'handleChatMessage error'))
+      handleChatMessage(s, msg).catch((err) => logger.error({ err, meetingInstanceId }, 'handleChatMessage error'))
       recordConversation(s, {
         speaker: msg.sender,
         text: msg.text,
@@ -332,8 +327,13 @@ export async function handleSessionClose(
 
 // ── restoreActiveSessions ─────────────────────────────────────────────────────
 //
-// 重啟後清理狀態：Recall bot session 無法在重啟後重接，
-// 因此 ACTIVE 會議一律收尾成 ENDED。
+// 重啟後清理狀態：Recall 的 bot session 活在記憶體（WS/webhook 連線 + 逐字稿緩衝），
+// 進程一死就回不來，也沒有可以重抓的 REST 端點——所以 ACTIVE 會議一律收尾成 ENDED。
+//
+// 為什麼不再嘗試補摘要（移除 Vexa 前的舊行為）：摘要的輸入是逐字稿，而逐字稿只存在於
+// 那個已經消失的 session 裡，重試只會拿到空陣列、生出空摘要。與其假裝努力過，
+// 不如直接落 summary='' 這個哨兵讓前端停止輪詢。
+// 要真正救回重啟後的摘要，得先讓 segment 落 DB（見 docs/13-系統現況與路線圖.md）。
 
 export async function restoreActiveSessions(): Promise<void> {
   // 階段一：清理 zombie PENDING（超過 5 分鐘仍 PENDING 者標為 FAILED）
@@ -349,18 +349,30 @@ export async function restoreActiveSessions(): Promise<void> {
   }
 
   // 階段二：ACTIVE 會議重啟後無法重接 → 收尾成 ENDED + summary=''
+  //
+  // where 帶 summary: null 是刻意的，與 handleSessionClose 裡的守衛同一個理由：
+  // 只在「還沒有摘要」時才寫哨兵，避免把一份已經生好的真摘要蓋成空字串。
+  // 這裡的競態雖窄（ACTIVE 期間本來就不該有摘要），但寫上去不花成本，
+  // 而漏掉的代價是使用者的摘要無聲消失。
   const activeResult = await prisma.meetingInstance.updateMany({
-    where: { status: 'ACTIVE' },
+    where: { status: 'ACTIVE', summary: null },
     data: { status: 'ENDED', endedAt: new Date(), summary: '' },
   })
-  if (activeResult.count > 0) {
+  // 已有摘要的 ACTIVE（理論上不存在，但別讓它卡在 ACTIVE 永遠不動）：只改狀態，不碰摘要。
+  const activeWithSummary = await prisma.meetingInstance.updateMany({
+    where: { status: 'ACTIVE', NOT: { summary: null } },
+    data: { status: 'ENDED', endedAt: new Date() },
+  })
+  if (activeResult.count + activeWithSummary.count > 0) {
     logger.warn(
-      { count: activeResult.count },
+      { count: activeResult.count + activeWithSummary.count, keptSummary: activeWithSummary.count },
       'startup: finalized ACTIVE meetings as ENDED (bot sessions lost on restart)',
     )
   }
 
-  // 階段三：修復 ENDED + summary=null 懸掛（逾時無法補摘要，直接設哨兵）
+  // 階段三：修復 ENDED + summary=null 懸掛。
+  // 同上：逐字稿已隨 session 消失，補不回摘要，只能落哨兵讓前端停止輪詢。
+  // 門檻 10 分鐘是為了不要誤傷「剛結束、摘要正在背景生成中」的會議。
   const SUMMARY_STALE_MINUTES = 10
   const summaryStaleThreshold = new Date(Date.now() - SUMMARY_STALE_MINUTES * 60 * 1000)
 
@@ -376,7 +388,11 @@ export async function restoreActiveSessions(): Promise<void> {
   }
 
   logger.info(
-    { stalePending: staleResult.count, activeFinalized: activeResult.count, staleSummary: staleSummaryResult.count },
+    {
+      stalePending: staleResult.count,
+      activeFinalized: activeResult.count + activeWithSummary.count,
+      staleSummary: staleSummaryResult.count,
+    },
     'startup restore completed',
   )
 }

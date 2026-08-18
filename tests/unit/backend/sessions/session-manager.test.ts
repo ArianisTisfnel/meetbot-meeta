@@ -41,11 +41,11 @@ import type { MeetingSession } from '../../../../backend/src/types/session'
 
 function fakeBotSession(overrides: Partial<BotSession> = {}): BotSession {
   return {
-    provider: 'vexa',
+    provider: 'recall',
     platform: 'google_meet',
     nativeMeetingId: 'abc-defg-hij',
     providerMeetingId: 42,
-    adapter: { name: 'vexa', sendChat: vi.fn().mockResolvedValue(undefined) } as any,
+    adapter: { name: 'recall', sendChat: vi.fn().mockResolvedValue(undefined) } as any,
     state: {},
     ...overrides,
   }
@@ -54,11 +54,9 @@ function fakeBotSession(overrides: Partial<BotSession> = {}): BotSession {
 function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
   const session: MeetingSession = {
     meetingInstanceId: 'meet-1',
-    vexaMeetingId: 42,
     platform: 'google_meet',
     nativeMeetingId: 'abc-defg-hij',
     difyDatasetId: 'dataset-abc',
-    creatorVexaToken: 'tok-123',
     isSpeaking: false,
     lastWakeAt: 0,
     processedSegmentIds: new Set(),
@@ -77,7 +75,6 @@ const BASE = {
   googleMeetUrl: 'https://meet.google.com/abc-defg-hij',
   nativeMeetingId: 'abc-defg-hij',
   difyDatasetId: 'dataset-abc',
-  creatorVexaToken: 'tok-123',
 }
 
 describe('startBotSession', () => {
