@@ -160,18 +160,14 @@ export function handleTranscriptionEvent(
       { agentId: session.agentId, at: elapsedSec(session), text: text.slice(0, 60) },
       'agent relay: transcription completed',
     )
-    const seg = {
+    session.handlers.onSegment?.({
       segmentId: `agent:${itemId}`,
       text,
       speaker: resolveSpeaker(session),
       startTime: elapsedSec(session),
       endTime: elapsedSec(session),
       language: null,
-    }
-    // 同一段也寫進會議逐字稿（recall-adapter 掛的 sink）：OpenAI STT 一句一段，
-    // 取代 recallai_streaming 靜音斷不開時的黏段（見 AgentSession.recordSegment）。
-    session.recordSegment?.(seg)
-    session.handlers.onSegment?.(seg)
+    })
     return
   }
 

@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { env } from '../types/env.js'
-import type { LiveHandlers, TranscriptSegment } from '../provider/types.js'
+import type { LiveHandlers } from '../provider/types.js'
 
 /**
  * Agent session registry — Output Media 即時語音 agent（方案 A）的共用狀態。
@@ -48,17 +48,6 @@ export interface AgentSession {
    * 開口時刻，錨點不對齊會把即時插話誤判成晚到事件而略過。
    */
   anchorMs: number
-  /**
-   * 逐字稿寫入口（由 recall-adapter 在 join 時掛上，寫進它的 realtime segments buffer）。
-   *
-   * 為什麼要有這條：會議紀錄的逐字稿原本只來自 Recall 的 recallai_streaming，
-   * 它靠靜音斷句——麥克風環境吵、VAD 關不上時，好幾句話黏成一大段
-   *（實測 2026-08-17：三句相隔 40 秒黏成一條）。relay 的 OpenAI STT 本來就
-   * 一句一段，讓它同時寫進逐字稿，agent 在線時就不再依賴黏住的 webhook 段。
-   * 用 callback 而非直接 import：recall-adapter 已 import relay（stopSpeaking），
-   * 反向 import 會循環。
-   */
-  recordSegment: ((seg: TranscriptSegment) => void) | null
 }
 
 const byAgentId = new Map<string, AgentSession>()
@@ -114,7 +103,6 @@ export function registerAgentSession(
     speakEpoch: 0,
     pcmCache: new Map(),
     anchorMs: Date.now(),
-    recordSegment: null,
   }
   byAgentId.set(agentId, session)
   agentIdByBotId.set(botId, agentId)

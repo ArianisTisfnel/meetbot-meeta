@@ -90,18 +90,6 @@ describe('handleTranscriptionEvent（OpenAI 轉錄事件 → 既有 LiveHandlers
     expect(itemTexts.has('item-1')).toBe(false)
   })
 
-  it('completed → 同一段寫進逐字稿 sink（recordSegment），與 onSegment 相同內容', () => {
-    const recorded: unknown[] = []
-    ctx.session.recordSegment = (seg) => recorded.push(seg)
-    handleTranscriptionEvent(ctx.session, itemTexts, {
-      type: 'conversation.item.input_audio_transcription.completed',
-      item_id: 'rec-1',
-      transcript: '蜜塔，今天議程是什麼？',
-    })
-    expect(recorded).toHaveLength(1)
-    expect(recorded[0]).toEqual(ctx.onSegment.mock.calls[0][0])
-  })
-
   it('提示詞回音（幻覺）→ partial 與定稿都被丟棄，不進 handlers', () => {
     const PROMPT =
       '這是一場繁體中文與英文混雜的線上會議。會議助理的名字是「蜜塔」（Meeta），與會者會喊「蜜塔」來提問。'
