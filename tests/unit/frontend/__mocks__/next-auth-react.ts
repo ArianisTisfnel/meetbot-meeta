@@ -1,11 +1,11 @@
 import { vi } from 'vitest'
 
 export const getSession = vi.fn(() =>
-  Promise.resolve({ vexaToken: 'test-token' })
+  Promise.resolve({ authToken: 'test-token' })
 )
 
 export const useSession = vi.fn(() => ({
-  data: { vexaToken: 'test-token' },
+  data: { authToken: 'test-token' },
   status: 'authenticated',
 }))
 

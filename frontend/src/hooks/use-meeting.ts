@@ -37,15 +37,15 @@ export function useMeeting(projectId: string | null, meetingId: string) {
 }
 
 /**
- * 會後完整逐字稿（Markdown）。僅在 `enabled` 為 true 時抓取
- * （呼叫端應在 meeting.hasTranscript 為 true 時才啟用，避免無謂請求）。
+ * 會後完整逐字稿（Markdown）的 query 設定。
+ * 抽出來共用，讓「下載逐字稿」這類一次性取用可以走 queryClient.fetchQuery，
+ * 與畫面上的 useMeetingTranscript 共享同一份快取。
  */
-export function useMeetingTranscript(
+export function meetingTranscriptQueryOptions(
   projectId: string | null,
-  meetingId: string,
-  enabled: boolean
+  meetingId: string
 ) {
-  return useQuery({
+  return {
     queryKey: ['meeting-transcript', meetingId],
     queryFn: () =>
       projectId
@@ -55,6 +55,20 @@ export function useMeetingTranscript(
         : apiClient.get<MeetingTranscriptResponse>(
             `/meetings/${meetingId}/transcript`
           ),
+  }
+}
+
+/**
+ * 會後完整逐字稿（Markdown）。僅在 `enabled` 為 true 時抓取
+ * （呼叫端應在 meeting.hasTranscript 為 true 時才啟用，避免無謂請求）。
+ */
+export function useMeetingTranscript(
+  projectId: string | null,
+  meetingId: string,
+  enabled: boolean
+) {
+  return useQuery({
+    ...meetingTranscriptQueryOptions(projectId, meetingId),
     enabled: enabled && !!meetingId,
   })
 }

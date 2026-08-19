@@ -18,7 +18,7 @@ export function formatDate(dateStr: string | null): string {
 
 /**
  * 取得使用者的顯示名稱。
- * Vexa 的 public.users.name 常為 null，此時退而取 email 的 @ 前段，
+ * app.users.name 常為 null（Google 沒給顯示名稱時），此時退而取 email 的 @ 前段，
  * 避免「名稱」與「email」兩欄顯示相同字串。
  */
 export function displayName(
@@ -34,4 +34,24 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+export function downloadTextFile(filename: string, content: string): void {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+export function todayDateString(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }

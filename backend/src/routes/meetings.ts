@@ -22,11 +22,8 @@ app.post('/meetings', async (c) => {
   const body = await c.req.json().catch(() => ({}))
   const { googleMeetUrl, name, projectId } = createMeetingSchema.parse(body)
   const result = await meetingService.createMeeting({
-    vexaUserId: c.get('vexaUserId'),
-    vexaApiTokenId: c.get('vexaApiTokenId'),
+    userId: c.get('userId'),
     maxConcurrentBots: c.get('maxConcurrentBots'),
-    vexaToken: c.get('vexaToken'),
-    vexaTokenScopes: c.get('vexaTokenScopes'),
     googleMeetUrl,
     name,
     projectId,
@@ -37,7 +34,7 @@ app.post('/meetings', async (c) => {
 // GET /meetings — 全局列表
 app.get('/meetings', async (c) => {
   const q = c.req.query()
-  const result = await meetingService.listMeetings(c.get('vexaUserId'), {
+  const result = await meetingService.listMeetings(c.get('userId'), {
     page: q.page ? parseInt(q.page) : 1,
     perPage: q.per_page ? parseInt(q.per_page) : 20,
     search: q.search,
@@ -50,7 +47,7 @@ app.get('/meetings', async (c) => {
 
 // GET /meetings/:meetingId — 全局取單一
 app.get('/meetings/:meetingId', async (c) => {
-  const meeting = await meetingService.getMeeting(c.req.param('meetingId'), c.get('vexaUserId'))
+  const meeting = await meetingService.getMeeting(c.req.param('meetingId'), c.get('userId'))
   return c.json(meeting)
 })
 
@@ -61,7 +58,7 @@ app.patch('/meetings/:meetingId', async (c) => {
   const result = await meetingService.updateMeetingName(
     c.req.param('meetingId'),
     name,
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
   return c.json(result)
 })
@@ -69,8 +66,8 @@ app.patch('/meetings/:meetingId', async (c) => {
 // POST /meetings/:meetingId/bot/leave — 全局 Bot 離開
 app.post('/meetings/:meetingId/bot/leave', async (c) => {
   const meetingId = c.req.param('meetingId')
-  const meeting = await meetingService.getMeeting(meetingId, c.get('vexaUserId'))
-  if (meeting.createdBy.vexaUserId !== c.get('vexaUserId')) {
+  const meeting = await meetingService.getMeeting(meetingId, c.get('userId'))
+  if (meeting.createdBy.userId !== c.get('userId')) {
     throw new AppError('PERMISSION_DENIED', 403, '只有建立者可讓 Bot 離開')
   }
   const result = await meetingService.leaveMeeting(meetingId)
@@ -80,8 +77,8 @@ app.post('/meetings/:meetingId/bot/leave', async (c) => {
 // POST /meetings/:meetingId/cancel — 取消等待中的會議（建立者本人）
 app.post('/meetings/:meetingId/cancel', async (c) => {
   const meetingId = c.req.param('meetingId')
-  const meeting = await meetingService.getMeeting(meetingId, c.get('vexaUserId'))
-  if (meeting.createdBy.vexaUserId !== c.get('vexaUserId')) {
+  const meeting = await meetingService.getMeeting(meetingId, c.get('userId'))
+  if (meeting.createdBy.userId !== c.get('userId')) {
     throw new AppError('PERMISSION_DENIED', 403, '只有建立者可取消會議')
   }
   const result = await meetingService.cancelMeeting(meetingId)
@@ -92,11 +89,8 @@ app.post('/meetings/:meetingId/cancel', async (c) => {
 app.post('/meetings/:meetingId/bot/reinvite', async (c) => {
   const result = await meetingService.reinviteBot({
     meetingInstanceId: c.req.param('meetingId'),
-    vexaUserId: c.get('vexaUserId'),
-    vexaApiTokenId: c.get('vexaApiTokenId'),
+    userId: c.get('userId'),
     maxConcurrentBots: c.get('maxConcurrentBots'),
-    vexaToken: c.get('vexaToken'),
-    vexaTokenScopes: c.get('vexaTokenScopes'),
   })
   return c.json(result)
 })
@@ -104,27 +98,14 @@ app.post('/meetings/:meetingId/bot/reinvite', async (c) => {
 // GET /meetings/:meetingId/transcriptions — 全局逐字稿
 app.get('/meetings/:meetingId/transcriptions', async (c) => {
   const meetingId = c.req.param('meetingId')
-  const meeting = await meetingService.getMeeting(meetingId, c.get('vexaUserId'))
-  if (meeting.createdBy.vexaUserId !== c.get('vexaUserId')) {
+  const meeting = await meetingService.getMeeting(meetingId, c.get('userId'))
+  if (meeting.createdBy.userId !== c.get('userId')) {
     throw new AppError('PERMISSION_DENIED', 403, '只有建立者可查看此會議的逐字稿')
   }
-  if (!meeting.vexaMeetingId) {
-    return c.json({ items: [], total: 0, page: 1, perPage: 50 })
-  }
-
-  // ENDED 會議的逐字稿需 creatorApiTokenId + vexaNativeMeetingId（getMeeting 未回傳，從 DB 補查）
-  const { prisma } = await import('../lib/prisma.js')
-  const raw = await prisma.meetingInstance.findUnique({
-    where: { id: meetingId },
-    select: { creatorApiTokenId: true, vexaNativeMeetingId: true },
-  })
 
   const q = c.req.query()
   const result = await transcriptionService.getTranscriptions({
     meetingInstanceId: meetingId,
-    creatorApiTokenId: raw?.creatorApiTokenId ?? 0,
-    platform: 'google_meet',
-    vexaNativeMeetingId: raw?.vexaNativeMeetingId ?? '',
     sinceStartTime: q.since_start_time ? parseFloat(q.since_start_time) : undefined,
     page: q.page ? parseInt(q.page) : 1,
     perPage: q.per_page ? parseInt(q.per_page) : 50,
@@ -134,15 +115,15 @@ app.get('/meetings/:meetingId/transcriptions', async (c) => {
 
 // DELETE /meetings/:meetingId — 全局刪除會議記錄（建立者本人）
 app.delete('/meetings/:meetingId', async (c) => {
-  await meetingService.deleteMeeting(c.req.param('meetingId'), c.get('vexaUserId'))
+  await meetingService.deleteMeeting(c.req.param('meetingId'), c.get('userId'))
   return c.body(null, 204)
 })
 
 // GET /meetings/:meetingId/transcript — 全局會後完整逐字稿（Markdown，讀 Storage）
 app.get('/meetings/:meetingId/transcript', async (c) => {
   const meetingId = c.req.param('meetingId')
-  const meeting = await meetingService.getMeeting(meetingId, c.get('vexaUserId'))
-  if (meeting.createdBy.vexaUserId !== c.get('vexaUserId')) {
+  const meeting = await meetingService.getMeeting(meetingId, c.get('userId'))
+  if (meeting.createdBy.userId !== c.get('userId')) {
     throw new AppError('PERMISSION_DENIED', 403, '只有建立者可查看此會議的逐字稿')
   }
   const markdown = await meetingService.getMeetingTranscriptMarkdown(meetingId)
@@ -158,11 +139,8 @@ app.post('/projects/:projectId/meetings', async (c) => {
     .object({ googleMeetUrl: z.string().min(1), name: z.string().min(1).optional() })
     .parse(body)
   const result = await meetingService.createMeeting({
-    vexaUserId: c.get('vexaUserId'),
-    vexaApiTokenId: c.get('vexaApiTokenId'),
+    userId: c.get('userId'),
     maxConcurrentBots: c.get('maxConcurrentBots'),
-    vexaToken: c.get('vexaToken'),
-    vexaTokenScopes: c.get('vexaTokenScopes'),
     googleMeetUrl,
     name,
     projectId: c.req.param('projectId'),
@@ -175,7 +153,7 @@ app.get('/projects/:projectId/meetings', async (c) => {
   const q = c.req.query()
   const result = await meetingService.listProjectMeetings(
     c.req.param('projectId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     {
       page: q.page ? parseInt(q.page) : 1,
       perPage: q.per_page ? parseInt(q.per_page) : 20,
@@ -193,7 +171,7 @@ app.get('/projects/:projectId/meetings/:meetingId', async (c) => {
   const meeting = await meetingService.getProjectMeeting(
     c.req.param('projectId'),
     c.req.param('meetingId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
   return c.json(meeting)
 })
@@ -205,7 +183,7 @@ app.patch('/projects/:projectId/meetings/:meetingId', async (c) => {
   const result = await meetingService.updateMeetingName(
     c.req.param('meetingId'),
     name,
-    c.get('vexaUserId'),
+    c.get('userId'),
     c.req.param('projectId'),
   )
   return c.json(result)
@@ -217,7 +195,7 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/leave', async (c) => {
   await meetingService.requireProjectMeetingManageAccess(
     c.req.param('projectId'),
     c.req.param('meetingId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
   const result = await meetingService.leaveMeeting(c.req.param('meetingId'))
   return c.json(result)
@@ -229,7 +207,7 @@ app.post('/projects/:projectId/meetings/:meetingId/cancel', async (c) => {
   await meetingService.requireProjectMeetingManageAccess(
     c.req.param('projectId'),
     c.req.param('meetingId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
   const result = await meetingService.cancelMeeting(c.req.param('meetingId'))
   return c.json(result)
@@ -241,15 +219,12 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/reinvite', async (c) => {
   await meetingService.getProjectMeeting(
     c.req.param('projectId'),
     c.req.param('meetingId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
   const result = await meetingService.reinviteBot({
     meetingInstanceId: c.req.param('meetingId'),
-    vexaUserId: c.get('vexaUserId'),
-    vexaApiTokenId: c.get('vexaApiTokenId'),
+    userId: c.get('userId'),
     maxConcurrentBots: c.get('maxConcurrentBots'),
-    vexaToken: c.get('vexaToken'),
-    vexaTokenScopes: c.get('vexaTokenScopes'),
   })
   return c.json(result)
 })
@@ -257,30 +232,15 @@ app.post('/projects/:projectId/meetings/:meetingId/bot/reinvite', async (c) => {
 // GET /projects/:projectId/meetings/:meetingId/transcriptions
 app.get('/projects/:projectId/meetings/:meetingId/transcriptions', async (c) => {
   const meetingId = c.req.param('meetingId')
-  // 先驗證存取權限並取得 meeting 資料
-  const meeting = await meetingService.getProjectMeeting(
+  await meetingService.getProjectMeeting(
     c.req.param('projectId'),
     meetingId,
-    c.get('vexaUserId'),
+    c.get('userId'),
   )
-
-  if (!(meeting as any).vexaMeetingId) {
-    return c.json({ items: [], total: 0, page: 1, perPage: 50 })
-  }
-
-  // 需要 creatorApiTokenId：從 DB 查詢
-  const { prisma } = await import('../lib/prisma.js')
-  const raw = await prisma.meetingInstance.findUnique({
-    where: { id: meetingId },
-    select: { creatorApiTokenId: true, vexaNativeMeetingId: true },
-  })
 
   const q = c.req.query()
   const result = await transcriptionService.getTranscriptions({
     meetingInstanceId: meetingId,
-    creatorApiTokenId: raw?.creatorApiTokenId ?? 0,
-    platform: 'google_meet',
-    vexaNativeMeetingId: raw?.vexaNativeMeetingId ?? '',
     sinceStartTime: q.since_start_time ? parseFloat(q.since_start_time) : undefined,
     page: q.page ? parseInt(q.page) : 1,
     perPage: q.per_page ? parseInt(q.per_page) : 50,
@@ -288,11 +248,11 @@ app.get('/projects/:projectId/meetings/:meetingId/transcriptions', async (c) => 
   return c.json(result)
 })
 
-// DELETE /projects/:projectId/meetings/:meetingId — 專案內刪除會議記錄（需 canMeeting）
+// DELETE /projects/:projectId/meetings/:meetingId — 專案內刪除會議記錄（需擁有者）
 app.delete('/projects/:projectId/meetings/:meetingId', async (c) => {
   await meetingService.deleteMeeting(
     c.req.param('meetingId'),
-    c.get('vexaUserId'),
+    c.get('userId'),
     c.req.param('projectId'),
   )
   return c.body(null, 204)
@@ -302,7 +262,7 @@ app.delete('/projects/:projectId/meetings/:meetingId', async (c) => {
 app.get('/projects/:projectId/meetings/:meetingId/transcript', async (c) => {
   const meetingId = c.req.param('meetingId')
   // 存取權限驗證（getProjectMeeting 內含 canView 檢查）
-  await meetingService.getProjectMeeting(c.req.param('projectId'), meetingId, c.get('vexaUserId'))
+  await meetingService.getProjectMeeting(c.req.param('projectId'), meetingId, c.get('userId'))
   const markdown = await meetingService.getMeetingTranscriptMarkdown(meetingId)
   return c.json({ markdown })
 })

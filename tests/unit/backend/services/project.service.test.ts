@@ -22,7 +22,7 @@ import {
 const MOCK_PROJECT = {
   id: 'proj-1',
   name: 'Test Project',
-  ownerVexaUserId: 1,
+  ownerUserId: 1,
   difyDatasetId: 'dataset-abc123',
   createdAt: new Date('2026-05-30T00:00:00Z'),
   updatedAt: new Date('2026-05-30T00:00:00Z'),
@@ -45,10 +45,12 @@ describe('createProject', () => {
 
     expect(result.role).toBe('owner')
     expect(result.permissions.canDelete).toBe(true)
-    expect(mockDify.createDataset).toHaveBeenCalledWith('Test Project')
+    expect(mockDify.createDataset).toHaveBeenCalledWith(
+      expect.stringMatching(/^Test Project-[0-9a-f]{8}$/),
+    )
     expect(mockPrisma.project.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ difyDatasetId: 'dataset-xyz', ownerVexaUserId: 1 }),
+        data: expect.objectContaining({ difyDatasetId: 'dataset-xyz', ownerUserId: 1 }),
       }),
     )
   })
@@ -112,7 +114,7 @@ describe('getProject', () => {
   it('throws 403 PERMISSION_DENIED when user is not a member', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({
       ...MOCK_PROJECT,
-      ownerVexaUserId: 99,
+      ownerUserId: 99,
       members: [],
       _count: { members: 0, materials: 0, meetingInstances: 0 },
     })
@@ -126,11 +128,11 @@ describe('getProject', () => {
   it('throws 403 PERMISSION_DENIED when all member permissions are false', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce({
       ...MOCK_PROJECT,
-      ownerVexaUserId: 99,
+      ownerUserId: 99,
       members: [
         {
           id: 'member-1',
-          vexaUserId: 1,
+          userId: 1,
           canView: false,
           canEdit: false,
           canMeeting: false,

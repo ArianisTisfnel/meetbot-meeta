@@ -72,11 +72,9 @@ function fakeBotSession(): BotSession {
 function putSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
   const session: MeetingSession = {
     meetingInstanceId: MEETING_ID,
-    vexaMeetingId: 42,
     platform: 'google_meet',
     nativeMeetingId: 'abc-defg-hij',
     difyDatasetId: 'dataset-abc',
-    creatorVexaToken: 'tok-123',
     isSpeaking: false,
     lastWakeAt: 0,
     lastEngagedAt: 0,

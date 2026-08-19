@@ -157,11 +157,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 function makeSession(botSession: BotSession): MeetingSession {
   return {
     meetingInstanceId: MEETING_ID,
-    vexaMeetingId: null,
     platform: 'google_meet',
     nativeMeetingId: 'sim-meeting-id',
     difyDatasetId: DATASET_ID,
-    creatorVexaToken: 'sim-token',
     isSpeaking: false,
     lastWakeAt: 0,
     lastEngagedAt: 0,

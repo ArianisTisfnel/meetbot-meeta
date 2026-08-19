@@ -25,20 +25,20 @@ export function MemberList({ data, projectId, canManage }: Props) {
   const resendMutation = useResendInvitation(projectId)
   const revokeMutation = useRevokeInvitation(projectId)
 
-  const handleRemove = (vexaUserId: number) => {
+  const handleRemove = (userId: number) => {
     if (!confirm('確定要移除此成員嗎？')) return
-    removeMutation.mutate(vexaUserId, {
+    removeMutation.mutate(userId, {
       onSuccess: () => toast.success('已移除成員'),
       onError: () => toast.error('移除失敗'),
     })
   }
 
   const handleUpdate = (
-    vexaUserId: number,
+    userId: number,
     permissions: Partial<Pick<ProjectMember, 'canView' | 'canEdit' | 'canMeeting'>>,
   ) => {
     updateMutation.mutate(
-      { vexaUserId, ...permissions },
+      { userId, ...permissions },
       {
         onSuccess: () => toast.success('已更新權限'),
         onError: (e: unknown) =>

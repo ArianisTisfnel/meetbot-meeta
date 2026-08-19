@@ -22,7 +22,7 @@ import {
 const OWNER_PROJECT = {
   id: 'proj-1',
   name: 'Test Project',
-  ownerVexaUserId: 1,
+  ownerUserId: 1,
   difyDatasetId: 'd',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -41,9 +41,7 @@ beforeEach(() => {
 describe('createInvitation', () => {
   it('建立 PENDING 邀請並寄信（即使對方尚未在系統建立帳號）', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce(OWNER_PROJECT) // requireOwner
-    mockPrisma.$queryRaw
-      .mockResolvedValueOnce([]) // findVexaUserByEmail → 查無此人（未註冊）
-      .mockResolvedValueOnce([{ email: 'owner@x.com', name: 'Owner' }]) // inviterDisplayName
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null) // not registered
     mockPrisma.projectInvitation.findFirst.mockResolvedValueOnce(null) // 無重複 pending
     mockPrisma.projectInvitation.create.mockResolvedValueOnce({
       id: 'inv-1',
@@ -55,6 +53,8 @@ describe('createInvitation', () => {
       expiresAt: new Date(Date.now() + 7 * 86400000),
       createdAt: new Date(),
     })
+    mockPrisma.activityLog.create.mockResolvedValueOnce({})
+    mockPrisma.user.findUnique.mockResolvedValueOnce({ email: 'owner@x.com', name: 'Owner' }) // inviterDisplayName
 
     const result = await createInvitation('proj-1', 1, 'New@Example.com', PERMS)
 
@@ -71,9 +71,7 @@ describe('createInvitation', () => {
 
   it('強制 canView=true（即使呼叫端傳入 canView=false）', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce(OWNER_PROJECT)
-    mockPrisma.$queryRaw
-      .mockResolvedValueOnce([]) // 未註冊
-      .mockResolvedValueOnce([{ email: 'owner@x.com', name: 'Owner' }])
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null) // 未註冊
     mockPrisma.projectInvitation.findFirst.mockResolvedValueOnce(null)
     mockPrisma.projectInvitation.create.mockResolvedValueOnce({
       id: 'inv-2',
@@ -85,6 +83,8 @@ describe('createInvitation', () => {
       expiresAt: new Date(),
       createdAt: new Date(),
     })
+    mockPrisma.activityLog.create.mockResolvedValueOnce({})
+    mockPrisma.user.findUnique.mockResolvedValueOnce({ email: 'owner@x.com', name: 'Owner' })
 
     await createInvitation('proj-1', 1, 'new@example.com', {
       canView: false,
@@ -97,9 +97,9 @@ describe('createInvitation', () => {
 
   it('擋自我邀請（被邀 email 屬於擁有者）', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce(OWNER_PROJECT)
-    mockPrisma.$queryRaw.mockResolvedValueOnce([
-      { id: 1, email: 'owner@x.com', name: 'Owner' }, // 與 ownerVexaUserId 相同
-    ])
+    mockPrisma.user.findFirst.mockResolvedValueOnce(
+      { id: 1, email: 'owner@x.com', name: 'Owner' }, // id 與 ownerUserId 相同
+    )
 
     await expect(
       createInvitation('proj-1', 1, 'owner@x.com', PERMS),
@@ -109,7 +109,7 @@ describe('createInvitation', () => {
 
   it('既有使用者已是成員 → ALREADY_MEMBER 409', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce(OWNER_PROJECT)
-    mockPrisma.$queryRaw.mockResolvedValueOnce([{ id: 2, email: 'm@x.com', name: null }])
+    mockPrisma.user.findFirst.mockResolvedValueOnce({ id: 2, email: 'm@x.com', name: null })
     mockPrisma.projectMember.findUnique.mockResolvedValueOnce({ id: 'mem-1' })
 
     await expect(
@@ -119,7 +119,7 @@ describe('createInvitation', () => {
 
   it('已有待處理邀請 → ALREADY_INVITED 409', async () => {
     mockPrisma.project.findUnique.mockResolvedValueOnce(OWNER_PROJECT)
-    mockPrisma.$queryRaw.mockResolvedValueOnce([]) // 未註冊
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null) // 未註冊
     mockPrisma.projectInvitation.findFirst.mockResolvedValueOnce({ id: 'inv-existing' })
 
     await expect(
@@ -128,7 +128,7 @@ describe('createInvitation', () => {
   })
 
   it('非擁有者 → PERMISSION_DENIED 403', async () => {
-    mockPrisma.project.findUnique.mockResolvedValueOnce({ ...OWNER_PROJECT, ownerVexaUserId: 99 })
+    mockPrisma.project.findUnique.mockResolvedValueOnce({ ...OWNER_PROJECT, ownerUserId: 99 })
 
     await expect(
       createInvitation('proj-1', 1, 'x@example.com', PERMS),
@@ -147,7 +147,7 @@ describe('acceptInvitationByToken', () => {
     canEdit: false,
     canMeeting: false,
     status: 'PENDING',
-    invitedByVexaUserId: 1,
+    invitedByUserId: 1,
     expiresAt: new Date(Date.now() + 86400000),
   }
 

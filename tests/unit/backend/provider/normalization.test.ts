@@ -1,14 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
-  normalizeVexaRestSegment as normalizeRestSegment,
-  normalizeVexaWsSegment as normalizeWsSegment,
   normalizeRecallTranscript,
   normalizeRecallRealtimeUtterance,
 } from '../../../../backend/src/provider/normalize'
 import type { TranscriptSegment } from '../../../../backend/src/provider/types'
-
-// 驗收標準：兩個 adapter 的 transcript 都正規化成同一個 schema（TranscriptSegment）。
-// 統一 schema 的「事實來源」：startTime/endTime（秒）、speaker、text、segmentId、language。
 
 function assertUnifiedShape(seg: TranscriptSegment) {
   expect(seg).toHaveProperty('segmentId')
@@ -18,48 +13,6 @@ function assertUnifiedShape(seg: TranscriptSegment) {
   expect(typeof seg.endTime).toBe('number')
   expect(seg).toHaveProperty('language')
 }
-
-describe('Vexa normalization', () => {
-  it('REST segment（start/end alias）→ 統一 schema', () => {
-    const seg = normalizeRestSegment({
-      segment_id: 'v-1',
-      text: '大家好',
-      speaker: 'Alice',
-      start: 12.5,
-      end: 15.0,
-      language: 'zh',
-    })
-    expect(seg).toEqual<TranscriptSegment>({
-      segmentId: 'v-1',
-      text: '大家好',
-      speaker: 'Alice',
-      startTime: 12.5,
-      endTime: 15.0,
-      language: 'zh',
-    })
-    assertUnifiedShape(seg)
-  })
-
-  it('REST segment 缺欄位 → 安全預設（0 / null）', () => {
-    const seg = normalizeRestSegment({ segment_id: null, text: 'x', speaker: null, start: undefined, end: undefined, language: null })
-    expect(seg.startTime).toBe(0)
-    expect(seg.endTime).toBe(0)
-    expect(seg.speaker).toBeNull()
-    expect(seg.language).toBeNull()
-  })
-
-  it('WS segment（start_time/end_time 或 start/end）→ 統一 schema，speaker 回退到外層', () => {
-    const a = normalizeWsSegment({ segment_id: 'w-1', text: 'hi', start: 1, end: 2, language: 'en' })
-    expect(a.startTime).toBe(1)
-    expect(a.endTime).toBe(2)
-
-    const b = normalizeWsSegment({ segment_id: 'w-2', text: 'yo', start_time: 3, end_time: 4 }, 'Bob')
-    expect(b.startTime).toBe(3)
-    expect(b.endTime).toBe(4)
-    expect(b.speaker).toBe('Bob') // seg.speaker 缺 → 用外層 msg.speaker
-    assertUnifiedShape(b)
-  })
-})
 
 describe('Recall normalization', () => {
   it('speaker + words[]（相對時間戳）→ 統一 schema', () => {
@@ -155,15 +108,5 @@ describe('Recall realtime utterance normalization', () => {
   it('英文詞之間仍補空格', () => {
     const seg = normalizeRecallRealtimeUtterance({ words: [{ text: 'hello' }, { text: 'world' }] }, 'tx')
     expect(seg!.text).toBe('hello world')
-  })
-})
-
-describe('cross-provider schema parity', () => {
-  it('Vexa 與 Recall 正規化後的 segment 鍵集合一致', () => {
-    const vexa = normalizeRestSegment({ segment_id: 'a', text: 't', speaker: 's', start: 1, end: 2, language: 'zh' })
-    const recall = normalizeRecallTranscript([
-      { id: 1, speaker: 's', text: 't', start_time: 1, end_time: 2, language: 'zh' },
-    ])[0]
-    expect(Object.keys(vexa).sort()).toEqual(Object.keys(recall).sort())
   })
 })

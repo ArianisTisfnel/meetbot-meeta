@@ -66,7 +66,7 @@ async function loadKbContentCard(session: MeetingSession, difyDatasetId: string)
 
 // ── startBotSession ─────────────────────────────────────────────────────────
 //
-// 取代舊的 createSession：透過 provider 抽象層派 bot（含 Vexa→Recall failover），
+// 取代舊的 createSession：透過 provider 抽象層派 bot，
 // 在背景等待 bot 被 admitted。**不阻塞 HTTP 呼叫端**（createMeeting 立即回 PENDING）：
 //   - admitted（join resolve）→ DB 轉 ACTIVE、發歡迎訊息
 //   - 兩個 provider 都進不去（join reject）→ DB 轉 FAILED
@@ -78,19 +78,16 @@ export async function startBotSession(params: {
   googleMeetUrl: string
   nativeMeetingId: string
   difyDatasetId: string | null
-  creatorVexaToken: string
   initialProcessedIds?: Set<string>
 }): Promise<void> {
-  const { meetingInstanceId, googleMeetUrl, nativeMeetingId, difyDatasetId, creatorVexaToken } = params
+  const { meetingInstanceId, googleMeetUrl, nativeMeetingId, difyDatasetId } = params
 
   // 先把 MeetingSession 放進 Map，讓 live handlers（admitted 前可能就有事件）能查到它。
   const session: MeetingSession = {
     meetingInstanceId,
-    vexaMeetingId: null,
     platform: PLATFORM,
     nativeMeetingId,
     difyDatasetId,
-    creatorVexaToken,
     isSpeaking: false,
     lastWakeAt: 0,
     lastEngagedAt: 0,
@@ -119,7 +116,7 @@ export async function startBotSession(params: {
   try {
     const botSession = await botProvider.join(
       googleMeetUrl,
-      { platform: PLATFORM, nativeMeetingId, vexaToken: creatorVexaToken, difyDatasetId },
+      { platform: PLATFORM, nativeMeetingId, difyDatasetId },
       handlers,
     )
 
@@ -132,18 +129,12 @@ export async function startBotSession(params: {
     still.botSession = botSession
     still.sessionStartedAt = Date.now()
 
-    // Vexa 用數字 meeting id；Recall 用字串 bot id（不寫進 Vexa 專用欄位）。
-    const vexaMeetingId =
-      typeof botSession.providerMeetingId === 'number' ? botSession.providerMeetingId : null
-    still.vexaMeetingId = vexaMeetingId
-
     await prisma.meetingInstance.update({
       where: { id: meetingInstanceId },
       data: {
         status: 'ACTIVE',
         startedAt: new Date(),
-        vexaNativeMeetingId: nativeMeetingId,
-        ...(vexaMeetingId !== null ? { vexaMeetingId } : {}),
+        nativeMeetingId,
       },
     })
 
@@ -225,12 +216,7 @@ export function buildLiveHandlers(meetingInstanceId: string): LiveHandlers {
     onChat: (msg) => {
       const s = activeSessions.get(meetingInstanceId)
       if (!s || !s.botSession) return
-      handleChatMessage(s, {
-        sender: msg.sender,
-        text: msg.text,
-        timestamp: msg.timestamp,
-        is_from_bot: msg.isFromBot,
-      }).catch((err) => logger.error({ err, meetingInstanceId }, 'handleChatMessage error'))
+      handleChatMessage(s, msg).catch((err) => logger.error({ err, meetingInstanceId }, 'handleChatMessage error'))
       recordConversation(s, {
         speaker: msg.sender,
         text: msg.text,
@@ -329,7 +315,6 @@ export async function handleSessionClose(
       meetingInstanceId,
       platform: session.platform,
       nativeMeetingId: session.nativeMeetingId,
-      creatorVexaToken: session.creatorVexaToken,
       difyDatasetId: session.difyDatasetId,
       session: session.botSession ?? undefined,
       chatLog: session.chatLog,
@@ -346,10 +331,13 @@ export async function handleSessionClose(
 
 // ── restoreActiveSessions ─────────────────────────────────────────────────────
 //
-// ⚠️ 已知限制（v1，受「不改 DB schema」約束）：DB 只持久化 Vexa 識別碼，
-// 因此重啟後只能復原跑在 Vexa 上的 session。跑在 Recall 上的會議（缺 vexaMeetingId）
-// 無法重接 live stream 也拿不到逐字稿 → 直接收尾成 ENDED + summary=''，
-// 避免永久卡 ACTIVE。完整解法（重接 + 補摘要）需 DB 加 provider/provider_meeting_id 欄位（見 roadmap）。
+// 重啟後清理狀態：Recall 的 bot session 活在記憶體（WS/webhook 連線 + 逐字稿緩衝），
+// 進程一死就回不來，也沒有可以重抓的 REST 端點——所以 ACTIVE 會議一律收尾成 ENDED。
+//
+// 為什麼不再嘗試補摘要（移除 Vexa 前的舊行為）：摘要的輸入是逐字稿，而逐字稿只存在於
+// 那個已經消失的 session 裡，重試只會拿到空陣列、生出空摘要。與其假裝努力過，
+// 不如直接落 summary='' 這個哨兵讓前端停止輪詢。
+// 要真正救回重啟後的摘要，得先讓 segment 落 DB（見 docs/13-系統現況與路線圖.md）。
 
 export async function restoreActiveSessions(): Promise<void> {
   // 階段一：清理 zombie PENDING（超過 5 分鐘仍 PENDING 者標為 FAILED）
@@ -364,127 +352,51 @@ export async function restoreActiveSessions(): Promise<void> {
     logger.warn({ count: staleResult.count }, 'startup: cleaned up zombie PENDING meetings')
   }
 
-  // 階段二：恢復 ACTIVE sessions（Vexa-only，見上方限制）
-  const activeMeetings = await prisma.meetingInstance.findMany({
-    where: { status: 'ACTIVE' },
-    include: { project: { select: { difyDatasetId: true } } },
+  // 階段二：ACTIVE 會議重啟後無法重接 → 收尾成 ENDED + summary=''
+  //
+  // where 帶 summary: null 是刻意的，與 handleSessionClose 裡的守衛同一個理由：
+  // 只在「還沒有摘要」時才寫哨兵，避免把一份已經生好的真摘要蓋成空字串。
+  // 這裡的競態雖窄（ACTIVE 期間本來就不該有摘要），但寫上去不花成本，
+  // 而漏掉的代價是使用者的摘要無聲消失。
+  const activeResult = await prisma.meetingInstance.updateMany({
+    where: { status: 'ACTIVE', summary: null },
+    data: { status: 'ENDED', endedAt: new Date(), summary: '' },
   })
-
-  let restored = 0
-  for (const meeting of activeMeetings) {
-    if (!meeting.vexaMeetingId || !meeting.vexaNativeMeetingId) {
-      logger.warn(
-        { meetingInstanceId: meeting.id },
-        'missing vexa IDs (likely Recall), cannot restore → finalizing as ENDED',
-      )
-      await prisma.meetingInstance
-        .update({
-          where: { id: meeting.id },
-          data: { status: 'ENDED', endedAt: new Date(), summary: '' },
-        })
-        .catch((e) => logger.error({ e, meetingInstanceId: meeting.id }, 'failed to finalize unrestorable meeting'))
-      continue
-    }
-
-    const tokenRows = await prisma.$queryRaw<Array<{ token: string }>>`
-      SELECT token FROM public.api_tokens
-      WHERE id = ${meeting.creatorApiTokenId}
-        AND (expires_at IS NULL OR expires_at > NOW())
-      LIMIT 1
-    `
-
-    if (!tokenRows.length) {
-      logger.warn({ meetingInstanceId: meeting.id }, 'creator token expired, marking meeting as ENDED')
-      await prisma.meetingInstance.update({
-        where: { id: meeting.id },
-        data: { status: 'ENDED', endedAt: new Date(), summary: '' },
-      })
-      continue
-    }
-
-    // 殭屍 session 偵測：確認 Vexa 側的 meeting 是否仍 active
-    const vexaMeetingRows = await (
-      prisma.$queryRaw<Array<{ status: string }>>`
-        SELECT status FROM public.meetings WHERE id = ${meeting.vexaMeetingId} LIMIT 1
-      `.catch(() => [] as Array<{ status: string }>)
+  // 已有摘要的 ACTIVE（理論上不存在，但別讓它卡在 ACTIVE 永遠不動）：只改狀態，不碰摘要。
+  const activeWithSummary = await prisma.meetingInstance.updateMany({
+    where: { status: 'ACTIVE', NOT: { summary: null } },
+    data: { status: 'ENDED', endedAt: new Date() },
+  })
+  if (activeResult.count + activeWithSummary.count > 0) {
+    logger.warn(
+      { count: activeResult.count + activeWithSummary.count, keptSummary: activeWithSummary.count },
+      'startup: finalized ACTIVE meetings as ENDED (bot sessions lost on restart)',
     )
-
-    const vexaStatus = vexaMeetingRows[0]?.status
-    if (vexaStatus && vexaStatus !== 'active') {
-      logger.warn(
-        { meetingInstanceId: meeting.id, vexaStatus },
-        'startup: Vexa meeting no longer active, running end-of-meeting cleanup',
-      )
-      const finalStatus = ['failed', 'needs_help', 'needs_human_help'].includes(vexaStatus)
-        ? 'FAILED'
-        : 'ENDED'
-      await prisma.meetingInstance.update({
-        where: { id: meeting.id },
-        data: { status: finalStatus, endedAt: new Date() },
-      })
-      if (finalStatus === 'ENDED') {
-        generateSummaryAsync({
-          meetingInstanceId: meeting.id,
-          platform: 'google_meet',
-          nativeMeetingId: meeting.vexaNativeMeetingId!,
-          creatorVexaToken: tokenRows[0].token,
-          difyDatasetId: meeting.project?.difyDatasetId ?? null,
-        })
-      }
-      continue
-    }
-
-    try {
-      await startBotSession({
-        meetingInstanceId: meeting.id,
-        googleMeetUrl: meeting.googleMeetUrl,
-        nativeMeetingId: meeting.vexaNativeMeetingId,
-        difyDatasetId: meeting.project?.difyDatasetId ?? null,
-        creatorVexaToken: tokenRows[0].token,
-      })
-      restored++
-    } catch (err) {
-      logger.warn({ err, meetingInstanceId: meeting.id }, 'startup: failed to restore session')
-    }
   }
 
-  // 階段三：修復 ENDED + summary=null 懸掛
+  // 階段三：修復 ENDED + summary=null 懸掛。
+  // 同上：逐字稿已隨 session 消失，補不回摘要，只能落哨兵讓前端停止輪詢。
+  // 門檻 10 分鐘是為了不要誤傷「剛結束、摘要正在背景生成中」的會議。
   const SUMMARY_STALE_MINUTES = 10
   const summaryStaleThreshold = new Date(Date.now() - SUMMARY_STALE_MINUTES * 60 * 1000)
 
-  const staleSummaryMeetings = await prisma.meetingInstance.findMany({
+  const staleSummaryResult = await prisma.meetingInstance.updateMany({
     where: { status: 'ENDED', summary: null, endedAt: { lt: summaryStaleThreshold } },
-    include: { project: { select: { difyDatasetId: true } } },
+    data: { summary: '' },
   })
-
-  let summaryRetried = 0
-  for (const meeting of staleSummaryMeetings) {
-    if (!meeting.vexaNativeMeetingId) {
-      await prisma.meetingInstance.update({ where: { id: meeting.id }, data: { summary: '' } })
-      continue
-    }
-    const tokenRows = await prisma.$queryRaw<Array<{ token: string }>>`
-      SELECT token FROM public.api_tokens
-      WHERE id = ${meeting.creatorApiTokenId}
-        AND (expires_at IS NULL OR expires_at > NOW())
-      LIMIT 1
-    `
-    if (!tokenRows.length) {
-      await prisma.meetingInstance.update({ where: { id: meeting.id }, data: { summary: '' } })
-      continue
-    }
-    generateSummaryAsync({
-      meetingInstanceId: meeting.id,
-      platform: 'google_meet',
-      nativeMeetingId: meeting.vexaNativeMeetingId,
-      creatorVexaToken: tokenRows[0].token,
-      difyDatasetId: meeting.project?.difyDatasetId ?? null,
-    })
-    summaryRetried++
+  if (staleSummaryResult.count > 0) {
+    logger.warn(
+      { count: staleSummaryResult.count },
+      'startup: reset dangling ENDED+null summary to sentinel',
+    )
   }
 
   logger.info(
-    { staleCleaned: staleResult.count, activeRestored: restored, summaryRetried },
+    {
+      stalePending: staleResult.count,
+      activeFinalized: activeResult.count + activeWithSummary.count,
+      staleSummary: staleSummaryResult.count,
+    },
     'startup restore completed',
   )
 }

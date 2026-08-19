@@ -1,11 +1,34 @@
 'use client'
 import type { ActionItem } from '@/types/api'
+import { CopyIcon } from '@/components/ui/icons'
+import { toast } from 'sonner'
 
 interface Props {
   summary: string | null
   actionItems: ActionItem[]
   keyTopics?: string[] | null
   decisions?: string[] | null
+}
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success(`已複製${label}`)
+    } catch {
+      toast.error('複製失敗，請手動選取文字')
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="inline-flex items-center gap-1 rounded text-sm text-honey-deep hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <CopyIcon className="size-3.5" />
+      複製
+    </button>
+  )
 }
 
 export function MeetingSummary({ summary, actionItems, keyTopics, decisions }: Props) {
@@ -37,15 +60,28 @@ export function MeetingSummary({ summary, actionItems, keyTopics, decisions }: P
   const topics = keyTopics ?? []
   const decisionList = decisions ?? []
 
+  const summaryText = summary
+  const actionItemsText = actionItems
+    .map((item) => (item.owner ? `- ${item.task}（${item.owner}）` : `- ${item.task}`))
+    .join('\n')
+  const topicsText = topics.map((t) => `- ${t}`).join('\n')
+  const decisionsText = decisionList.map((d) => `- ${d}`).join('\n')
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div className="rounded-lg border p-6">
-        <h3 className="font-semibold mb-3">摘要</h3>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="font-semibold">摘要</h3>
+          <CopyButton text={summaryText} label="摘要" />
+        </div>
         <p className="text-sm leading-relaxed whitespace-pre-wrap">{summary}</p>
       </div>
       {actionItems.length > 0 && (
         <div className="rounded-lg border p-6">
-          <h3 className="font-semibold mb-3">交辦事項</h3>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="font-semibold">交辦事項</h3>
+            <CopyButton text={actionItemsText} label="交辦事項" />
+          </div>
           <ul className="space-y-2">
             {actionItems.map((item, i) => (
               <li key={i} className="flex items-start gap-2 text-sm">
@@ -68,7 +104,10 @@ export function MeetingSummary({ summary, actionItems, keyTopics, decisions }: P
       )}
       {topics.length > 0 && (
         <div className="rounded-lg border p-6">
-          <h3 className="font-semibold mb-3">重點主題</h3>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="font-semibold">重點主題</h3>
+            <CopyButton text={topicsText} label="重點主題" />
+          </div>
           <div className="flex flex-wrap gap-2">
             {topics.map((topic, i) => (
               <span
@@ -83,7 +122,10 @@ export function MeetingSummary({ summary, actionItems, keyTopics, decisions }: P
       )}
       {decisionList.length > 0 && (
         <div className="rounded-lg border p-6">
-          <h3 className="font-semibold mb-3">會議決議</h3>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="font-semibold">會議決議</h3>
+            <CopyButton text={decisionsText} label="會議決議" />
+          </div>
           <ul className="space-y-2">
             {decisionList.map((decision, i) => (
               <li key={i} className="flex items-start gap-2 text-sm">

@@ -1,8 +1,5 @@
 export type AppVariables = {
-  vexaUserId: number
-  vexaToken: string
-  vexaTokenScopes: string[]
-  vexaApiTokenId: number
+  userId: number
   userEmail: string
   userName: string | null
   maxConcurrentBots: number

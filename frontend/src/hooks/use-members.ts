@@ -52,16 +52,16 @@ export function useUpdateMember(projectId: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({
-      vexaUserId,
+      userId,
       ...permissions
     }: {
-      vexaUserId: number
+      userId: number
       canView?: boolean
       canEdit?: boolean
       canMeeting?: boolean
     }) =>
       apiClient.patch<ProjectMember>(
-        `/projects/${projectId}/members/${vexaUserId}`,
+        `/projects/${projectId}/members/${userId}`,
         permissions
       ),
     onSuccess: () =>
@@ -72,8 +72,8 @@ export function useUpdateMember(projectId: string) {
 export function useRemoveMember(projectId: string) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (vexaUserId: number) =>
-      apiClient.delete(`/projects/${projectId}/members/${vexaUserId}`),
+    mutationFn: (userId: number) =>
+      apiClient.delete(`/projects/${projectId}/members/${userId}`),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['members', projectId] }),
   })

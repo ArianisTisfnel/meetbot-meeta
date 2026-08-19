@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { createDataset, deleteDataset, deleteDocument } from '../lib/dify.js'
@@ -44,7 +45,7 @@ export type ListProjectsParams = {
   perPage?: number
 }
 
-export async function listProjects(vexaUserId: number, params: ListProjectsParams = {}) {
+export async function listProjects(userId: number, params: ListProjectsParams = {}) {
   const { search, type = 'all', order = 'desc', page = 1, perPage = 20 } = params
 
   const where: Prisma.ProjectWhereInput = { deletedAt: null }
@@ -55,19 +56,19 @@ export async function listProjects(vexaUserId: number, params: ListProjectsParam
 
   const validMemberFilter: Prisma.ProjectMemberListRelationFilter = {
     some: {
-      vexaUserId,
+      userId,
       OR: [{ canView: true }, { canEdit: true }, { canMeeting: true }],
     },
   }
 
   if (type === 'owned') {
-    where.ownerVexaUserId = vexaUserId
+    where.ownerUserId = userId
   } else if (type === 'shared') {
-    where.NOT = { ownerVexaUserId: vexaUserId }
+    where.NOT = { ownerUserId: userId }
     where.members = validMemberFilter
   } else {
     where.OR = [
-      { ownerVexaUserId: vexaUserId },
+      { ownerUserId: userId },
       { members: validMemberFilter },
     ]
   }
@@ -79,7 +80,7 @@ export async function listProjects(vexaUserId: number, params: ListProjectsParam
       skip: (page - 1) * perPage,
       take: perPage,
       include: {
-        members: { where: { vexaUserId } },
+        members: { where: { userId } },
         _count: {
           select: {
             members: true,
@@ -94,7 +95,7 @@ export async function listProjects(vexaUserId: number, params: ListProjectsParam
 
   return {
     items: projects.map((p) => {
-      const isOwner = p.ownerVexaUserId === vexaUserId
+      const isOwner = p.ownerUserId === userId
       const m = p.members[0]
       return {
         id: p.id,
@@ -113,12 +114,14 @@ export async function listProjects(vexaUserId: number, params: ListProjectsParam
   }
 }
 
-export async function createProject(vexaUserId: number, name: string) {
-  const difyDatasetId = await createDataset(name)
+export async function createProject(userId: number, name: string) {
+  // Dify dataset 名稱在整個 workspace 內必須唯一，但專案顯示名稱允許使用者間自由重複，
+  // 兩者脫鉤：送給 Dify 的名稱加短 UUID 後綴，避免撞名觸發 409 dataset_name_duplicate
+  const difyDatasetId = await createDataset(`${name}-${crypto.randomUUID().slice(0, 8)}`)
 
   try {
     const project = await prisma.project.create({
-      data: { name, ownerVexaUserId: vexaUserId, difyDatasetId },
+      data: { name, ownerUserId: userId, difyDatasetId },
     })
     return {
       id: project.id,
@@ -133,11 +136,11 @@ export async function createProject(vexaUserId: number, name: string) {
   }
 }
 
-export async function getProject(projectId: string, vexaUserId: number) {
+export async function getProject(projectId: string, userId: number) {
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
     include: {
-      members: { where: { vexaUserId } },
+      members: { where: { userId } },
       _count: {
         select: {
           members: true,
@@ -150,7 +153,7 @@ export async function getProject(projectId: string, vexaUserId: number) {
 
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
 
-  const isOwner = project.ownerVexaUserId === vexaUserId
+  const isOwner = project.ownerUserId === userId
   const m = project.members[0]
 
   if (!isOwner) {
@@ -159,9 +162,10 @@ export async function getProject(projectId: string, vexaUserId: number) {
     }
   }
 
-  const ownerRows = await prisma.$queryRaw<
-    Array<{ id: number; email: string; name: string | null }>
-  >`SELECT id, email, name FROM public.users WHERE id = ${project.ownerVexaUserId} LIMIT 1`
+  const owner = await prisma.user.findUnique({
+    where: { id: project.ownerUserId },
+    select: { id: true, email: true, name: true },
+  })
 
   return {
     id: project.id,
@@ -169,9 +173,9 @@ export async function getProject(projectId: string, vexaUserId: number) {
     role: isOwner ? 'owner' : 'member',
     permissions: isOwner ? OWNER_PERMISSIONS : memberPermissions(m!),
     owner: {
-      vexaUserId: ownerRows[0]?.id ?? project.ownerVexaUserId,
-      email: ownerRows[0]?.email ?? null,
-      name: ownerRows[0]?.name ?? null,
+      userId: owner?.id ?? project.ownerUserId,
+      email: owner?.email ?? null,
+      name: owner?.name ?? null,
     },
     memberCount: project._count.members + 1,
     materialCount: project._count.materials,
@@ -181,12 +185,12 @@ export async function getProject(projectId: string, vexaUserId: number) {
   }
 }
 
-export async function updateProject(projectId: string, vexaUserId: number, name: string) {
+export async function updateProject(projectId: string, userId: number, name: string) {
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
   })
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
-  if (project.ownerVexaUserId !== vexaUserId) {
+  if (project.ownerUserId !== userId) {
     throw new AppError('PERMISSION_DENIED', 403, '只有擁有者可更新此專案')
   }
 
@@ -198,7 +202,7 @@ export async function updateProject(projectId: string, vexaUserId: number, name:
   if (updated.name !== project.name) {
     await recordActivity({
       projectId,
-      actorVexaUserId: vexaUserId,
+      actorUserId: userId,
       action: 'PROJECT_RENAME',
       targetLabel: updated.name,
       metadata: { from: project.name, to: updated.name },
@@ -208,16 +212,15 @@ export async function updateProject(projectId: string, vexaUserId: number, name:
   return { id: updated.id, name: updated.name, updatedAt: updated.updatedAt }
 }
 
-export async function deleteProject(projectId: string, vexaUserId: number) {
+export async function deleteProject(projectId: string, userId: number) {
   const project = await prisma.project.findUnique({
     where: { id: projectId, deletedAt: null },
   })
   if (!project) throw new AppError('NOT_FOUND', 404, '專案不存在')
-  if (project.ownerVexaUserId !== vexaUserId) {
+  if (project.ownerUserId !== userId) {
     throw new AppError('PERMISSION_DENIED', 403, '只有擁有者可刪除此專案')
   }
 
-  // Step 1: Clean up each material's Storage file and Dify document, then soft delete
   const materials = await prisma.material.findMany({
     where: { projectId, deletedAt: null },
   })
@@ -238,10 +241,8 @@ export async function deleteProject(projectId: string, vexaUserId: number) {
     data: { deletedAt: new Date() },
   })
 
-  // Step 2: Delete Dify dataset
   await deleteDataset(project.difyDatasetId)
 
-  // Step 3: Soft delete project
   await prisma.project.update({
     where: { id: projectId },
     data: { deletedAt: new Date() },
