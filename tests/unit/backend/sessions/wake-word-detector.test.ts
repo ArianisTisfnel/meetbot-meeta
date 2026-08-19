@@ -612,6 +612,7 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
     const chatCallsBefore = mockBotProvider.sendChat.mock.calls.length
 
     session.isSpeaking = true // 估時未到，嘴巴還在播
+    session.speechStartedAt = Date.now() - 7_000 // 註解說的「7 秒後」：越過開口寬限期
     await handleBargeIn(session, { text: '等一下我有意見', speaker: 'B' })
 
     expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1) // 還是要停
@@ -640,6 +641,44 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
     expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
     expect(session.isSpeaking).toBe(false)
     expect(mockBotProvider.sendChat).not.toHaveBeenCalled()
+  })
+
+  // 實測 2026-08-18：她開口 154 次被打斷 73 次，86% 是 6 字以下的碎片
+  //（與會者彼此講話被 partial 切出來的半句），她講的話有近一半沒講完。
+  it('旁人的短碎片（6 字以下）→ 不再打斷她', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      speechStartedAt: Date.now() - 10_000, // 早就過了寬限期，確保測到的是長度門檻
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '可是女生', speaker: 'B' })
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
+  })
+
+  it('開口寬限期內的旁人發言 → 不打斷（讓她至少講完一句）', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      speechStartedAt: Date.now() - 500, // 剛開口 0.5 秒
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '我覺得這個方案應該要再討論一下比較好', speaker: 'B' })
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+  })
+
+  // 底線：叫停不受長度門檻與寬限期任何一項限制
+  it('寬限期內喊「蜜塔閉嘴」→ 照樣立刻停', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      speechStartedAt: Date.now() - 200, // 才剛開口
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '蜜塔閉嘴', speaker: 'A' })
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(false)
   })
 
   it('短附和（嗯嗯）→ 不觸發讓路', async () => {
@@ -782,6 +821,7 @@ describe('isSpeaking 世代鎖（嘴巴佔用的生命週期）', () => {
     await speakProactive(session, '第一段') // 3 字 → 解鎖排在 300ms
     expect(session.isSpeaking).toBe(true)
 
+    session.speechStartedAt = Date.now() - 7_000 // 越過開口寬限期（本案要測的是世代鎖，不是打斷門檻）
     await handleBargeIn(session, { text: '等一下我有問題', speaker: 'B' })
     expect(session.isSpeaking).toBe(false)
 

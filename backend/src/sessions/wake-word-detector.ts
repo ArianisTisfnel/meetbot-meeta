@@ -196,7 +196,31 @@ const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 // 由 session-manager 的 onSegment / onPartialSegment 呼叫（partial 先到 → 讓路最快）。
 
 /** 短於此長度的內容視為附和（嗯、好的），不觸發讓路。 */
-const BARGE_IN_MIN_CHARS = 4
+/**
+ * 非叫停的發言要多長才算「打斷」。
+ *
+ * 原本是 4，形同虛設——partial 幾乎每一塊都 ≥4 字，實測 2026-08-18：
+ * 她開口 154 次被打斷 73 次（47%），其中 **86% 是 6 字以下的碎片**
+ *（「可是女生」「對,那它」「你覺得這」…），全都是與會者彼此在講話被 partial
+ * 切出來的半句，根本不是在打斷她。她講的話有將近一半沒講完。
+ *
+ * 定在 7 是照數據校準的：雜訊**全部**落在 4-6 字，而「等一下我有意見」（7 字）
+ * 是真正該讓路的發言——一度想調到 12，既有測試立刻擋下來，那個案例就在測試裡。
+ * 再高就會誤殺真正的打斷。
+ *
+ * 本門檻只管「沒喊叫停的旁人發言」：真正要她停的人幾乎都會說閉嘴／安靜，
+ * 那條走 isStopCommand／BARGE_IN_STOP_SUFFIX_REGEX，**不受本門檻限制**。
+ */
+const BARGE_IN_MIN_CHARS = 7
+
+/**
+ * 開口寬限期：她剛開始講的這段時間內，只有明確叫停能打斷她。
+ *
+ * 沒有這個窗，兩件事會誤觸發：① 提問者自己的尾音被 partial 切出來（他問完話
+ * 她馬上開口，那句的後半段才定稿）② 別人「嗯」一聲附和。兩者都不是要她閉嘴，
+ * 卻會讓她連一句話都講不完。2 秒約等於一個短句，足夠她把第一句講出來。
+ */
+const BARGE_IN_GRACE_MS = 2_000
 // 明確停止指令（再短也觸發讓路，且不再轉貼被打斷的內容）的詞表定義在 addressing.ts，
 // 與定址判斷共用同一份——這兩處對「什麼算叫停」的認定分岔的話，
 // 會出現「打斷得了、卻同時被當成新問題送去查資料」這種自相矛盾的行為。
@@ -218,6 +242,15 @@ export async function handleBargeIn(
   const stopping =
     isStopCommand(trimmed) || (trimmed.length <= 6 && BARGE_IN_STOP_SUFFIX_REGEX.test(trimmed))
   if (!stopping && trimmed.length < BARGE_IN_MIN_CHARS) return
+
+  // 開口寬限期：剛講就被打斷多半是誤判（見 BARGE_IN_GRACE_MS）。叫停不受此限。
+  if (!stopping && session.speechStartedAt > 0 && Date.now() - session.speechStartedAt < BARGE_IN_GRACE_MS) {
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId, text: trimmed.slice(0, 30) },
+      'barge-in skipped: within grace window after bot started speaking',
+    )
+    return
+  }
 
   // STT 事件晚到防護：用「說話者實際開口的時間」判斷，不是事件到達時間。
   // 開口時間早於蜜塔開始說話 → 對方是在安靜期講的（例如等答案等太久重問一次），
