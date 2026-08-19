@@ -13,7 +13,11 @@ const mockEnv = vi.hoisted(() => ({
 }))
 vi.mock('../../../../backend/src/types/env', () => ({ env: mockEnv }))
 
-import { handleTranscriptionEvent, routeTrackAudio } from '../../../../backend/src/agent/agent-relay'
+import {
+  handleTranscriptionEvent,
+  routeTrackAudio,
+  upsample16kTo24k,
+} from '../../../../backend/src/agent/agent-relay'
 import { isPerTrackMode, isAgentLive } from '../../../../backend/src/agent/agent-registry'
 import {
   registerAgentSession,
@@ -182,5 +186,105 @@ describe('isAgentLive — per-track 下耳朵與嘴巴解耦', () => {
     session.pageWs = null
     session.openaiReady = true
     expect(isAgentLive(BOT_ID)).toBe(false)
+  })
+})
+
+// openaiReady 是「webhook 喚醒 fallback 要不要抑制」的唯一依據。17:03 那場它被探針連線
+// 樂觀設成 true，但每條轉錄連線其實都在 session.update 就被拒 → 抑制了 fallback、
+// 自己又一個字都沒轉出 → 全聾且無告警。現在它只認「真的轉出字」這一種證據。
+describe('openaiReady — per-track 的就緒必須有實據', () => {
+  const track = { participantId: '7', speaker: '小明' }
+
+  beforeEach(() => {
+    unregisterAgentSession(AGENT_ID)
+    mockEnv.TRANSCRIBE_MODE = 'per-track'
+    mockEnv.RECALL_SEPARATE_AUDIO = 'on'
+    mockEnv.AGENT_MODE = 'on'
+  })
+
+  it('轉出第一段字 → ready（這是唯一的就緒證據）', () => {
+    const { session } = makeSession()
+    expect(session.openaiReady).toBe(false)
+    handleTranscriptionEvent(
+      session,
+      new Map(),
+      { type: 'conversation.item.input_audio_transcription.completed', item_id: 'a', transcript: '今天天氣如何' },
+      track,
+    )
+    expect(session.openaiReady).toBe(true)
+  })
+
+  it('session 被拒（error 事件）→ 降級成 false，webhook 喚醒 fallback 得以接手', () => {
+    const { session } = makeSession()
+    session.openaiReady = true
+    handleTranscriptionEvent(
+      session,
+      new Map(),
+      { type: 'error', error: { message: "Invalid 'session.audio.input.format.rate'" } },
+      track,
+    )
+    expect(session.openaiReady).toBe(false)
+    expect(isAgentLive(BOT_ID)).toBe(false)
+  })
+
+  it('降級後任一軌恢復轉錄 → 自動回到 ready（不需重開會議）', () => {
+    const { session } = makeSession()
+    handleTranscriptionEvent(session, new Map(), { type: 'error', error: {} }, track)
+    expect(session.openaiReady).toBe(false)
+    handleTranscriptionEvent(
+      session,
+      new Map(),
+      { type: 'conversation.item.input_audio_transcription.delta', item_id: 'b', delta: '蜜' },
+      track,
+    )
+    expect(session.openaiReady).toBe(true)
+  })
+
+  // mixed 的 ready 由 connectOpenAI 的 open/close 管；這裡插手會讓兩套狀態機打架。
+  it('mixed（無 track）→ 不碰 openaiReady', () => {
+    const { session } = makeSession()
+    session.openaiReady = true
+    handleTranscriptionEvent(session, new Map(), { type: 'error', error: {} })
+    expect(session.openaiReady).toBe(true)
+  })
+})
+
+// 實測 2026-08-19 17:03：直接送 Recall 的 16kHz 被 OpenAI 拒絕——
+// "Invalid 'session.audio.input.format.rate': ... Expected a value >= 24000"
+// 整場逐軌轉錄因此完全沒運作，卻只在 log 留一行 error，外表看起來一切正常。
+describe('upsample16kTo24k — 送進 OpenAI 前的取樣率轉換', () => {
+  /** 造一段 PCM16LE Buffer。 */
+  function buf(samples: number[]): Buffer {
+    const b = Buffer.alloc(samples.length * 2)
+    samples.forEach((v, i) => b.writeInt16LE(v, i * 2))
+    return b
+  }
+
+  it('樣本數變成 1.5 倍（16k → 24k）', () => {
+    expect(upsample16kTo24k(buf([0, 0, 0, 0])).length / 2).toBe(6)
+    expect(upsample16kTo24k(buf(new Array(160).fill(0))).length / 2).toBe(240)
+  })
+
+  it('空 buffer → 空 buffer（Recall 會送空封包，不可丟錯）', () => {
+    expect(upsample16kTo24k(Buffer.alloc(0)).length).toBe(0)
+  })
+
+  it('定值訊號內插後仍是同一個定值（不引入直流偏移）', () => {
+    const out = upsample16kTo24k(buf(new Array(12).fill(1000)))
+    for (let i = 0; i < out.length / 2; i++) expect(out.readInt16LE(i * 2)).toBe(1000)
+  })
+
+  it('輸出不超出 int16 範圍（極值不得溢位變號）', () => {
+    const out = upsample16kTo24k(buf([32767, -32768, 32767, -32768, 32767, -32768]))
+    for (let i = 0; i < out.length / 2; i++) {
+      const v = out.readInt16LE(i * 2)
+      expect(v).toBeGreaterThanOrEqual(-32768)
+      expect(v).toBeLessThanOrEqual(32767)
+    }
+  })
+
+  it('第一個樣本保持原值（相位不偏移）', () => {
+    const out = upsample16kTo24k(buf([500, 1500, 2500, 3500]))
+    expect(out.readInt16LE(0)).toBe(500)
   })
 })

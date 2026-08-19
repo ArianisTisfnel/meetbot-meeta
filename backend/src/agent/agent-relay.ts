@@ -142,6 +142,15 @@ export function handleTranscriptionEvent(
 ): void {
   const idNs = track ? `${track.participantId}:` : ''
   const speakerOf = () => (track ? track.speaker : resolveSpeaker(session))
+  // per-track：openaiReady 的唯一誠實證據是「這條軌真的轉出東西了」。
+  // 探針連上不算——2026-08-19 17:03 那場探針一路健在，每條轉錄連線卻在 session.update
+  // 就被拒（Recall 的 16kHz < OpenAI 下限 24kHz），openaiReady 卻早已被樂觀設成 true
+  //（見 handleProbeConnection），isAgentLive 因此恆為 true、webhook 喚醒 fallback 被抑制
+  // → 蜜塔全聾，而且沒有任何一條路徑察覺得到。mixed 模式的 ready 由 connectOpenAI 的
+  // open/close 管，不走這裡（所以要 track 才設）。
+  if (track && event.type?.startsWith('conversation.item.input_audio_transcription.')) {
+    session.openaiReady = true
+  }
   if (event.type === 'conversation.item.input_audio_transcription.delta') {
     const itemId = event.item_id ?? 'unknown'
     const acc = (itemTexts.get(itemId) ?? '') + (event.delta ?? '')
@@ -187,7 +196,14 @@ export function handleTranscriptionEvent(
   }
 
   if (event.type === 'error') {
-    logger.warn({ agentId: session.agentId, error: event.error ?? event }, 'agent relay: OpenAI error event')
+    logger.warn(
+      { agentId: session.agentId, participantId: track?.participantId, error: event.error ?? event },
+      'agent relay: OpenAI error event',
+    )
+    // per-track：session 層級的錯誤是系統性的（取樣率／認證／額度），一條中就代表每條
+    // 都會中 → 立刻降級讓 webhook 喚醒 fallback 接手，不要維持「以為自己在聽」的狀態。
+    // 這是可回復的：之後只要任一軌真的轉出字，上面那段就把 ready 設回 true。
+    if (track) session.openaiReady = false
   }
 }
 
@@ -211,8 +227,42 @@ interface TrackTranscriber {
 /** agentId → (participantId → 該軌的轉錄連線)。teardown 時整包清掉。 */
 const trackTranscribers = new Map<string, Map<string, TrackTranscriber>>()
 
-/** Recall per-participant 音軌的取樣率（見 recall-audio-probe.ts 檔頭）。 */
-const PER_TRACK_SAMPLE_RATE = 16_000
+/** Recall per-participant 音軌的原生取樣率（見 recall-audio-probe.ts 檔頭）。 */
+const RECALL_TRACK_SAMPLE_RATE = 16_000
+/**
+ * 送進 OpenAI 的取樣率。**不能直接用 Recall 的 16kHz**——OpenAI Realtime 轉錄
+ * 的下限就是 24000，送 16000 會被拒：
+ *   "Invalid 'session.audio.input.format.rate': integer below minimum value.
+ *    Expected a value >= 24000"（實測 2026-08-19 17:03，整場逐軌轉錄因此完全沒運作）
+ * 所以音訊要先上採樣到 24kHz 再送。
+ */
+const OPENAI_MIN_SAMPLE_RATE = 24_000
+
+/**
+ * 16kHz → 24kHz 上採樣（比例正好 1:1.5，線性內插）。
+ *
+ * 為什麼自己寫不裝套件：比例固定、單聲道、PCM16，這就是十行的數學。
+ * 線性內插對語音辨識足夠——它引入的高頻失真遠小於 STT 本身的容錯範圍，
+ * 而且我們的目的是讓 OpenAI 收下這段音訊，不是做母帶處理。
+ * ponytail: 線性內插；若實測發現轉錄品質受影響，再換 sinc 重採樣。
+ */
+export function upsample16kTo24k(pcm16le: Buffer): Buffer {
+  const inSamples = Math.floor(pcm16le.length / 2)
+  if (inSamples === 0) return Buffer.alloc(0)
+  const outSamples = Math.floor(inSamples * 1.5)
+  const out = Buffer.alloc(outSamples * 2)
+  for (let i = 0; i < outSamples; i++) {
+    const src = (i * 2) / 3 // 24k 的第 i 點對應到 16k 的哪個位置
+    const j = Math.floor(src)
+    const frac = src - j
+    const a = pcm16le.readInt16LE(Math.min(j, inSamples - 1) * 2)
+    const b = pcm16le.readInt16LE(Math.min(j + 1, inSamples - 1) * 2)
+    // Math.round 後夾在 int16 範圍內：內插不會超出兩端點，但浮點誤差可能剛好越界
+    const v = Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * frac)))
+    out.writeInt16LE(v, i * 2)
+  }
+  return out
+}
 
 function getTracks(agentId: string): Map<string, TrackTranscriber> {
   let m = trackTranscribers.get(agentId)
@@ -248,7 +298,7 @@ function ensureTrack(
   tracks.set(participantId, track)
 
   ws.on('open', () => {
-    ws.send(JSON.stringify(buildSessionUpdate(PER_TRACK_SAMPLE_RATE)))
+    ws.send(JSON.stringify(buildSessionUpdate(OPENAI_MIN_SAMPLE_RATE)))
     track.ready = true
     logger.info(
       { agentId: session.agentId, participantId, speaker: track.speaker },
@@ -286,9 +336,14 @@ function forwardTrackAudio(
 ): void {
   const track = ensureTrack(session, participantId, speaker)
   if (!track || !track.ready || track.ws.readyState !== WebSocket.OPEN) return
+  // Recall 給 16kHz，OpenAI 下限 24kHz → 先上採樣（見 OPENAI_MIN_SAMPLE_RATE）。
+  const upsampled = upsample16kTo24k(pcm)
+  if (upsampled.length === 0) return
   // 靜音封包**照送**：server_vad 要看到靜音才知道一句話講完了，
   // 丟掉會讓那一軌永遠不定稿（省錢要改成用 speech_on/off 開關整條連線，不是濾封包）。
-  track.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: pcm.toString('base64') }))
+  track.ws.send(
+    JSON.stringify({ type: 'input_audio_buffer.append', audio: upsampled.toString('base64') }),
+  )
 }
 
 /**
@@ -367,13 +422,7 @@ function connectOpenAI(session: AgentSession): void {
     if (isPageOpen(session)) {
       setTimeout(() => {
         if (isPageOpen(session) && !session.openaiWs && getAgentSession(session.agentId)) {
-          // per-track 模式：耳朵在探針那條，網頁只當嘴巴 → 不開混音轉錄，
-  // 否則同一段話會被混音與逐軌各轉一次，喚醒與逐字稿全部重複。
-  if (isPerTrackMode()) {
-    logger.info({ agentId: session.agentId }, 'per-track: 網頁只作為嘴巴，混音轉錄不啟用')
-  } else {
-    connectOpenAI(session)
-  }
+          connectOpenAI(session)
         }
       }, OPENAI_RECONNECT_DELAY_MS)
     }
@@ -442,9 +491,10 @@ function handleProbeConnection(session: AgentSession, ws: WebSocket): void {
       ? 'per-track: Recall 獨立音軌連線已建立（逐軌轉錄）'
       : 'audio probe: Recall 獨立音軌連線已建立',
   )
-  // per-track 模式下「耳朵」是這條連線而不是網頁那條 → openaiReady 由它負責。
-  // 不設的話 isAgentLive 會是 false，webhook 喚醒 fallback 會復活 → 同一句被答兩次。
-  if (perTrack) session.openaiReady = true
+  // per-track 模式下「耳朵」是這條連線而不是網頁那條，但**探針連上不等於聽得到**：
+  // 音訊到手之後還要 OpenAI 收下才算。所以 openaiReady 留給 handleTranscriptionEvent
+  // 在真的轉出第一段字時才設（見那裡的註解）。在那之前 isAgentLive=false，
+  // webhook 喚醒 fallback 保持在線——慢，但不會全聾。
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) return // 協定是 JSON；二進位不該出現在這條
@@ -485,7 +535,14 @@ function handlePageConnection(session: AgentSession, ws: WebSocket): void {
   session.pageWs = ws as unknown as AgentSession['pageWs']
   logger.info({ agentId: session.agentId, botId: session.botId }, 'agent relay: page connected（耳朵/嘴巴上線）')
 
-  connectOpenAI(session)
+  // per-track 模式：耳朵在探針那條，網頁只當嘴巴 → 不開混音轉錄。
+  // 兩條都開的話同一段話會被轉兩次，喚醒與 barge-in 全部重複觸發
+  //（實測 2026-08-19 17:03：守衛原本誤插在重連分支，網頁連上時照樣開了混音連線）。
+  if (isPerTrackMode()) {
+    logger.info({ agentId: session.agentId }, 'per-track: 網頁只作為嘴巴，混音轉錄不啟用')
+  } else {
+    connectOpenAI(session)
+  }
 
   // 心跳：瀏覽器會自動回 protocol-level pong；兩個間隔沒回應＝bot 瀏覽器當掉
   let alive = true
