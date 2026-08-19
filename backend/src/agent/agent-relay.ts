@@ -451,7 +451,16 @@ function handleProbeConnection(session: AgentSession, ws: WebSocket): void {
     const raw = data.toString()
     ingestProbeMessage(state, raw)
     maybeLogSummary(state)
-    if (perTrack) routeTrackAudio(session, raw)
+    if (perTrack) {
+      // 這裡會建立 WebSocket（每軌一條轉錄連線）。WS 事件處理器裡的未捕捉例外
+      // 在 Node 會變成 uncaughtException——per-track 出事不該把整個後端帶走，
+      // 也不該影響同一條連線上的探針統計。壞掉就退化成「只統計不轉錄」。
+      try {
+        routeTrackAudio(session, raw)
+      } catch (err) {
+        logger.warn({ err, agentId: session.agentId }, 'per-track: routeTrackAudio failed (ignored)')
+      }
+    }
   })
   ws.on('close', () => {
     maybeLogSummary(state, true)
