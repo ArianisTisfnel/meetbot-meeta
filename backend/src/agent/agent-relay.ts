@@ -9,6 +9,7 @@ import {
   getAgentSessionByBotId,
   unregisterAgentSession,
   verifyAgentToken,
+  isPerTrackMode,
   PCM_CACHE_MAX,
   type AgentSession,
 } from './agent-registry.js'
@@ -54,15 +55,20 @@ const PCM_PUSH_CHUNK_BYTES = 24_000
 const TRANSCRIPTION_PROMPT =
   '這是一場繁體中文與英文混雜的線上會議。會議助理的名字是「蜜塔」（Meeta），與會者會喊「蜜塔」來提問。'
 
-/** OpenAI GA 轉錄 session 設定（audio/pcm 24kHz mono；server_vad 自動斷句）。 */
-function buildSessionUpdate(): Record<string, unknown> {
+/**
+ * OpenAI GA 轉錄 session 設定（audio/pcm mono；server_vad 自動斷句）。
+ *
+ * 取樣率必須帶參數：網頁那條混音是 24kHz，Recall 的 per-participant 音軌是 **16kHz**
+ *（recall-audio-probe.ts 檔頭有註明）。寫死一個值會讓另一條的語音變速、轉錄全錯。
+ */
+function buildSessionUpdate(rate: number): Record<string, unknown> {
   return {
     type: 'session.update',
     session: {
       type: 'transcription',
       audio: {
         input: {
-          format: { type: 'audio/pcm', rate: 24_000 },
+          format: { type: 'audio/pcm', rate },
           noise_reduction: { type: 'far_field' },
           transcription: { model: 'gpt-4o-mini-transcribe', prompt: TRANSCRIPTION_PROMPT },
           turn_detection: {
@@ -122,20 +128,29 @@ function isPromptEcho(text: string): boolean {
   return t.length > 0 && TRANSCRIPTION_PROMPT.startsWith(t)
 }
 
+/**
+ * @param track per-track 模式的軌資訊。給了就用 Recall 提供的**已知**講者名，
+ *   不再用 speaker-timeline 回看窗猜；segmentId 也加上 participantId 命名空間——
+ *   每條 OpenAI 連線各自從頭編 item_id，兩條軌會撞號，撞號會被下游的
+ *   processedSegmentIds 當成重複段丟掉。
+ */
 export function handleTranscriptionEvent(
   session: AgentSession,
   itemTexts: Map<string, string>,
   event: { type?: string; item_id?: string; delta?: string; transcript?: string; error?: unknown },
+  track?: { participantId: string; speaker: string },
 ): void {
+  const idNs = track ? `${track.participantId}:` : ''
+  const speakerOf = () => (track ? track.speaker : resolveSpeaker(session))
   if (event.type === 'conversation.item.input_audio_transcription.delta') {
     const itemId = event.item_id ?? 'unknown'
     const acc = (itemTexts.get(itemId) ?? '') + (event.delta ?? '')
     itemTexts.set(itemId, acc)
     if (!acc.trim() || isPromptEcho(acc)) return
     session.handlers.onPartialSegment?.({
-      segmentId: `agent-partial:${itemId}`,
+      segmentId: `agent-partial:${idNs}${itemId}`,
       text: acc,
-      speaker: resolveSpeaker(session),
+      speaker: speakerOf(),
       startTime: elapsedSec(session),
       endTime: elapsedSec(session),
       language: null,
@@ -161,9 +176,9 @@ export function handleTranscriptionEvent(
       'agent relay: transcription completed',
     )
     session.handlers.onSegment?.({
-      segmentId: `agent:${itemId}`,
+      segmentId: `agent:${idNs}${itemId}`,
       text,
-      speaker: resolveSpeaker(session),
+      speaker: speakerOf(),
       startTime: elapsedSec(session),
       endTime: elapsedSec(session),
       language: null,
@@ -174,6 +189,148 @@ export function handleTranscriptionEvent(
   if (event.type === 'error') {
     logger.warn({ agentId: session.agentId, error: event.error ?? event }, 'agent relay: OpenAI error event')
   }
+}
+
+// ── 逐軌轉錄（per-track，TRANSCRIBE_MODE=per-track）──────────────────────────
+//
+// mixed 模式：網頁一條混音 → 一條 OpenAI 連線 → 講者靠 speaker-timeline 猜。
+// per-track  ：Recall 每位與會者一條音軌（全部走**同一條**探針 WS，用 participant.id
+//              分流）→ 每軌各自一條 OpenAI 連線 → 講者是 Recall 直接給的，不用猜。
+//
+// 為什麼狀態放這裡而不是 AgentSession：registry 刻意不依賴 ws 的執行期型別
+//（見 agent-registry.ts 的 openaiWs: unknown）。這裡是 relay 內部，可以用真型別。
+
+interface TrackTranscriber {
+  ws: WebSocket
+  ready: boolean
+  /** 該軌自己的 item_id → 累積文字（每條連線各自編號，不可共用）。 */
+  itemTexts: Map<string, string>
+  speaker: string
+}
+
+/** agentId → (participantId → 該軌的轉錄連線)。teardown 時整包清掉。 */
+const trackTranscribers = new Map<string, Map<string, TrackTranscriber>>()
+
+/** Recall per-participant 音軌的取樣率（見 recall-audio-probe.ts 檔頭）。 */
+const PER_TRACK_SAMPLE_RATE = 16_000
+
+function getTracks(agentId: string): Map<string, TrackTranscriber> {
+  let m = trackTranscribers.get(agentId)
+  if (!m) {
+    m = new Map()
+    trackTranscribers.set(agentId, m)
+  }
+  return m
+}
+
+/**
+ * 取得（或建立）某位與會者的轉錄連線。第一次收到他的音訊時才建，
+ * 沒開口的人不會白白佔一條連線。
+ */
+function ensureTrack(
+  session: AgentSession,
+  participantId: string,
+  speaker: string,
+): TrackTranscriber | null {
+  const tracks = getTracks(session.agentId)
+  const existing = tracks.get(participantId)
+  if (existing) {
+    // 名字可能一開始是空的、之後才補上
+    if (speaker && existing.speaker !== speaker) existing.speaker = speaker
+    return existing
+  }
+  if (!env.OPENAI_API_KEY) return null
+
+  const ws = new WebSocket(OPENAI_REALTIME_URL, {
+    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+  })
+  const track: TrackTranscriber = { ws, ready: false, itemTexts: new Map(), speaker }
+  tracks.set(participantId, track)
+
+  ws.on('open', () => {
+    ws.send(JSON.stringify(buildSessionUpdate(PER_TRACK_SAMPLE_RATE)))
+    track.ready = true
+    logger.info(
+      { agentId: session.agentId, participantId, speaker: track.speaker },
+      'per-track: OpenAI transcription session opened for participant',
+    )
+  })
+  ws.on('message', (raw) => {
+    try {
+      handleTranscriptionEvent(session, track.itemTexts, JSON.parse(raw.toString()), {
+        participantId,
+        speaker: track.speaker,
+      })
+    } catch (err) {
+      logger.warn({ err, agentId: session.agentId, participantId }, 'per-track: bad OpenAI event (ignored)')
+    }
+  })
+  ws.on('error', (err) =>
+    logger.warn({ err, agentId: session.agentId, participantId }, 'per-track: OpenAI WS error'),
+  )
+  ws.on('close', () => {
+    track.ready = false
+    // 只移除自己那格：同名 participant 之後再開口會重新建一條。
+    if (tracks.get(participantId) === track) tracks.delete(participantId)
+    logger.info({ agentId: session.agentId, participantId }, 'per-track: OpenAI session closed')
+  })
+  return track
+}
+
+/** 把某位與會者的一塊 PCM 轉發到他自己那條轉錄連線。 */
+function forwardTrackAudio(
+  session: AgentSession,
+  participantId: string,
+  speaker: string,
+  pcm: Buffer,
+): void {
+  const track = ensureTrack(session, participantId, speaker)
+  if (!track || !track.ready || track.ws.readyState !== WebSocket.OPEN) return
+  // 靜音封包**照送**：server_vad 要看到靜音才知道一句話講完了，
+  // 丟掉會讓那一軌永遠不定稿（省錢要改成用 speech_on/off 開關整條連線，不是濾封包）。
+  track.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: pcm.toString('base64') }))
+}
+
+/**
+ * 解析一則探針訊息，把音訊送到該與會者自己那條轉錄連線。
+ *
+ * 訊息形狀與 recall-audio-probe.ts 解析的是**同一則**（那邊只統計、這邊做轉錄），
+ * 兩邊都很薄，各自解析比硬湊一個共用中介型別清楚。
+ * 匯出供測試：這是 per-track 唯一的純資料入口，不必碰 WebSocket 就能測分流。
+ */
+export function routeTrackAudio(session: AgentSession, raw: string): void {
+  let msg: any
+  try {
+    msg = JSON.parse(raw)
+  } catch {
+    return
+  }
+  if (msg?.event !== 'audio_separate_raw.data') return
+  const payload = msg?.data?.data
+  const participant = payload?.participant
+  const id = participant?.id
+  if (id === undefined || id === null) return
+  // 蜜塔自己若也有一條軌就跳過（實測 2026-08-18 四人會議她沒有，但不能假設永遠沒有）。
+  // 用 name 比對是沿用 recall-adapter 的既有作法；撞名會漏，但那是既有限制不是新增的。
+  const name: string = participant?.name ?? ''
+  if (name && name === session.botName) return
+  const b64 = payload?.buffer
+  if (typeof b64 !== 'string' || !b64) return
+  forwardTrackAudio(session, String(id), name || '參與者', Buffer.from(b64, 'base64'))
+}
+
+/** 收掉某個 agent 的所有逐軌連線（session 結束時）。 */
+function teardownTracks(agentId: string): void {
+  const tracks = trackTranscribers.get(agentId)
+  if (!tracks) return
+  for (const t of tracks.values()) {
+    try {
+      t.ws.close()
+    } catch {
+      /* best-effort */
+    }
+  }
+  trackTranscribers.delete(agentId)
 }
 
 // ── OpenAI 轉錄連線（每個 agent 網頁連線對應一條）─────────────────────────────
@@ -187,7 +344,7 @@ function connectOpenAI(session: AgentSession): void {
   const itemTexts = new Map<string, string>()
 
   ws.on('open', () => {
-    ws.send(JSON.stringify(buildSessionUpdate()))
+    ws.send(JSON.stringify(buildSessionUpdate(24_000)))
     // 轉錄鏈就緒 → isAgentLive 才回 true、webhook 喚醒才被抑制。
     // 反之持久連不上（401／額度）時 openaiReady 恆為 false，webhook fallback 自動接手。
     session.openaiReady = true
@@ -210,7 +367,13 @@ function connectOpenAI(session: AgentSession): void {
     if (isPageOpen(session)) {
       setTimeout(() => {
         if (isPageOpen(session) && !session.openaiWs && getAgentSession(session.agentId)) {
-          connectOpenAI(session)
+          // per-track 模式：耳朵在探針那條，網頁只當嘴巴 → 不開混音轉錄，
+  // 否則同一段話會被混音與逐軌各轉一次，喚醒與逐字稿全部重複。
+  if (isPerTrackMode()) {
+    logger.info({ agentId: session.agentId }, 'per-track: 網頁只作為嘴巴，混音轉錄不啟用')
+  } else {
+    connectOpenAI(session)
+  }
         }
       }, OPENAI_RECONNECT_DELAY_MS)
     }
@@ -272,15 +435,30 @@ export function attachAgentGateway(server: HttpServer): void {
  */
 function handleProbeConnection(session: AgentSession, ws: WebSocket): void {
   const state = createProbeState(session.botName)
-  logger.info({ agentId: session.agentId, botId: session.botId }, 'audio probe: Recall 獨立音軌連線已建立')
+  const perTrack = isPerTrackMode()
+  logger.info(
+    { agentId: session.agentId, botId: session.botId, perTrack },
+    perTrack
+      ? 'per-track: Recall 獨立音軌連線已建立（逐軌轉錄）'
+      : 'audio probe: Recall 獨立音軌連線已建立',
+  )
+  // per-track 模式下「耳朵」是這條連線而不是網頁那條 → openaiReady 由它負責。
+  // 不設的話 isAgentLive 會是 false，webhook 喚醒 fallback 會復活 → 同一句被答兩次。
+  if (perTrack) session.openaiReady = true
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) return // 協定是 JSON；二進位不該出現在這條
-    ingestProbeMessage(state, data.toString())
+    const raw = data.toString()
+    ingestProbeMessage(state, raw)
     maybeLogSummary(state)
+    if (perTrack) routeTrackAudio(session, raw)
   })
   ws.on('close', () => {
     maybeLogSummary(state, true)
+    if (perTrack) {
+      session.openaiReady = false
+      teardownTracks(session.agentId)
+    }
     logger.info({ agentId: session.agentId, totalMessages: state.totalMessages }, 'audio probe: 連線結束')
   })
   ws.on('error', (err) => logger.warn({ err, agentId: session.agentId }, 'audio probe: WS error'))
@@ -460,6 +638,7 @@ export function agentStopSpeaking(botId: string): boolean {
 
 /** bot 離開會議：關閉兩側連線並移除註冊（adapter.leave 呼叫）。 */
 export function teardownAgentSession(agentId: string): void {
+  teardownTracks(agentId)
   const session = unregisterAgentSession(agentId)
   if (!session) return
   try {

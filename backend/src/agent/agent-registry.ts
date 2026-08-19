@@ -64,6 +64,25 @@ export function isAgentModeEnabled(): boolean {
   )
 }
 
+/**
+ * 逐軌轉錄模式是否生效（**開關 + 前置條件齊全**，與 isAgentModeEnabled 同一個模式）。
+ *
+ * 三個條件缺一不可：
+ *   TRANSCRIBE_MODE=per-track   使用者明確選擇
+ *   RECALL_SEPARATE_AUDIO=on    沒有它 Recall 根本不會送 per-participant 音軌
+ *   agent 模式齊全              探針的 WS 認證沿用 agentId／簽章，且嘴巴仍走網頁
+ *
+ * 任一條件不足 → 回 false → 自動走 mixed（現行行為），不會失聰。
+ * 判斷集中在這裡而不是散在 relay 各處 if，避免三個條件在不同地方分岔。
+ */
+export function isPerTrackMode(): boolean {
+  return (
+    env.TRANSCRIBE_MODE === 'per-track' &&
+    env.RECALL_SEPARATE_AUDIO === 'on' &&
+    isAgentModeEnabled()
+  )
+}
+
 /** agentId 的簽名 token（HMAC-SHA256，密鑰沿用 RECALL_WEBHOOK_TOKEN，不新增必填 env）。 */
 export function signAgentToken(agentId: string): string {
   return createHmac('sha256', env.RECALL_WEBHOOK_TOKEN ?? '').update(agentId).digest('hex')
@@ -139,8 +158,13 @@ export function markAgentAnchor(agentId: string): void {
  */
 export function isAgentLive(botId: string): boolean {
   const session = getAgentSessionByBotId(botId)
+  if (!session) return false
+  // per-track：耳朵是 Recall 的音軌連線，**與網頁無關**（嘴巴才是網頁）。
+  // 分家之後不能再用 pageWs 判斷「聽不聽得到」——網頁掛掉但探針還活著時，
+  // 若這裡回 false，webhook 喚醒 fallback 會復活，與逐軌轉錄同時觸發 → 同一句答兩次。
+  if (isPerTrackMode()) return session.openaiReady
   return Boolean(
-    session?.pageWs &&
+    session.pageWs &&
       session.pageWs.readyState === session.pageWs.OPEN &&
       session.openaiReady,
   )

@@ -53,6 +53,20 @@ const envSchema = z.object({
   // 推到 /ws/recall-audio。目前只統計、只寫 log、不做轉錄。
   // 'off'（預設）：join payload 完全不變。需要 RECALL_WEBHOOK_URL（換算成 wss://）。
   RECALL_SEPARATE_AUDIO: z.enum(['on', 'off']).default('off'),
+  // 轉錄來源：'mixed'（預設，現行行為——Output Media 網頁的單軌混音）或
+  // 'per-track'（Recall audio_separate_raw，每位與會者各自一條音軌分別轉錄）。
+  //
+  // per-track 的價值是**講者身分變成已知的**：混音沒有講者標記，現在只能靠
+  // speaker-timeline 回看 15 秒窗猜「剛才那句是誰講的」，多人會議常猜錯（實測 2026-08-18
+  // 四人會議整場幾乎都判歧義）。per-track 直接拿 Recall 給的 participant.name。
+  //
+  // 代價：每位與會者一條 OpenAI 轉錄連線（四人會議＝4 條），STT 成本約 N 倍。
+  // 實測靜音佔比 0.81-0.95，但**不能靠丟棄靜音封包省錢**——server_vad 要「看到」靜音
+  // 才知道一句話講完了，丟掉會永遠不定稿。要節流得用 speech_on/off 開關整條連線。
+  //
+  // 需要 RECALL_SEPARATE_AUDIO=on 與 agent 模式齊全（見 isPerTrackMode）；
+  // 任一條件不足會自動退回 mixed，不會變啞巴。
+  TRANSCRIBE_MODE: z.enum(['mixed', 'per-track']).default('mixed'),
   // Recall：admission 逾時（ms）。Recall bot 從派出到進等候室本身就要約 30s（實測），
   // 故給較長的視窗。
   RECALL_ADMISSION_TIMEOUT_MS: z.coerce.number().default(90_000),
