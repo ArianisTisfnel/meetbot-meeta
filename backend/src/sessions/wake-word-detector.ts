@@ -1,4 +1,4 @@
-﻿import { env } from '../types/env.js'
+import { env } from '../types/env.js'
 import { logger } from '../middleware/logger.js'
 import { botProvider } from '../provider/index.js'
 import type { BotSession } from '../provider/types.js'
