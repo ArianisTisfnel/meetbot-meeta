@@ -288,7 +288,7 @@ describe('parseTurnDecision — 語意層輸出解析', () => {
 
 describe('isStopCommand — 共用判準', () => {
   it('叫停不論有沒有喊名字、後面有沒有接話都認得出來', () => {
-    for (const t of ['安靜', '蜜塔安靜', '蜜塔，閉嘴', '蜜桃閉嘴他是念Gemini耶', '蜜塔安傑']) {
+    for (const t of ['安靜', '蜜塔安靜', '蜜塔，閉嘴', '蜜桃閉嘴他是念Gemini耶', '蜜塔安傑', '蜜塔不用查']) {
       expect(isStopCommand(t)).toBe(true)
     }
   })

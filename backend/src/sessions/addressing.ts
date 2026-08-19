@@ -52,7 +52,7 @@ export const FOLLOWUP_WINDOW_MS = 90_000
  * 於是她停是停了（barge-in 只看長度），卻沒被當成叫停——被打斷的答案照樣轉貼聊天室，
  * 對話串也照樣開著，下一句就被當成新問題。叫停失敗最刺眼的就是這種「停不乾淨」。
  */
-export const STOP_COMMAND_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|停|停止|別說了|不用了|不用說了|夠了)[。！!～~]*$/
+export const STOP_COMMAND_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|停|停止|別說了|不用了|不用[說查]了|不用查|夠了)[。！!～~]*$/
 
 /**
  * 叫停後面還接著講的形態（「蜜桃閉嘴他是念 Gemini 耶」——實測 2026-08-03 漏掉）。
@@ -68,6 +68,18 @@ const STOP_COMMAND_PREFIX_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|別說�
 function stripWakeWord(text: string): string {
   const m = WAKE_WORD_REGEX.exec(text)
   return m ? text.slice(m.index + m[0].length) : text
+}
+
+/**
+ * 問題文字的正規化（剝喚醒詞＋前置標點）——**「同一題」的比對基準**。
+ *
+ * 呼喚路徑派發前會剝掉「蜜塔,」，語意層從對話窗挑的是原文；同一句話兩個字串
+ * 差一個前綴，跳針防護用原字串比對就攔不住（實測 2026-08-17 深夜：
+ * 同一題「我想知道使用者分析…」收到兩次、答了兩次）。
+ * 任何要判斷「這題是不是剛答過」的地方，兩邊都先過這個函式。
+ */
+export function normalizeQuestionText(text: string): string {
+  return stripLeadingPunct(stripWakeWord(text)).trim()
 }
 
 /**

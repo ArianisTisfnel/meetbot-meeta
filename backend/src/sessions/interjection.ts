@@ -7,7 +7,7 @@ import { warmEouModel, isEndOfTurn } from '../lib/eou.js'
 import { completeText } from '../lib/llm.js'
 import { DIFY_NO_RESULT_SENTINEL } from '../lib/dify.js'
 import { decideTurn } from './response-policy.js'
-import { isEngaged } from './addressing.js'
+import { isEngaged, normalizeQuestionText } from './addressing.js'
 import {
   formatConversation,
   ICEBREAKER_OPENING_NO_KB,
@@ -400,8 +400,14 @@ async function evaluateTurn(meetingInstanceId: string): Promise<void> {
       // 跳針防護：語意層是從**整個對話窗**挑問題的，窗裡就躺著剛才已經答過的那一則
       //（實測 2026-08-03 19:35：聊天室打的那題，答案還在查時她又出了一次聲，
       //  同一句原文被當成新追問，聊天室答一次、語音又答一次）。
+      // 比對前先正規化：呼喚路徑派發的是剝掉「蜜塔,」的版本，語意層挑的是原文，
+      // 直接比字串會因為一個前綴之差而放行 → 同一題答兩次（實測 2026-08-17 深夜）。
       const prev = session.lastDispatchedQuestion
-      if (prev && prev.text.trim() === turn.question.trim() && now - prev.at < REPEAT_QUESTION_MS) {
+      if (
+        prev &&
+        normalizeQuestionText(prev.text) === normalizeQuestionText(turn.question) &&
+        now - prev.at < REPEAT_QUESTION_MS
+      ) {
         logger.info(
           { meetingInstanceId, question: turn.question.slice(0, 60), sinceDispatchMs: now - prev.at },
           'interjection: same question was just dispatched, not answering twice',

@@ -290,6 +290,45 @@ describe('handlePartialSegment — partial 快速喚醒', () => {
     expect(mockBotProvider.speak).not.toHaveBeenCalled()
   })
 
+  it('殘響閘也擋呼喚路徑：「蜜塔,請。」帶逗號 → 丟棄不回答（實測回「好喔」的雷）', async () => {
+    const session = makeSession({ lastStopAt: Date.now() - 2300 })
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-residue-vocative',
+      text: '蜜塔,請。',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+    expect(mockBotProvider.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('她說話時「立大安靜」（喚醒詞爛掉＋叫停詞結尾）→ 視為叫停：停止且不轉貼', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '被打斷的答案',
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '立大安靜', speaker: 'A' })
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalled()
+    expect(session.lastStopAt).toBeGreaterThan(0) // 停得乾淨：靜默期起算
+    expect(mockBotProvider.sendChat).not.toHaveBeenCalled() // 叫停不轉貼被打斷內容
+  })
+
+  it('叫停時查詢還在路上 → bargeEpoch 作廢在途語音（答案改走聊天室）', async () => {
+    const session = makeSession()
+    const before = session.bargeEpoch
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-stop-inflight',
+      text: '蜜塔不用查',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    expect(session.bargeEpoch).toBe(before + 1)
+    expect(mockBotProvider.speak).not.toHaveBeenCalled()
+  })
+
   it('叫停靜默期內的殘響碎片（「蜜塔不來」）→ 丟棄，不送語意層也不回答', async () => {
     const session = makeSession({ lastStopAt: Date.now() - 3000 })
     await handleTranscriptSegment(session, {

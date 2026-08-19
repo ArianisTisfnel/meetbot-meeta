@@ -536,6 +536,19 @@ describe('interjection — 連續追問（addressed=address）', () => {
     expect(wwd.answerFollowUp).not.toHaveBeenCalled()
   })
 
+  // 實機 2026-08-17 深夜：呼喚路徑派發的是剝掉「蜜塔,」的版本、語意層從對話窗撈的是
+  // 帶喚醒詞的原文，只差一個前綴就繞過跳針防護 → 同一題兩個 ack、答兩次。
+  it('同一題只差喚醒詞前綴（「蜜塔,X」vs「X」）→ 仍視為同一題，不答第二次', async () => {
+    const session = engagedSession()
+    session.lastDispatchedQuestion = { text: '我想知道我們的使用者分析以及產品的競品分析。', at: Date.now() }
+    llm.completeText.mockResolvedValueOnce(
+      decision({ addressed: 'address', question: '蜜塔,我想知道我們的使用者分析以及產品的競品分析。' }),
+    )
+    recordConversation(session, humanEntry('嗯', 'WENDY'))
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(wwd.answerFollowUp).not.toHaveBeenCalled()
+  })
+
   it('同一題但已經過了一分鐘 → 當成沒聽到，照答', async () => {
     const session = engagedSession()
     session.lastDispatchedQuestion = { text: '我們這個月有甚麼目標嗎', at: Date.now() - 61_000 }

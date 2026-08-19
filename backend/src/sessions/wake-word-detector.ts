@@ -174,6 +174,18 @@ const PARTIAL_ACK_WINDOW_MS = 12_000
 
 /** 叫停後的 ack 靜默期：期內句首喊名字不提前 ack（見 MeetingSession.lastStopAt）。 */
 const STOP_ACK_MUTE_MS = 10_000
+
+/**
+ * 叫停靜默期內的殘響碎片？連續叫停時 STT 把後面幾聲轉成「喚醒詞＋兩三個不成句的字」：
+ * 「蜜塔不來」「蜜塔被傳」（2026-08-17 上午）、「蜜塔,請。」（同日深夜——這個帶逗號，
+ * 走的是呼喚路徑而不是 ambiguous，第一版殘響閘只裝在 ambiguous 分支就被它鑽過去，
+ * 於是叫她閉嘴、她回「好喔」）。**每一條語音派發路徑都要過這個閘。**
+ * 條件收得很窄：靜默期內 ＋ 剝掉喚醒詞後 ≤3 字 ＋ 不是問句。真的追問不受影響。
+ */
+function isStopResidue(session: MeetingSession, candidate: string | undefined, now: number): boolean {
+  const q = (candidate ?? '').trim()
+  return now - session.lastStopAt < STOP_ACK_MUTE_MS && q.length <= 3 && !/[?？嗎呢]/.test(q)
+}
 const MAX_PROCESSED_SEGMENT_IDS = 5000
 const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 
@@ -188,13 +200,22 @@ const BARGE_IN_MIN_CHARS = 4
 // 與定址判斷共用同一份——這兩處對「什麼算叫停」的認定分岔的話，
 // 會出現「打斷得了、卻同時被當成新問題送去查資料」這種自相矛盾的行為。
 
+/**
+ * barge-in 限定的字尾叫停：她說話時「蜜塔安靜」常被雙講失真轉成「立大安靜」「立陶閉嘴」——
+ * 喚醒詞爛到字元集救不了（立場/立大是常用詞，收進喚醒 regex 會誤觸發），
+ * 但「短句＋叫停詞結尾」在她正在說話的當下幾乎只有一種意思（實測 2026-08-17）。
+ * 只在 handleBargeIn 用：她沒在說話時不適用這個推定。
+ */
+const BARGE_IN_STOP_SUFFIX_REGEX = /(閉嘴|安[靜傑進靖黑]|住嘴)[。！!～~]*$/
+
 export async function handleBargeIn(
   session: MeetingSession,
   speech: { text: string; speaker: string; startTime?: number },
 ): Promise<void> {
   if (!session.isSpeaking) return
   const trimmed = speech.text.trim()
-  const stopping = isStopCommand(trimmed)
+  const stopping =
+    isStopCommand(trimmed) || (trimmed.length <= 6 && BARGE_IN_STOP_SUFFIX_REGEX.test(trimmed))
   if (!stopping && trimmed.length < BARGE_IN_MIN_CHARS) return
 
   // STT 事件晚到防護：用「說話者實際開口的時間」判斷，不是事件到達時間。
@@ -330,16 +351,8 @@ export async function handleTranscriptSegment(
     // 句中提及蜜塔：規則分不出「對她說」還是「談論她」→ 花一次便宜的 LLM 呼叫裁決。
     // 這裡**不等 turn 結束**：使用者剛喊了她的名字，等 2.5 秒才反應太慢。
     case 'ambiguous': {
-      // 叫停後的殘響碎片：實測 2026-08-17 連續叫停時，後面幾聲被 STT 轉成
-      // 「蜜塔不來」「蜜塔被傳」——喚醒詞＋兩三個不成句的字。送語意層裁決有一半機率
-      // 被判成閒聊，於是「才剛叫她閉嘴，她又開口回答『不來』」。
-      // 條件收得很窄：叫停靜默期內 ＋ 剝掉喚醒詞後 ≤3 字 ＋ 不是問句 → 當殘響丟棄，
-      // 順便省一次 LLM 呼叫。真的追問（帶問號或長句）不受影響。
-      if (
-        now - session.lastStopAt < STOP_ACK_MUTE_MS &&
-        (decision.candidate ?? '').length <= 3 &&
-        !/[?？嗎呢]/.test(decision.candidate ?? '')
-      ) {
+      // 殘響閘（見 isStopResidue）：丟棄順便省一次 LLM 呼叫
+      if (isStopResidue(session, decision.candidate, now)) {
         logger.info(
           { meetingInstanceId: session.meetingInstanceId, text: segment.text.slice(0, 30) },
           'addressing: short fragment within stop-mute window, dropped as stop residue',
@@ -398,6 +411,11 @@ export async function handleTranscriptSegment(
       session.lastEngagedAt = 0
       session.lastWakeAt = now
       session.lastStopAt = now
+      // 作廢查詢中的語音回答：叫停時常有上一題還在 Dify 路上（實測 2026-08-17
+      // 「蜜塔不用查」後 2 秒她照樣開口唸答案）。bargeEpoch+1 讓 dispatch 在開口前的
+      // 比對不過 → 答案改貼聊天室，內容不遺失、她保持安靜。她正在說話的情形
+      // 不會走到這裡（handleBargeIn 先攔），所以這行只影響「還沒開口」的在途回答。
+      session.bargeEpoch++
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, reason: decision.reason, speaker: segment.speaker },
         'addressing: stop command, staying quiet',
@@ -416,6 +434,15 @@ export async function handleTranscriptSegment(
       return
 
     case 'question':
+      // 殘響閘也要擋呼喚路徑：「蜜塔,請。」帶逗號會走到這裡而不是 ambiguous
+      //（實測 2026-08-17：叫她閉嘴的下一聲被轉成這樣，她回了「好喔」）。
+      if (isStopResidue(session, decision.question, now)) {
+        logger.info(
+          { meetingInstanceId: session.meetingInstanceId, text: segment.text.slice(0, 30) },
+          'addressing: vocative fragment within stop-mute window, dropped as stop residue',
+        )
+        return
+      }
       session.lastEngagedAt = now
       session.lastWakeAt = now
       logger.info(
