@@ -13,6 +13,8 @@ import {
   agentSpeak,
   agentPrimeSpeech,
   agentStopSpeaking,
+  agentPauseSpeaking,
+  agentResumeSpeaking,
   teardownAgentSession,
 } from '../agent/agent-relay.js'
 import { recordSpeechOn, recordSpeechOff, clearSpeakerTimeline } from '../agent/speaker-timeline.js'
@@ -519,15 +521,23 @@ export class RecallAdapter implements MeetingBotProvider {
     return normalizeRecallTranscript(raw)
   }
 
+  // speak() 成功時原本一行 log 都沒有（只記失敗），於是「她到底有沒有說『收到』、
+  // 什麼時候說的」這種問題**從 log 完全答不出來**——2026-08-23 查延遲時就卡在這裡。
+  // 每一句出聲都記一行：ack、進度句、答案、破冰、插話全部涵蓋。
+
   async speak(session: BotSession, text: string): Promise<void> {
     const state = getState(session)
+    const started = Date.now()
     // agent 網頁在線 → 走串流路徑（PCM 快取即推 / TTS 邊合成邊播，首音 ~0.5s）。
     // 不在線（未啟用 / 網頁當掉）→ 退回現行 mp3 路徑。
     const spokenViaAgent = await agentSpeak(state.botId, text).catch((err) => {
       logger.warn({ err, botId: state.botId }, 'RecallAdapter.speak: agentSpeak failed, falling back to mp3')
       return false
     })
-    if (spokenViaAgent) return
+    if (spokenViaAgent) {
+      logSpoken(state.botId, text, 'agent-stream', started)
+      return
+    }
 
     // Recall 吃 mp3（base64），需自行 TTS（text → mp3）。
     const mp3Base64 = await this.synthesizeMp3(text)
@@ -535,6 +545,7 @@ export class RecallAdapter implements MeetingBotProvider {
       kind: 'mp3',
       b64_data: mp3Base64,
     })
+    logSpoken(state.botId, text, 'mp3', started)
   }
 
   async primeSpeech(session: BotSession, texts: string[]): Promise<void> {
@@ -599,6 +610,17 @@ export class RecallAdapter implements MeetingBotProvider {
     await recallFetch<void>('DELETE', `/api/v1/bot/${state.botId}/output_audio/`)
   }
 
+  // 暫停／恢復只有 agent 網頁那條路做得到（我們自己控制播放佇列）。
+  // output audio 那條是 POST 一整支 mp3、DELETE 掉就沒了，沒有暫停可言 → 回 false，
+  // 呼叫端會退回「直接停」的舊行為。
+  async pauseSpeaking(session: BotSession): Promise<boolean> {
+    return agentPauseSpeaking(getState(session).botId)
+  }
+
+  async resumeSpeaking(session: BotSession): Promise<boolean> {
+    return agentResumeSpeaking(getState(session).botId)
+  }
+
   async sendChat(session: BotSession, text: string): Promise<void> {
     const state = getState(session)
     // best-effort：部分平台不支援，失敗時由呼叫端容錯。
@@ -618,4 +640,9 @@ export class RecallAdapter implements MeetingBotProvider {
       logger.warn({ err, botId: state.botId }, 'RecallAdapter.leave: leave_call failed'),
     )
   }
+}
+
+/** 出聲紀錄（見 RecallAdapter.speak 上方註解）。 */
+function logSpoken(botId: string, text: string, via: 'agent-stream' | 'mp3', started: number): void {
+  logger.info({ botId, via, ms: Date.now() - started, text: text.slice(0, 60) }, 'bot spoke')
 }

@@ -12,7 +12,8 @@ import type { AppEnv } from '../types/hono.js'
  *
  * 頁面協定與 frontend/src/app/agent/page.tsx 相同（那份保留給前端公開部署時用）：
  *   查詢參數：agent + token（同源連 /ws/agent），或 ws=完整 WS URL（跨源覆蓋，手動測試用）
- *   上行 binary = PCM16 24kHz mono 會議音訊；下行 binary = 蜜塔語音；{type:'stop'} = 立停
+ *   上行 binary = PCM16 24kHz mono 會議音訊；下行 binary = 蜜塔語音；
+ *   {type:'stop'} = 立停（清佇列，接不回來）；{type:'pause'}／{type:'resume'} = 暫停／從斷點接回
  *
  * 免登入：authMiddleware 放行 /agent（頁面本身無機密；WS 連線由簽名 token 把關）。
  */
@@ -222,15 +223,27 @@ class PcmPlayer extends AudioWorkletProcessor {
   // Jitter buffer：串流塊到達時間不均勻（OpenAI→relay→tunnel），到一塊播一塊會在
   // 佇列空檔靜音、下一塊再響（斷斷續續）。先積 PREBUFFER 才開播；佇列播空就重新積。
   // 'flush' = 這一句的串流已結束 → 剩多少播多少，短句不用等積滿。
+  // 'pause'/'resume' = 讓路的「延後定案」：偵測到重疊語音先靜音但**保留佇列**，
+  // 兩秒內對方沒有真的講下去就從斷點接回去（見 wake-word-detector 的 pendingBargeIn）。
+  // 與 'clear' 的差別就是佇列留不留——清掉了就再也接不回來。
+  // 進出都走 20ms 淡入淡出：硬切難聽的其實常常是 DAC 上的爆音，不是「停太快」。
   constructor() {
     super()
     this.queue = []; this.offset = 0; this.buffered = 0
     this.started = false; this.forceStart = false; this.playing = false
     this.PREBUFFER = 12000 // 24kHz × 0.5s
+    this.paused = false
+    this.gain = 1
+    this.FADE = 1 / 480 // 每個 sample 的增益變化量：24kHz × 0.02s = 480 samples
     this.port.onmessage = (e) => {
       if (e.data === 'clear') {
         this.queue = []; this.offset = 0; this.buffered = 0
         this.started = false; this.forceStart = false
+        this.paused = false; this.gain = 1
+      } else if (e.data === 'pause') {
+        this.paused = true
+      } else if (e.data === 'resume') {
+        this.paused = false
       } else if (e.data === 'flush') {
         this.forceStart = true
       } else {
@@ -244,6 +257,13 @@ class PcmPlayer extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const out = outputs[0][0]
     if (!out) return true
+    // 暫停且已淡出完畢 → 出靜音，**不動佇列**（這就是等一下能接回去的原因）。
+    // 還在淡出的那 20ms 照常消耗佇列，損失聽不出來，但避免爆音。
+    if (this.paused && this.gain <= 0) {
+      for (let i = 0; i < out.length; i++) out[i] = 0
+      this.report(false)
+      return true
+    }
     if (!this.started) {
       if (this.buffered >= this.PREBUFFER || (this.forceStart && this.buffered > 0)) {
         this.started = true
@@ -253,10 +273,13 @@ class PcmPlayer extends AudioWorkletProcessor {
         return true
       }
     }
+    const target = this.paused ? 0 : 1
     let i = 0
     while (i < out.length && this.queue.length) {
       const chunk = this.queue[0]
-      out[i++] = chunk[this.offset++] / 0x8000
+      if (this.gain < target) this.gain = Math.min(target, this.gain + this.FADE)
+      else if (this.gain > target) this.gain = Math.max(target, this.gain - this.FADE)
+      out[i++] = (chunk[this.offset++] / 0x8000) * this.gain
       if (this.offset >= chunk.length) { this.queue.shift(); this.offset = 0 }
     }
     this.buffered -= i
@@ -370,6 +393,8 @@ registerProcessor('pcm-player', PcmPlayer)
           try {
             const type = JSON.parse(ev.data).type
             if (type === 'stop') player.port.postMessage('clear')
+            else if (type === 'pause') player.port.postMessage('pause')
+            else if (type === 'resume') player.port.postMessage('resume')
             else if (type === 'flush') player.port.postMessage('flush')
           } catch {}
           return

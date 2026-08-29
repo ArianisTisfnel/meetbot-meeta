@@ -59,6 +59,16 @@ const flag = (name: string): string | undefined => {
 const ONLY = flag('only')
 const VERBOSE = args.includes('--verbose')
 const WITH_INTENT = args.includes('--intent')
+/**
+ * 意圖評測是否把**真的知識庫內容卡**餵進去（線上一定會帶，評測以前一律傳 null）。
+ *
+ * 這個落差讓內容卡功能上線至今從來沒被量測過：線上有卡、評測沒卡，
+ * 於是「這張卡到底讓分類變好還是變壞」手上零數據。開這個旗標跑一次、
+ * 不開再跑一次，兩份結果一比就有答案了。
+ *
+ * 預設不帶（維持既有行為，不動 CI 與歷史數字的可比性）。
+ */
+const WITH_CARD = args.includes('--card')
 /** 規則層不定案的句子是否真的送語意層（會打 LLM）。不開時一律當沉默、不計分。 */
 const WITH_ADDRESS = args.includes('--address')
 const DEFAULT_GAP_MS = 5_000
@@ -215,13 +225,62 @@ async function runScenario(
   return rows
 }
 
+/**
+ * 從資料庫組出真實的知識庫內容卡——**格式必須與線上完全一致**
+ * （session-manager.ts 的 loadKbContentCard：`【檔名】卡片`、最多 30 份、截 2000 字元），
+ * 不然量到的是另一個東西。
+ *
+ * 沒有專案 / 沒有卡時回 null，等同不帶卡。
+ */
+async function loadRealContentCard(): Promise<string | null> {
+  const { prisma } = await import('../src/lib/prisma.js')
+  // **一定要限定單一專案**：線上一場會議只看得到自己專案的文件，
+  // 把所有專案的卡混在一起餵進去，量到的就不是線上會發生的事。
+  // 沒指定就取「有卡的文件最多」的那個專案（最接近真實使用的情境）。
+  const wanted = flag('card')
+  const projects = await prisma.project.findMany({
+    select: {
+      name: true,
+      materials: {
+        where: { indexingStatus: 'COMPLETED', deletedAt: null },
+        select: { displayName: true, contentCard: true },
+        orderBy: { uploadedAt: 'desc' },
+        take: 30,
+      },
+    },
+  })
+  const picked = wanted
+    ? projects.find((p) => p.name.includes(wanted))
+    : projects.sort(
+        (a, b) =>
+          b.materials.filter((m) => m.contentCard).length - a.materials.filter((m) => m.contentCard).length,
+      )[0]
+  if (!picked) {
+    console.log(`（--card：找不到專案${wanted ? ` 含「${wanted}」` : ''}，改為不帶卡）`)
+    return null
+  }
+  const materials = picked.materials
+  console.log(`（--card：使用專案「${picked.name}」的 ${materials.length} 份文件）`)
+  if (!materials.length) return null
+  const lines = materials.map((m) =>
+    m.contentCard ? `【${m.displayName}】${m.contentCard}` : `【${m.displayName}】`,
+  )
+  return lines.join('\n').slice(0, 2000)
+}
+
 async function main() {
   // 規則層評測完全不需要 .env；只有 --intent 才載入會讀 env 的線上模組。
   let classify: ((q: string, kb: boolean) => Promise<'rag' | 'transcript' | 'chitchat'>) | null = null
   if (WITH_INTENT) {
     const wwd = await import('../src/sessions/wake-word-detector.js')
-    classify = async (q, kb) => wwd.routeForIntent(await wwd.classifyIntent(q, null), kb)
+    const card = WITH_CARD ? await loadRealContentCard() : null
+    classify = async (q, kb) => wwd.routeForIntent(await wwd.classifyIntent(q, card), kb)
     console.log('（--intent：意圖分流會打 LLM，每個回應案例一次呼叫）')
+    console.log(
+      card
+        ? `（--card：帶真實內容卡，${card.length} 字元）\n${card.slice(0, 200)}${card.length > 200 ? '…' : ''}`
+        : '（未帶內容卡；加 --card 可帶入真實的知識庫內容卡做 A/B 比較）',
+    )
   }
 
   let decide: ((window: ConversationEntryLike[]) => Promise<TurnDecision>) | null = null

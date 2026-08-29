@@ -138,9 +138,10 @@ export function handleTranscriptionEvent(
   session: AgentSession,
   itemTexts: Map<string, string>,
   event: { type?: string; item_id?: string; delta?: string; transcript?: string; error?: unknown },
-  track?: { participantId: string; speaker: string },
+  track?: { participantId: string; speaker: string; ns?: string },
 ): void {
-  const idNs = track ? `${track.participantId}:` : ''
+  // ns 綁的是「這一條連線」，重連後才不會與上一條撞號（見 TrackTranscriber.ns）
+  const idNs = track ? `${track.participantId}:${track.ns ?? 'c0'}:` : ''
   const speakerOf = () => (track ? track.speaker : resolveSpeaker(session))
   // per-track：openaiReady 的唯一誠實證據是「這條軌真的轉出東西了」。
   // 探針連上不算——2026-08-19 17:03 那場探針一路健在，每條轉錄連線卻在 session.update
@@ -222,7 +223,21 @@ interface TrackTranscriber {
   /** 該軌自己的 item_id → 累積文字（每條連線各自編號，不可共用）。 */
   itemTexts: Map<string, string>
   speaker: string
+  /**
+   * 這一條**連線**專屬的命名空間，拼進 segmentId。
+   *
+   * 只用 participantId 不夠：探針 WS 斷線重連時每條軌都會重開一個 OpenAI session，
+   * item_id 跟著從頭編號，而 participantId 不變 → 新舊 segmentId 完全撞號。
+   * 下游 handleTranscriptSegment 第一行就是 `processedSegmentIds.has(id) → return`，
+   * 於是重連後**每一段逐字稿都被當成重複、靜默丟棄**：轉錄照跑、log 照印，
+   * 但喚醒、插話、EOU 全部歸零，而且不會自己好。
+   * 實測 2026-08-23 21:58 探針重連後，她整整十分鐘完全沒反應（三人場的「變很慢」）。
+   */
+  ns: string
 }
+
+/** 連線命名空間流水號（同一 process 內遞增即可，不需要全域唯一）。 */
+let trackNsSeq = 0
 
 /** agentId → (participantId → 該軌的轉錄連線)。teardown 時整包清掉。 */
 const trackTranscribers = new Map<string, Map<string, TrackTranscriber>>()
@@ -294,7 +309,13 @@ function ensureTrack(
   const ws = new WebSocket(OPENAI_REALTIME_URL, {
     headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
   })
-  const track: TrackTranscriber = { ws, ready: false, itemTexts: new Map(), speaker }
+  const track: TrackTranscriber = {
+    ws,
+    ready: false,
+    itemTexts: new Map(),
+    speaker,
+    ns: `c${++trackNsSeq}`, // 見 TrackTranscriber.ns：重連後 segmentId 不可與上一條連線撞號
+  }
   tracks.set(participantId, track)
 
   ws.on('open', () => {
@@ -310,6 +331,7 @@ function ensureTrack(
       handleTranscriptionEvent(session, track.itemTexts, JSON.parse(raw.toString()), {
         participantId,
         speaker: track.speaker,
+        ns: track.ns,
       })
     } catch (err) {
       logger.warn({ err, agentId: session.agentId, participantId }, 'per-track: bad OpenAI event (ignored)')
@@ -699,6 +721,29 @@ export function agentStopSpeaking(botId: string): boolean {
   if (!session || !isPageOpen(session)) return false
   session.speakEpoch++ // 作廢串流中的 TTS 轉發
   session.pageWs!.send(JSON.stringify({ type: 'stop' }))
+  return true
+}
+
+/**
+ * 暫停／恢復播放（讓路的「延後定案」，見 wake-word-detector 的 pendingBargeIn）。
+ * 回傳 false = 網頁不在線 → 這條路徑做不到暫停，呼叫端只能沿用「直接停」的舊行為。
+ *
+ * ⚠️ **刻意不動 speakEpoch**：那個計數是用來作廢「串流中的 TTS 轉發」的，
+ * 暫停之後還要接回去播同一句，把它 ++ 會讓剩下的音訊永遠送不到網頁——
+ * 變成「暫停了但再也不會恢復」，比直接停還糟。只有 stop 才該作廢。
+ */
+export function agentPauseSpeaking(botId: string): boolean {
+  return sendPlaybackCommand(botId, 'pause')
+}
+
+export function agentResumeSpeaking(botId: string): boolean {
+  return sendPlaybackCommand(botId, 'resume')
+}
+
+function sendPlaybackCommand(botId: string, type: 'pause' | 'resume'): boolean {
+  const session = getAgentSessionByBotId(botId)
+  if (!session || !isPageOpen(session)) return false
+  session.pageWs!.send(JSON.stringify({ type }))
   return true
 }
 

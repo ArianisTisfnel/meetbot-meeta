@@ -138,6 +138,18 @@ export interface MeetingBotProvider {
   /** 立即停止正在播放的語音（barge-in 讓路用）。Provider 不支援時可不實作。 */
   stopSpeaking?(session: BotSession): Promise<void>
 
+  /**
+   * 暫停播放但**保留還沒播的內容**，之後可以從斷點接回去（讓路的「延後定案」）。
+   *
+   * 回傳 false = 這個 provider／目前這條路徑做不到暫停（例如 Recall 的 output audio
+   * 是 POST 一整支 mp3，DELETE 掉就沒了，沒有暫停這個動作）。呼叫端收到 false
+   * 必須退回「直接停」的舊行為，不可以假裝暫停成功——那會變成她永遠不再開口。
+   */
+  pauseSpeaking?(session: BotSession): Promise<boolean>
+
+  /** 從斷點恢復播放。回傳 false = 做不到（同 pauseSpeaking）。 */
+  resumeSpeaking?(session: BotSession): Promise<boolean>
+
   /** Bot 離開會議、釋放資源。 */
   leave(session: BotSession): Promise<void>
 }

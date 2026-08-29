@@ -288,3 +288,28 @@ describe('upsample16kTo24k — 送進 OpenAI 前的取樣率轉換', () => {
     expect(out.readInt16LE(0)).toBe(500)
   })
 })
+
+// 2026-08-23 三人場：探針 WS 斷線重連後每條軌重開 OpenAI session，item_id 從頭編號，
+// 而 participantId 不變 → segmentId 與重連前完全撞號 → 下游 processedSegmentIds
+// 把每一段都當成重複靜默丟掉，她整整十分鐘沒反應。ns 就是為了擋這個。
+describe('segmentId 命名空間 — 重連後不可撞號', () => {
+  let c: ReturnType<typeof makeSession>
+  beforeEach(() => {
+    unregisterAgentSession(AGENT_ID)
+    c = makeSession()
+  })
+
+  it('同一位與會者、同一個 item_id，不同連線 → segmentId 必須不同', () => {
+    const ev = {
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'item_001',
+      transcript: '重連前後同一個 item id',
+    }
+    handleTranscriptionEvent(c.session, new Map(), ev, { participantId: '100', speaker: 'A', ns: 'c1' })
+    handleTranscriptionEvent(c.session, new Map(), ev, { participantId: '100', speaker: 'A', ns: 'c2' })
+
+    const ids = c.onSegment.mock.calls.map((x: any[]) => x[0].segmentId)
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).not.toBe(ids[1])
+  })
+})
