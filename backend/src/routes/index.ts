@@ -9,6 +9,7 @@ import meetingsRoutes from './meetings.js'
 import recallWebhookRoutes from './recall-webhook.js'
 import internalRoutes from './internal.js'
 import agentPageRoutes from './agent-page.js'
+import pdfRoutes from './pdf.js'
 
 export function registerRoutes(app: Hono<AppEnv>): void {
   app.route('/', meRoutes)
@@ -17,6 +18,8 @@ export function registerRoutes(app: Hono<AppEnv>): void {
   app.route('/', membersRoutes)
   app.route('/', materialsRoutes)
   app.route('/', meetingsRoutes)
+  // 純文字轉 PDF（吃全域 authMiddleware 的 Bearer）
+  app.route('/', pdfRoutes)
   // Recall realtime webhook（無 Bearer 認證，用 ?token= 密鑰；authMiddleware 已跳過 /webhooks/）
   app.route('/', recallWebhookRoutes)
   // 內部端點（登入鑄 token；x-internal-secret 驗證，authMiddleware 已跳過 /internal/）
