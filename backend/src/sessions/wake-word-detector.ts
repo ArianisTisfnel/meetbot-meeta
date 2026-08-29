@@ -122,13 +122,34 @@ function estimateSpeechMs(text: string): number {
  * 釋放一律用回傳的函式，不要直接寫 `session.isSpeaking = false`。
  */
 function holdSpeaking(session: MeetingSession): () => void {
+  // 新的一段語音要開口前，播放器絕不能還停在暫停狀態。
+  // 沒有這道保險：待定案的暫停會因為下面 gen++ 之後對不上而**永遠不恢復**，
+  // 之後推進去的音訊全部被靜音吃掉——症狀是她突然「自己閉麥」，而且不會自己好
+  //（實測 2026-08-23：查詢期間有人講話 → 暫停 → 答案回來時重取鎖 → 她再也沒出聲）。
+  // 放在這裡是因為每一段語音都經過 holdSpeaking，一個地方擋掉所有呼叫端。
+  if (session.pendingBargeIn) {
+    session.pendingBargeIn = null
+    if (session.botSession) void botProvider.resumeSpeaking?.(session.botSession)
+  }
   const gen = ++session.speechGen
   session.isSpeaking = true
-  return () => {
+  session.speechPausedMs = 0
+  const release = (): void => {
     if (session.speechGen !== gen) return // 已被更新的語音接手 → 這次釋放作廢
+    // 讓路暫停期間嘴巴沒在動，估時要往後推同樣長度再重排一次，否則音訊還在排隊
+    // 就被解鎖——症狀與上面註解說的一樣（她講到一半突然「聽不見了」）。
+    if (session.speechPausedMs > 0) {
+      const owed = session.speechPausedMs
+      session.speechPausedMs = 0
+      session.speechEndsAt += owed
+      setTimeout(release, owed)
+      return
+    }
     session.isSpeaking = false
     session.currentSpeech = null
+    session.pendingBargeIn = null
   }
+  return release
 }
 
 /**
@@ -214,6 +235,37 @@ const CONVERSATION_IDLE_RESET_MS = 5 * 60 * 1000
 const BARGE_IN_MIN_CHARS = 7
 
 /**
+ * 講者閘門：門檻依「講話的人是誰」分三段（2026-08-20 加）。
+ *
+ * 單一門檻是**雙向失準**的——把 7 調高會誤殺「等等」這種真打斷，調低則放行
+ * 「可是女生我覺得」這種旁人交談。兩種錯誤同源：字數不帶身分。
+ * 08-18 那場誤觸發幾乎全是與會者彼此講話被 partial 切出來的半句，
+ * 而那個資訊（誰在講）其實一直都在 {@link handleBargeIn} 的參數裡，只是沒被用。
+ *
+ * **刻意不做成「旁人一律忽略」**：這是會議不是一對一客服。旁人真的接過話頭
+ * 持續發言時，蜜塔本來就該讓路——她是全場最不重要的發言者。該擋的是碎片，
+ * 不是別人講話這件事本身。所以旁人只是門檻更高，不是永遠打不斷她。
+ *
+ * 講者或提問者任一未知 → 退回 {@link BARGE_IN_MIN_CHARS}（現行行為，不冒進）。
+ * 實測混音轉錄常拿不到人名，這條退路會很常走到。
+ */
+const BARGE_IN_MIN_CHARS_ASKER = 2
+/**
+ * 12 → 8（2026-08-29）。原本的 12 是「旁人交談不該打斷她」的保守值，但實測顯示
+ * 它同時吃掉了**沒命中叫停詞的口語化叫停**：「蜜塔你可以先停一下」「你先不要講了
+ * 好嗎」這類 7–11 字的句子，asker 講得動（門檻 2）、bystander 一次都停不了。
+ *
+ * 全 log 的 below-threshold 分布是 bystander 93 次 vs asker 20 次；真正讓路成功的
+ * 7 次通用 speech 裡有 6 次是 asker、字數只有 2–4。**這就是「單人可以、多人不行」
+ * 的主因之一**——單人測試時你永遠是 asker，永遠享有門檻 2。
+ *
+ * 8 仍在雜訊帶之上（08-18 那次的誤觸發碎片「全部落在 4–6 字」）。代價是旁人交談的
+ * 誤打斷率會上升一些，這是唯一需要現場調校的數字：改完跑 scripts/eval-barge-in.ts
+ * 看比率，不要憑感覺再動它。
+ */
+const BARGE_IN_MIN_CHARS_BYSTANDER = 8
+
+/**
  * 開口寬限期：她剛開始講的這段時間內，只有明確叫停能打斷她。
  *
  * 沒有這個窗，兩件事會誤觸發：① 提問者自己的尾音被 partial 切出來（他問完話
@@ -221,6 +273,80 @@ const BARGE_IN_MIN_CHARS = 7
  * 卻會讓她連一句話都講不完。2 秒約等於一個短句，足夠她把第一句講出來。
  */
 const BARGE_IN_GRACE_MS = 2_000
+
+/**
+ * 延後定案的等待窗：暫停播放後等這麼久，確認對方是不是真的要講下去。
+ *
+ * 2 秒是照 LiveKit 的 `false_interruption_timeout` 預設值取的（他們的
+ * pause → 等 → resume 架構就是這個做法的原型）。窗開太短會來不及等到下一段逐字稿、
+ * 等於沒延後；開太長則她停在半句上太久，反而更怪。
+ */
+const BARGE_IN_DEFER_MS = 2_000
+
+/**
+ * 待定案至少要撐過這麼久才可能定案成真打斷。
+ *
+ * 2026-08-23 實測：三次暫停分別在 **3ms / 3ms / 297ms** 就定案了，等待窗形同虛設。
+ * 原因是 partial 每次只長一個字、彼此相隔幾毫秒（「叫」→「叫OK」→「叫OK,」），
+ * 光看「內容有沒有變長」根本分不出「對方還在講」和「同一句話還在串流」。
+ *
+ * 加上時間下限就分得出來了：碎片講完就沒有下文，撐不到 600ms；
+ * 真的在講下去的人，600ms 後內容一定又長了一截。
+ */
+const BARGE_IN_DEFER_MIN_MS = 600
+
+/**
+ * 暫停播放並登記一筆待定案的讓路。回傳 false = 這條路徑做不到暫停。
+ *
+ * 做不到的情形是真實存在的（Recall output audio 是整支 mp3，只能刪不能停），
+ * 所以呼叫端拿到 false 一定要退回「直接停」的舊行為——**絕不能假裝暫停成功**，
+ * 那會變成她從此不再開口，比硬切嚴重得多。
+ */
+async function tryPauseSpeech(
+  session: MeetingSession,
+  speaker: string,
+  chars: number,
+): Promise<boolean> {
+  if (!session.botSession || !botProvider.pauseSpeaking) return false
+  let paused = false
+  try {
+    paused = await botProvider.pauseSpeaking(session.botSession)
+  } catch (err) {
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'barge-in: pauseSpeaking failed')
+    return false
+  }
+  if (!paused) return false
+
+  const gen = session.speechGen
+  session.pendingBargeIn = { speaker, chars, at: Date.now(), gen }
+  setTimeout(() => void resumeIfStillPending(session, gen), BARGE_IN_DEFER_MS)
+  return true
+}
+
+/** 等待窗到期、對方沒有講下去 → 從斷點接回去繼續講。 */
+async function resumeIfStillPending(session: MeetingSession, gen: number): Promise<void> {
+  const pending = session.pendingBargeIn
+  // 已經定案成真打斷（pending 被清掉）、或她早就換講下一段（gen 對不上）→ 這次恢復作廢
+  if (!pending || pending.gen !== gen || session.speechGen !== gen) return
+  session.pendingBargeIn = null
+  session.speechPausedMs += Date.now() - pending.at // 解鎖估時要補這段（見 holdSpeaking）
+
+  try {
+    await botProvider.resumeSpeaking?.(requireBotSession(session))
+  } catch (err) {
+    logger.warn({ err, meetingInstanceId: session.meetingInstanceId }, 'barge-in: resumeSpeaking failed')
+  }
+  logger.info(
+    {
+      meetingInstanceId: session.meetingInstanceId,
+      decision: 'resumed',
+      reason: 'no-follow-up',
+      speaker: pending.speaker || null,
+      pausedMs: Date.now() - pending.at,
+    },
+    'barge-in decision',
+  )
+}
 // 明確停止指令（再短也觸發讓路，且不再轉貼被打斷的內容）的詞表定義在 addressing.ts，
 // 與定址判斷共用同一份——這兩處對「什麼算叫停」的認定分岔的話，
 // 會出現「打斷得了、卻同時被當成新問題送去查資料」這種自相矛盾的行為。
@@ -231,24 +357,99 @@ const BARGE_IN_GRACE_MS = 2_000
  * 但「短句＋叫停詞結尾」在她正在說話的當下幾乎只有一種意思（實測 2026-08-17）。
  * 只在 handleBargeIn 用：她沒在說話時不適用這個推定。
  */
-const BARGE_IN_STOP_SUFFIX_REGEX = /(閉嘴|安[靜傑進靖黑]|住嘴)[。！!～~]*$/
+const BARGE_IN_STOP_SUFFIX_REGEX = /(閉嘴|安[靜傑進靖黑]|住嘴|住口|噤聲)[。！!？?～~，,.]*$/
+
+/**
+ * 上限維持 6：全 log 掃過，**每一個 STT 轉爛的叫停案例都在 6 字以內**
+ * （立大安靜 4／立場安靜。5／立陶閉嘴 4／你大安靜! 5／嗯卡安這 4／大家閉嘴。5）。
+ * 放寬到 10 唯一會多收的是「靠那條蜜塔閉嘴」（7 字，08-23 22:01）——那是討論，
+ * 也就是說放寬只買到誤停。
+ */
+const BARGE_IN_STOP_MAX_CHARS = 6
+
+/**
+ * 談論標記：這些字一出現，「閉嘴」就是被談論的對象而不是命令。
+ * 「就是叫他閉嘴」「教蜜塔閉嘴」「都不能講閉嘴」——字尾推定沒有 isStopCommand 的
+ * 句法檢查，需要自己擋一層。
+ */
+const BARGE_IN_DISCUSS_REGEX = /[叫教讓]|就是|可以|不能|要講|會被/
 
 export async function handleBargeIn(
   session: MeetingSession,
   speech: { text: string; speaker: string; startTime?: number },
 ): Promise<void> {
-  if (!session.isSpeaking) return
   const trimmed = speech.text.trim()
   const stopping =
-    isStopCommand(trimmed) || (trimmed.length <= 6 && BARGE_IN_STOP_SUFFIX_REGEX.test(trimmed))
-  if (!stopping && trimmed.length < BARGE_IN_MIN_CHARS) return
+    isStopCommand(trimmed) ||
+    (trimmed.length <= BARGE_IN_STOP_MAX_CHARS &&
+      BARGE_IN_STOP_SUFFIX_REGEX.test(trimmed) &&
+      !BARGE_IN_DISCUSS_REGEX.test(trimmed))
+
+  // 早期 ack 的聾窗（實測 2026-08-26 10:23:23、08-23 22:38:34、08-19 17:40:28 三次複現）。
+  //
+  // handlePartialSegment 的 ack 路徑**刻意不取 isSpeaking**（取了的話，隨後的
+  // dispatchQuestion 會看到 isSpeaking=true 而把每個語音問題都改丟聊天室，她從此
+  // 不再用講的回答）。代價是嘴巴真的在播、旗標卻是 false，於是這個守衛把叫停
+  // 全部擋在門外：喊「蜜塔閉嘴」時，前兩個字先觸發 ack，後兩個字進來時完全沒人聽。
+  // 08-26 那次 90 筆含「閉嘴」的 partial，一筆 barge-in decision 都沒產生。
+  //
+  // 只對叫停開這道門（一般 speech 讓路維持原行為，迴歸面最小）。speechEndsAt 自帶
+  // 時效，過期後條件自動為 false，不會有殘留副作用；stopSpeaking 只是推 'stop' 給
+  // 網頁清佇列，不依賴 isSpeaking，所以沒取過嘴巴也停得掉。
+  const inAckWindow = stopping && Date.now() < session.speechEndsAt
+  if (!session.isSpeaking && !inAckWindow) return
+
+  // 講者閘門（見 BARGE_IN_MIN_CHARS_ASKER／_BYSTANDER）。
+  const asker = session.engagedSpeaker
+  const who: 'asker' | 'bystander' | 'unknown' =
+    !speech.speaker || !asker ? 'unknown' : speech.speaker === asker ? 'asker' : 'bystander'
+  const minChars =
+    who === 'asker'
+      ? BARGE_IN_MIN_CHARS_ASKER
+      : who === 'bystander'
+        ? BARGE_IN_MIN_CHARS_BYSTANDER
+        : BARGE_IN_MIN_CHARS
+
+  // 每一條出路都記一行同樣欄位的判定 log。原本只有「真的讓路了」與兩個 skip 有 log，
+  // 最常走的長度門檻那條**完全靜默**，於是誤打斷率只能事後人工從殘缺的線索拼——
+  // 08-18 那場要回答「改了門檻之後有沒有變好」時就卡在這裡。
+  // 欄位固定才能用 scripts/eval-barge-in.ts 直接算出比率。
+  const decide = (decision: 'fired' | 'skipped', reason: string): void => {
+    logger.info(
+      {
+        meetingInstanceId: session.meetingInstanceId,
+        decision,
+        reason,
+        who,
+        speaker: speech.speaker || null,
+        asker,
+        chars: trimmed.length,
+        minChars,
+        stopping,
+        text: trimmed.slice(0, 40),
+      },
+      'barge-in decision',
+    )
+  }
+
+  // ── 打斷策略閘門（BARGE_IN_MODE）──────────────────────────────────────────
+  // stop-only（預設）：只有明確叫停能打斷她，其餘一律讓她把話講完。
+  // 這一關要放在**所有**其他閘門之前——底下每一關都是「一般發言該不該算打斷」的
+  // 細部判斷，而這個模式的意思是那個問題根本不問。
+  // 叫停從這裡到最後都不受任何閘門影響，兩個模式的叫停行為完全一致。
+  if (!stopping && env.BARGE_IN_MODE === 'stop-only') {
+    decide('skipped', 'stop-only-mode')
+    return
+  }
+
+  if (!stopping && trimmed.length < minChars) {
+    decide('skipped', 'below-threshold')
+    return
+  }
 
   // 開口寬限期：剛講就被打斷多半是誤判（見 BARGE_IN_GRACE_MS）。叫停不受此限。
   if (!stopping && session.speechStartedAt > 0 && Date.now() - session.speechStartedAt < BARGE_IN_GRACE_MS) {
-    logger.info(
-      { meetingInstanceId: session.meetingInstanceId, text: trimmed.slice(0, 30) },
-      'barge-in skipped: within grace window after bot started speaking',
-    )
+    decide('skipped', 'grace-window')
     return
   }
 
@@ -258,19 +459,40 @@ export async function handleBargeIn(
   if (!stopping && speech.startTime !== undefined && session.sessionStartedAt > 0 && session.speechStartedAt > 0) {
     const spokeAt = session.sessionStartedAt + speech.startTime * 1000
     if (spokeAt < session.speechStartedAt) {
-      logger.info(
-        { meetingInstanceId: session.meetingInstanceId, text: trimmed.slice(0, 30) },
-        'barge-in skipped: utterance started before bot speech (late STT event)',
-      )
+      decide('skipped', 'late-stt-event')
       return
     }
   }
+
+  // ── 延後定案（見 BARGE_IN_DEFER_MS）─────────────────────────────────────────
+  // 叫停不延後：那是唯一一個「立刻停」本來就是正確體驗的情況。
+  if (!stopping) {
+    const pending = session.pendingBargeIn
+    if (pending && pending.gen === session.speechGen) {
+      // 窗內又收到一段，但**內容沒有變長** → 同一句的 partial 又報一次而已，
+      // 不算「對方還在講」。要求變長是這條規則能用的關鍵：一句話的 partial 會
+      // 重複到達好幾次，只數次數的話任何片段都會被當成真打斷。
+      // 「內容變長」單獨不夠：partial 每次只長一個字、相隔幾毫秒（見 BARGE_IN_DEFER_MIN_MS）。
+      // 要同時撐過時間下限，才算得上「對方還在講下去」。
+      if (trimmed.length <= pending.chars || Date.now() - pending.at < BARGE_IN_DEFER_MIN_MS) {
+        decide('skipped', 'pending-no-growth')
+        return
+      }
+    } else if (await tryPauseSpeech(session, speech.speaker, trimmed.length)) {
+      decide('skipped', 'paused-pending')
+      return
+    }
+    // tryPauseSpeech 回 false = 這條路徑暫停不了（output audio）→ 沿用直接停的舊行為
+  }
+
+  decide('fired', stopping ? 'stop-command' : 'speech')
 
   // 先翻旗標再做 I/O：重複 partial 不會重入。
   // speechGen++ 讓這段語音待執行的解鎖計時器一併作廢（它已被取消，不該再影響後續語音）。
   session.speechGen++
   session.isSpeaking = false
   session.bargeEpoch++
+  session.pendingBargeIn = null // 定案成真打斷 → 作廢待定的恢復（gen 也已經對不上了）
   if (stopping) session.lastStopAt = Date.now()
   // 讓路後進入喚醒靜默期：打斷者的話多半是「剛問過的問題」的延續，
   // 沒有這行插話引擎會把它當新問題再答一次（實測 2026-07-04 發生過重複回答）
@@ -443,6 +665,7 @@ export async function handleTranscriptSegment(
     // 關掉對話串同時也讓後續發言不再被當成追問候選（叫停就是叫停，不是換個方式繼續問）。
     case 'stop':
       session.lastEngagedAt = 0
+      session.engagedSpeaker = null
       session.lastWakeAt = now
       session.lastStopAt = now
       // 作廢查詢中的語音回答：叫停時常有上一題還在 Dify 路上（實測 2026-08-17
@@ -461,6 +684,8 @@ export async function handleTranscriptSegment(
     //  下一段會是 followup-candidate，由 turn 結束時的語意層接上）。
     case 'wake-only':
       session.lastEngagedAt = now
+      // 只喊名字也算開啟對話串 → 這個人就是接下來的提問者（講者閘門用）
+      if (segment.speaker) session.engagedSpeaker = segment.speaker
       logger.info(
         { meetingInstanceId: session.meetingInstanceId, wakeWord: decision.wakeWord, speaker: segment.speaker },
         'wake word matched without question, opening follow-up thread',
@@ -536,6 +761,7 @@ export async function handleChatMessage(
     // 聊天室打「蜜塔 不用了」：同樣吃掉喚醒寬限，讓插話引擎別接著補一句
     session.lastWakeAt = now
     session.lastEngagedAt = 0
+    session.engagedSpeaker = null
     logger.info(
       { meetingInstanceId: session.meetingInstanceId, reason: decision.reason },
       'addressing: stop command in chat, staying quiet',
@@ -567,6 +793,10 @@ export async function handleChatMessage(
   // debounce 在確認有問題內容後才消耗，避免空喚醒吃掉緊接著的真問題。
   session.lastWakeAt = now
   session.lastEngagedAt = now
+  // 講者閘門：聊天室提問也要記提問者，但**不能走 opts.speaker**——那個欄位同時
+  // 決定 ack 文案（「👂 收到 X：…」），聊天室裡發問者是誰大家本來就看得到，
+  // 加上去只是多餘的雜訊。這裡只更新閘門要用的狀態。
+  if (chatMsg.sender) session.engagedSpeaker = chatMsg.sender
   await dispatchQuestion(session, question, 'chat', { intent })
 }
 
@@ -805,6 +1035,9 @@ async function dispatchQuestion(
 ): Promise<void> {
   // 記下這題：追問出口據此擋掉「同一題再答一次」（見 session.lastDispatchedQuestion）
   session.lastDispatchedQuestion = { text: question, at: Date.now() }
+  // 記下這題是誰問的：barge-in 的講者閘門靠它分辨「提問者插話」與「旁人交談」。
+  // 只在拿得到人名時覆寫——混音轉錄常給空字串，蓋上去等於把閘門關掉（見 engagedSpeaker）。
+  if (opts?.speaker) session.engagedSpeaker = opts.speaker
   const pendingVoice = nextPendingVoice(session)
   // ack 在意圖分類**之前**送出，此時還不知道會走 RAG／逐字稿／閒聊哪條路，
   // 也還不知道對方到底是不是在提問 → 措辭必須中性。踩過兩次：

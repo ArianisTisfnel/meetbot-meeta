@@ -13,7 +13,7 @@ import {
   PROGRESS_VOICES,
 } from './wake-word-detector.js'
 import { recordConversation, clearInterjection, startIcebreaker, noteHumanSpeaking } from './interjection.js'
-import { generateSummaryAsync } from './summary.service.js'
+import { generateSummaryAsync, trackSummary } from './summary.service.js'
 import type { MeetingSession } from '../types/session.js'
 
 const PLATFORM = 'google_meet'
@@ -91,6 +91,9 @@ export async function startBotSession(params: {
     isSpeaking: false,
     lastWakeAt: 0,
     lastEngagedAt: 0,
+    engagedSpeaker: null,
+    speechPausedMs: 0,
+    pendingBargeIn: null,
     partialAckAt: 0,
     currentSpeech: null,
     speechStartedAt: 0,
@@ -311,7 +314,9 @@ export async function handleSessionClose(
 
   // 摘要：用仍在記憶體的 botSession 取逐字稿（provider-agnostic）。
   if (meetbotFinalStatus === 'ENDED') {
-    generateSummaryAsync({
+    // trackSummary：登記在途，讓 SIGTERM 時等得到（見 summary.service.ts 檔頭）。
+    // 仍是 fire-and-forget——這裡不 await，否則 leave 會被摘要拖住 11–35 秒。
+    trackSummary(generateSummaryAsync({
       meetingInstanceId,
       platform: session.platform,
       nativeMeetingId: session.nativeMeetingId,
@@ -319,7 +324,7 @@ export async function handleSessionClose(
       session: session.botSession ?? undefined,
       chatLog: session.chatLog,
       sessionStartedAt: session.sessionStartedAt,
-    })
+    }))
   }
 
   if (session.botSession) {

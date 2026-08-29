@@ -17,7 +17,13 @@
 // 因為漏字完全沒被喚醒。誤轉集中在**她正在說話的時候**（AEC 雙講失真），
 // 而那正是使用者最需要叫得動她的時刻，所以字元集寧可寬：
 // 多收進來的句子還要過句首呼喚／分隔符判斷，最壞只是多花一次語意裁決。
-export const WAKE_WORD_REGEX = /[蜜密祕秘迷米咪麗][塔搭達桃茶]|小幫手|[Mm]e{1,2}ta|[Mm]ita/
+// 字元集是實測 STT 誤轉一個一個加上來的（米塔／蜜桃／畢達／碧塔／嘿塔／密卡…）。
+// 「卡」與「畢碧嘿」「Vita」是 2026-08-29 從全 log 掃描補的：光「米卡／密卡」就漏掉
+// 13 句真的在叫她的話。
+// **刻意不收「立」「嗯」**——「立場」「立大」是常用詞，收了會在正常討論時誤觸發
+// （實測 08-17 的「立陶閉嘴」只能交給 barge-in 的字尾推定接，不進喚醒詞表）。
+export const WAKE_WORD_REGEX =
+  /[蜜密祕秘迷米咪麗畢碧嘿][塔搭達桃茶卡]|小幫手|[Mm]e{1,2}ta|[Mm]ita|[Vv]ita/
 
 /** 同一次喚醒的重複觸發抑制期。 */
 export const DEBOUNCE_MS = 2000
@@ -52,7 +58,8 @@ export const FOLLOWUP_WINDOW_MS = 90_000
  * 於是她停是停了（barge-in 只看長度），卻沒被當成叫停——被打斷的答案照樣轉貼聊天室，
  * 對話串也照樣開著，下一句就被當成新問題。叫停失敗最刺眼的就是這種「停不乾淨」。
  */
-export const STOP_COMMAND_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|停|停止|別說了|不用了|不用[說查]了|不用查|夠了)[。！!～~]*$/
+export const STOP_COMMAND_REGEX =
+  /^(閉嘴|安[靜傑進靖黑](?:點|一點)?|住嘴|住口|噤聲|停|停止|停一下|先停|暫停|別說了|別講了|不要說了|不要講了|不用了|不用[說講查念]了?|不用查|夠了|夠囉|好了啦|[Ss]hut\s*up|[Ss]top|[Qq]uiet|[Ss]ilence)[。！!？?～~，,.]*$/
 
 /**
  * 叫停後面還接著講的形態（「蜜桃閉嘴他是念 Gemini 耶」——實測 2026-08-03 漏掉）。
@@ -62,7 +69,46 @@ export const STOP_COMMAND_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|停|停�
  *   不收：停／停止／不用了 —— 討論裡太常見（「不用了，我們改用另一個方案」是內容），
  *        這幾個只有整句都是它時才算數
  */
-const STOP_COMMAND_PREFIX_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|別說了|夠了)/
+const STOP_COMMAND_PREFIX_REGEX = /^(閉嘴|安[靜傑進靖黑]|住嘴|住口|噤聲|別說了|別講了|夠了)/
+
+/**
+ * 禮貌／迂迴的叫停（實測全 log 挖出來的 B 類漏網）：
+ *   「蜜塔，你可以閉嘴嗎?」（08-17 20:52）／「你可以安靜囉。」（08-16 23:57）
+ *   「蜜塔請安靜」（08-16 23:59）／「你閉嘴就好了」（07-29 22:56）
+ *   「蜜塔可以先不用來補充一下」（08-26 10:24）
+ * 這些全部不在原詞表裡——原本要求叫停詞出現在最前面，被「你」「請」「可以」擋掉。
+ *
+ * 主語限定 你／妳／您（或省略）是**唯一**的分界線，不能放寬成任意主語：
+ *   「蜜塔，我可以叫你閉嘴嗎?」（08-14 15:50）是在問她功能，不是在叫她閉嘴。
+ */
+const STOP_POLITE_REGEX =
+  /^(?:你|妳|您)?\s*(?:先|可以|能不能|能|麻煩|拜託|請|給我)*\s*(?:不要再?|別再?|不用再?|停止)?\s*(?:安靜|閉嘴|住嘴|住口|噤聲|(?:不要|別|不用)(?:再)?[^，。,.]{0,4}?(?:說|講|念|回答|查|補充|回))/
+
+/**
+ * 「停」單獨太常見（停車場在哪裡／這個功能停在哪一版），所以必須掛情態詞才算命令。
+ * 救的是「蜜塔你可以先停一下」「你先不要講了好嗎」這類——旁人講出來時，
+ * adaptive 的字數門檻一次都停不了（見 wake-word-detector.ts 的 BARGE_IN_MIN_CHARS_BYSTANDER）。
+ */
+const STOP_PAUSE_REGEX =
+  /^(?:你|妳|您)?\s*(?:先|可以先|可以|能不能|能|麻煩|拜託|請)+\s*(?:不要再?|別再?|不用再?)?\s*停(?:一下|下來)?/
+
+/**
+ * 叫停詞後面還能接多少字。
+ *
+ * 20 而不是不限：per-track 是主要路徑、逐句到達，用不到更寬；webhook fallback
+ * 的整輪拼接 blob 才需要 40，但那條路的覆蓋率不值得換誤判風險。
+ */
+const STOP_TAIL_MAX = 20
+
+/**
+ * 叫停詞後面緊接「的／之」＝ 名詞化／條件化，**那是在談論這個動作，不是在下命令**。
+ *
+ * 這條句法特徵才是誤判的真正分界，長度不是：
+ *   「閉嘴**他是**念Gemini耶」   → 命令（既有測試要求為 true）
+ *   「閉嘴**的話**,他可能就是…」 → 討論（08-26 10:23:23，全 log 單一時刻最大的誤判爆量，
+ *                                  同一秒 82 筆 partial 全部被當成叫停）
+ */
+const STOP_NOMINALIZED_REGEX = /^[的之]/
 
 /** 剝掉開頭的喚醒詞（沒有就原樣回傳），讓叫停判斷不必在意有沒有喊名字。 */
 function stripWakeWord(text: string): string {
@@ -88,8 +134,27 @@ export function normalizeQuestionText(text: string): string {
  * 會出現「打斷得了、卻同時被當成新問題送去查資料」這種自相矛盾的行為。
  */
 export function isStopCommand(text: string): boolean {
-  const rest = stripLeadingPunct(stripWakeWord(text)).trim()
-  return STOP_COMMAND_REGEX.test(rest) || STOP_COMMAND_PREFIX_REGEX.test(rest)
+  // 只有喚醒詞落在**呼喚位置**（句首，或前面只有「那個」「欸」這類贅詞）時才剝。
+  //
+  // stripWakeWord 用的是無錨定比對，會把喚醒詞之前的整段都吃掉，於是任何句子只要
+  // 中間出現「蜜塔閉嘴」，剝完就變成 ^閉嘴… → 判成叫停。實測 2026-08-26：
+  //   「…就是像我們叫蜜塔閉嘴或者…」    → 她該回答時裝死
+  //   「你們剛剛講到那個 就是說教蜜塔閉嘴的那個東西…」→ 同上
+  // 這是多人會議專屬的踩雷——只有多人才會坐在會議裡討論這個功能本身。
+  const m = WAKE_WORD_REGEX.exec(text)
+  const body = m && isVocativePosition(text, m.index) ? text.slice(m.index + m[0].length) : text
+  const rest = stripLeadingPunct(body).trim()
+  if (STOP_COMMAND_REGEX.test(rest)) return true
+
+  // 三個句首分支共用同一組尾巴檢查：接「的／之」＝在討論，太長＝不是在下命令。
+  for (const re of [STOP_COMMAND_PREFIX_REGEX, STOP_POLITE_REGEX, STOP_PAUSE_REGEX]) {
+    const hit = re.exec(rest)
+    if (!hit) continue
+    const tail = rest.slice(hit[0].length)
+    if (STOP_NOMINALIZED_REGEX.test(tail)) continue
+    if (tail.length <= STOP_TAIL_MAX) return true
+  }
+  return false
 }
 
 /**

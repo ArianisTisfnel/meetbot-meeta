@@ -67,6 +67,19 @@ const envSchema = z.object({
   // 需要 RECALL_SEPARATE_AUDIO=on 與 agent 模式齊全（見 isPerTrackMode）；
   // 任一條件不足會自動退回 mixed，不會變啞巴。
   TRANSCRIBE_MODE: z.enum(['mixed', 'per-track']).default('mixed'),
+  // 打斷策略：她講話時，什麼情況該讓路。
+  //
+  // 'stop-only'（預設）：**只有明確叫停能打斷她**。旁人交談、附和、提問者的尾音
+  //   一律不讓路。這是 demo 用的安全設定——寧可她把話講完，也不要被雜訊切掉半句。
+  //   實測 2026-08-18 的誤打斷率 47%（開口 154 次被打斷 73 次），其中 86% 的觸發
+  //   內容是與會者彼此講話被切出來的 6 字以下碎片，這個模式把那 86% 全部消掉。
+  //
+  // 'adaptive'：現行的完整策略——講者閘門（提問者／旁人不同字數門檻）、開口寬限期、
+  //   延後定案（先暫停、看對方有沒有繼續講，沒有就自己接回去）。她會試著判斷
+  //   「這是真的打斷還是附和」，但判錯的代價是話講到一半被切掉。
+  //
+  // 兩個模式的叫停路徑完全相同：叫停一律繞過所有閘門，立即停聲。
+  BARGE_IN_MODE: z.enum(['stop-only', 'adaptive']).default('stop-only'),
   // Recall：admission 逾時（ms）。Recall bot 從派出到進等候室本身就要約 30s（實測），
   // 故給較長的視窗。
   RECALL_ADMISSION_TIMEOUT_MS: z.coerce.number().default(90_000),

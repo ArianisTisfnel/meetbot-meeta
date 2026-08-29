@@ -5,6 +5,11 @@ const mockBotProvider = vi.hoisted(() => ({
   speak: vi.fn().mockResolvedValue(undefined),
   sendChat: vi.fn().mockResolvedValue(undefined),
   stopSpeaking: vi.fn().mockResolvedValue(undefined),
+  // 預設 false = 這條路徑暫停不了（Recall output audio 就是這樣：整支 mp3 只能刪不能停）。
+  // 上面那批既有案例因此測的是「直接停」的舊行為，那仍是線上真實存在的路徑。
+  // 可暫停的那條（agent 網頁）在下面的 describe 裡把它改成 true 另外測。
+  pauseSpeaking: vi.fn().mockResolvedValue(false),
+  resumeSpeaking: vi.fn().mockResolvedValue(false),
   getTranscript: vi.fn().mockResolvedValue([]),
 }))
 
@@ -25,6 +30,8 @@ const mockEnv = vi.hoisted(() => ({
   DIFY_WORKFLOW_API_KEY: 'app-test',
   DIFY_CHATFLOW_TIMEOUT_MS: 45000,
   REPLY_TAGS: 'on' as 'on' | 'off',
+  // 與正式預設一致。測「一般發言讓路」的 describe 各自改成 adaptive。
+  BARGE_IN_MODE: 'stop-only' as 'stop-only' | 'adaptive',
 }))
 vi.mock('../../../../backend/src/types/env', () => ({ env: mockEnv }))
 vi.mock('@anthropic-ai/sdk', () => ({
@@ -75,10 +82,13 @@ function makeSession(overrides: Partial<MeetingSession> = {}): MeetingSession {
     isSpeaking: false,
     lastWakeAt: 0,
     lastEngagedAt: 0,
+    engagedSpeaker: null,
     partialAckAt: 0,
     currentSpeech: null,
     speechStartedAt: 0,
     speechEndsAt: 0,
+    speechPausedMs: 0,
+    pendingBargeIn: null,
     bargeEpoch: 0,
     lastStopAt: 0,
     speechGen: 0,
@@ -578,8 +588,15 @@ describe('parseIntent — 問答意圖分流', () => {
 })
 
 describe('handleBargeIn — 說話中被打斷讓路', () => {
+  // 這一組測的是「一般發言算不算打斷」的細部判斷 → 必須在 adaptive 模式下才成立。
+  // 正式預設是 stop-only（見 env.ts BARGE_IN_MODE），那個模式下這些案例一律不讓路，
+  // 由底下的「stop-only 模式」describe 覆蓋。
   beforeEach(() => {
     vi.clearAllMocks()
+    mockEnv.BARGE_IN_MODE = 'adaptive'
+  })
+  afterEach(() => {
+    mockEnv.BARGE_IN_MODE = 'stop-only'
   })
 
   it('蜜塔說話中有人講話 → 停止語音、被打斷的回答貼聊天室、isSpeaking 解除', async () => {
@@ -613,10 +630,55 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
 
     session.isSpeaking = true // 估時未到，嘴巴還在播
     session.speechStartedAt = Date.now() - 7_000 // 註解說的「7 秒後」：越過開口寬限期
-    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'B' })
+    // 打斷者用 A（就是上面提問的那個人）：本案例要測的是「不重貼聊天室」，
+    // 講者身分只是附帶條件。上面那題由 A 發問 → engagedSpeaker='A'，
+    // 換成別人會被講者閘門的旁人門檻擋掉，測不到原本要測的東西。
+    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'A' })
 
     expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1) // 還是要停
     expect(mockBotProvider.sendChat.mock.calls.length).toBe(chatCallsBefore) // 但不重貼
+  })
+
+  // ── 早期 ack 的聾窗（實測 2026-08-26 10:23:23 / 08-23 22:38:34 / 08-19 17:40:28）──
+  // handlePartialSegment 的 ack 刻意不取 isSpeaking，但嘴巴真的在播。修正前
+  // handleBargeIn 第一行就 return，於是「蜜塔閉嘴」的前兩個字觸發 ack、後兩個字
+  // 完全叫不停（那次 90 筆含「閉嘴」的 partial 產生 0 筆 barge-in decision）。
+  it('ack 播放中（isSpeaking=false 但 speechEndsAt 未到）→ 叫停仍然停得下來', async () => {
+    const session = makeSession({ isSpeaking: false, speechEndsAt: Date.now() + 3_000 })
+
+    await handleBargeIn(session, { text: '蜜塔閉嘴', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+  })
+
+  it('ack 播放中 → 一般發言仍然不打斷（只對叫停開門）', async () => {
+    const session = makeSession({ isSpeaking: false, speechEndsAt: Date.now() + 3_000 })
+
+    await handleBargeIn(session, { text: '那我們先討論下一個議題好了', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+  })
+
+  it('ack 已播完（speechEndsAt 過期）→ 叫停不再誤觸發', async () => {
+    const session = makeSession({ isSpeaking: false, speechEndsAt: Date.now() - 1 })
+
+    await handleBargeIn(session, { text: '蜜塔閉嘴', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+  })
+
+  // 12 → 8：口語化叫停（沒命中叫停詞）由旁人講出來時，原本 12 字門檻一次都停不了。
+  it('旁人 8 字的口語化叫停 → 讓路（原本 12 字門檻會吞掉）', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 7_000,
+      currentSpeech: '答案',
+    })
+
+    await handleBargeIn(session, { text: '你先不要講了好嗎', speaker: 'B' }) // 8 字、旁人
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
   })
 
   it('STT 晚到事件：開口時間早於蜜塔開始說話 → 不算打斷', async () => {
@@ -697,6 +759,99 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
     expect(session.bargeEpoch).toBe(0)
   })
 
+  // ── 講者閘門（2026-08-20）─────────────────────────────────────────────────
+  // 誤打斷的主因是旁人交談被 partial 切成半句，那種雜訊字數門檻擋不掉、只有身分擋得掉。
+  // 三段門檻：提問者 2 字、旁人 12 字、任一方未知則沿用原本的 7 字。
+  it('提問者本人短促插話（2 字）→ 讓路（旁人同樣長度不會）', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 10_000, // 越過寬限期，確保測到的是講者閘門
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '等等', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.isSpeaking).toBe(false)
+  })
+
+  it('旁人的中等長度發言（7 字）→ 不再打斷她（原本會）', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 10_000,
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'B' })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
+  })
+
+  // 刻意不做成「旁人一律忽略」：會議裡旁人真的接過話頭持續發言時，她本來就該讓路。
+  it('旁人持續發言（超過 12 字）→ 仍然讓路', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 10_000,
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '我覺得這個方案應該要再討論一下比較好', speaker: 'B' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+  })
+
+  it('旁人喊停 → 不受旁人門檻限制，照樣立刻停', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 10_000,
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '蜜塔閉嘴', speaker: 'B' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+  })
+
+  // 混音轉錄常拿不到人名——這條退路會很常走到，不可以因此變得比改動前敏感。
+  it('講者未知 → 退回原本的 7 字門檻（6 字仍不打斷、7 字打斷）', async () => {
+    const short = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 10_000,
+      speechGen: 1,
+    })
+    await handleBargeIn(short, { text: '可是女生我', speaker: '' })
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+
+    const long = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 10_000,
+      speechGen: 1,
+    })
+    await handleBargeIn(long, { text: '等一下我有意見', speaker: '' })
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+  })
+
+  it('提問者未知（engagedSpeaker 為 null）→ 同樣退回 7 字門檻', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: null,
+      speechStartedAt: Date.now() - 10_000,
+      speechGen: 1,
+    })
+    await handleBargeIn(session, { text: '可是女生我', speaker: 'B' })
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+  })
+
   it('重複打斷訊號 → 只讓路一次（isSpeaking 已翻false）', async () => {
     const session = makeSession({ isSpeaking: true, currentSpeech: '答案' })
     await handleBargeIn(session, { text: '等一下我有意見', speaker: 'A' })
@@ -704,6 +859,265 @@ describe('handleBargeIn — 說話中被打斷讓路', () => {
 
     expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
     expect(session.bargeEpoch).toBe(1)
+  })
+})
+
+// ── 延後定案（agent 網頁那條可暫停的路徑）──────────────────────────────────────
+// 核心主張：不必當場判斷「這是打斷還是附和」，先暫停兩秒看對方有沒有講下去就好。
+// 猜錯的代價從「一句話被硬切」降成「停頓兩秒後接回去」。
+// ── stop-only（正式預設）─────────────────────────────────────────────────────
+// demo 的目標：寧可她把話講完，也不要被雜訊切掉半句。實測 2026-08-18 的誤打斷率
+// 是 47%（開口 154 次被打斷 73 次），其中 86% 的觸發是與會者彼此講話被 partial
+// 切出來的 6 字以下碎片——這個模式把那 86% 全部消掉，只留下明確叫停這一條路。
+describe('handleBargeIn — stop-only 模式（正式預設）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockEnv.BARGE_IN_MODE = 'stop-only'
+  })
+
+  it('提問者本人的一般發言也不打斷她（adaptive 下 2 字就會讓路）', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 7_000,
+      currentSpeech: '答案',
+    })
+
+    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
+  })
+
+  it('旁人講很長的一段話也不打斷她', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 7_000,
+      currentSpeech: '答案',
+    })
+
+    await handleBargeIn(session, {
+      text: '我覺得這件事情應該要再討論一下比較好，因為上次的結論好像不太一樣',
+      speaker: 'B',
+    })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+  })
+
+  it('明確叫停仍然立刻停 —— 這是這個模式下唯一的打斷路徑', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 7_000,
+      currentSpeech: '答案',
+    })
+
+    await handleBargeIn(session, { text: '蜜塔閉嘴', speaker: 'B' }) // 旁人叫停
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.isSpeaking).toBe(false)
+  })
+
+  it('叫停不受開口寬限期限制（她剛開口就叫停也停得下來）', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now(), // 才剛開口，落在 BARGE_IN_GRACE_MS 內
+      currentSpeech: '答案',
+    })
+
+    await handleBargeIn(session, { text: '閉嘴', speaker: 'B' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+  })
+
+  it('ack 播放中的叫停也停得下來（isSpeaking=false 但嘴巴在播）', async () => {
+    const session = makeSession({ isSpeaking: false, speechEndsAt: Date.now() + 3_000 })
+
+    await handleBargeIn(session, { text: '蜜塔安靜', speaker: 'B' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+  })
+
+  // STT 把喚醒詞轉成常用詞（立場／立大）時，字元集救不了——收進喚醒 regex 會在正常
+  // 討論時誤觸發。這類只能靠「短句＋叫停詞結尾」的推定接住，實測全部 ≤6 字。
+  it('喚醒詞被 STT 轉爛的叫停仍然停得下來（字尾推定）', async () => {
+    for (const text of ['立陶閉嘴', '立大安靜', '你大安靜!', '大家閉嘴。']) {
+      vi.clearAllMocks()
+      const session = makeSession({
+        isSpeaking: true,
+        engagedSpeaker: 'A',
+        speechStartedAt: Date.now() - 7_000,
+        currentSpeech: '答案',
+      })
+      await handleBargeIn(session, { text, speaker: 'B' })
+      expect(mockBotProvider.stopSpeaking, text).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('談論「叫他閉嘴」不觸發字尾推定', async () => {
+    for (const text of ['就是叫他閉嘴', '教蜜塔閉嘴', '不能講閉嘴']) {
+      vi.clearAllMocks()
+      const session = makeSession({
+        isSpeaking: true,
+        engagedSpeaker: 'A',
+        speechStartedAt: Date.now() - 7_000,
+        currentSpeech: '答案',
+      })
+      await handleBargeIn(session, { text, speaker: 'B' })
+      expect(mockBotProvider.stopSpeaking, text).not.toHaveBeenCalled()
+    }
+  })
+
+  // 順帶消掉的老症狀：adaptive 的延後定案會先暫停她、2 秒後沒等到後續就自己接回去
+  // （實測全 log 18 次 resumed/no-follow-up），使用者體感是「叫她停、她停一下又講」。
+  // stop-only 下一般發言在進入延後定案之前就 return 了，pendingBargeIn 永遠不會建立。
+  it('一般發言不會進入延後定案 → 不會出現「停一下又自己接回去」', async () => {
+    const session = makeSession({
+      isSpeaking: true,
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 7_000,
+      currentSpeech: '答案',
+    })
+
+    await handleBargeIn(session, { text: '呃怎麼說,但是你剛剛說三', speaker: 'B' })
+
+    expect(session.pendingBargeIn).toBeNull()
+    expect(mockBotProvider.pauseSpeaking ?? mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleBargeIn — 延後定案（pause → 等 → resume/commit）', () => {
+  // 延後定案是 adaptive 專屬機制（stop-only 下一般發言根本走不到這裡）。
+  afterEach(() => {
+    mockEnv.BARGE_IN_MODE = 'stop-only'
+  })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockEnv.BARGE_IN_MODE = 'adaptive'
+    vi.useFakeTimers()
+    mockBotProvider.pauseSpeaking.mockResolvedValue(true)
+    mockBotProvider.resumeSpeaking.mockResolvedValue(true)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    mockBotProvider.pauseSpeaking.mockResolvedValue(false)
+    mockBotProvider.resumeSpeaking.mockResolvedValue(false)
+  })
+
+  const speaking = () =>
+    makeSession({
+      isSpeaking: true,
+      currentSpeech: '答案',
+      engagedSpeaker: 'A',
+      speechStartedAt: Date.now() - 10_000, // 越過開口寬限期
+      speechGen: 1,
+    })
+
+  it('第一次偵測到重疊語音 → 暫停而不是停止（她還沒被中斷）', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '等一下', speaker: 'A' })
+
+    expect(mockBotProvider.pauseSpeaking).toHaveBeenCalledTimes(1)
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true) // 嘴巴還佔著，只是靜音
+    expect(session.pendingBargeIn).not.toBeNull()
+  })
+
+  it('兩秒內沒有下文 → 從斷點接回去繼續講', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '等一下', speaker: 'A' })
+
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(mockBotProvider.resumeSpeaking).toHaveBeenCalledTimes(1)
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
+    expect(session.pendingBargeIn).toBeNull()
+    expect(session.speechPausedMs).toBeGreaterThan(0) // 解鎖估時要補這段
+  })
+
+  it('窗內內容變長（對方真的在講下去）→ 定案為真打斷', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '等一下', speaker: 'A' })
+    await vi.advanceTimersByTimeAsync(700) // 要撐過 BARGE_IN_DEFER_MIN_MS
+    await handleBargeIn(session, { text: '等一下我有不同意見', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.isSpeaking).toBe(false)
+    expect(session.pendingBargeIn).toBeNull()
+  })
+
+  // 這條是整個規則能不能用的關鍵：同一句話的 partial 會重複到達好幾次，
+  // 只數「又來一段」的話，任何碎片都會在第二次 partial 就被當成真打斷。
+  it('窗內同樣長度的 partial 重複到達 → 不算下文，維持暫停', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '等一下', speaker: 'A' })
+    await handleBargeIn(session, { text: '等一下', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
+  })
+
+  // 2026-08-23 實測抓到的：partial 每次只長一個字、相隔 3ms，等待窗形同虛設
+  //（三次暫停分別在 3ms / 3ms / 297ms 就定案，恢復零次）。
+  it('內容變長但只隔幾毫秒（同一句還在串流）→ 不定案，等待窗照跑', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '叫OK', speaker: 'A' })
+    await handleBargeIn(session, { text: '叫OK,', speaker: 'A' }) // +1 字，3ms 後
+
+    expect(mockBotProvider.stopSpeaking).not.toHaveBeenCalled()
+    expect(session.isSpeaking).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(mockBotProvider.resumeSpeaking).toHaveBeenCalledTimes(1) // 講完就沒下文 → 接回去
+  })
+
+  it('叫停不走延後 → 立刻停，完全不暫停', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '蜜塔閉嘴', speaker: 'A' })
+
+    expect(mockBotProvider.pauseSpeaking).not.toHaveBeenCalled()
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.isSpeaking).toBe(false)
+  })
+
+  // 暫停做不到時**絕不能假裝成功**——那會變成她從此不再開口，比硬切嚴重得多。
+  it('provider 回報暫停不了 → 退回直接停的舊行為', async () => {
+    mockBotProvider.pauseSpeaking.mockResolvedValue(false)
+    const session = speaking()
+    await handleBargeIn(session, { text: '等一下我有意見', speaker: 'A' })
+
+    expect(mockBotProvider.stopSpeaking).toHaveBeenCalledTimes(1)
+    expect(session.isSpeaking).toBe(false)
+    expect(session.pendingBargeIn).toBeNull()
+  })
+
+  // 2026-08-23 實測：查詢期間有人講話 → 暫停 → 答案回來時重取鎖（speechGen++）
+  // → 待定案的恢復因 gen 對不上而放棄 → 播放器永遠停在暫停 → 她再也沒出聲（「自己閉麥」）。
+  it('暫停中開始新的一段語音 → 先解除暫停，不會靜音卡死', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '等一下', speaker: 'A' })
+    expect(session.pendingBargeIn).not.toBeNull()
+
+    // 鎖在暫停期間被釋放（安全網到期／上一段唸完），待定案仍掛著——
+    // 這正是答案回來要重新開口時的狀態。
+    session.isSpeaking = false
+    await speakProactive(session, '這是答案') // 內部走 holdSpeaking
+
+    expect(mockBotProvider.resumeSpeaking).toHaveBeenCalled()
+    expect(session.pendingBargeIn).toBeNull()
+  })
+
+  it('她已經換講下一段 → 舊的待定案作廢，不會誤恢復', async () => {
+    const session = speaking()
+    await handleBargeIn(session, { text: '等一下', speaker: 'A' })
+    session.speechGen++ // 換了一段語音（holdSpeaking 會這樣做）
+
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    expect(mockBotProvider.resumeSpeaking).not.toHaveBeenCalled()
   })
 })
 
@@ -821,8 +1235,10 @@ describe('isSpeaking 世代鎖（嘴巴佔用的生命週期）', () => {
     await speakProactive(session, '第一段') // 3 字 → 解鎖排在 300ms
     expect(session.isSpeaking).toBe(true)
 
-    session.speechStartedAt = Date.now() - 7_000 // 越過開口寬限期（本案要測的是世代鎖，不是打斷門檻）
-    await handleBargeIn(session, { text: '等一下我有問題', speaker: 'B' })
+    // 用明確叫停來作廢這段語音：本案要測的是世代鎖，不是打斷門檻，而叫停在
+    // stop-only（正式預設）與 adaptive 兩個模式下行為一致，測試才不綁模式。
+    session.speechStartedAt = Date.now() - 7_000
+    await handleBargeIn(session, { text: '蜜塔閉嘴', speaker: 'B' })
     expect(session.isSpeaking).toBe(false)
 
     await speakProactive(session, '第二段'.padEnd(20, '啊')) // 20 字 → 解鎖排在 2000ms
