@@ -33,6 +33,8 @@ import {
   mergeConsecutiveSegments,
   waitForTranscriptStable,
   generateSummaryAsync,
+  trackSummary,
+  waitForPendingSummaries,
   SUMMARY_INITIAL_WAIT_MS,
   SUMMARY_POLL_INTERVAL_MS,
 } from '../../../../backend/src/sessions/summary.service'
@@ -339,5 +341,52 @@ describe('generateSummaryAsync', () => {
         data: expect.objectContaining({ summary: '這是會議摘要' }),
       }),
     )
+  })
+})
+
+// ── 關機排水（trackSummary / waitForPendingSummaries）─────────────────────────
+// 這段的價值全在「逾時要能放行」：一份卡住的摘要若讓進程退不掉，orchestrator
+// 會改送 SIGKILL，結果比丟掉摘要更糟。
+//
+// ⚠️ pendingSummaries 是模組層的集合，跨測試共用。「卡住」那個案例會永久留下一份
+//    不會 resolve 的 promise，所以它必須排在最後——放前面會讓後面每個案例都等到逾時。
+describe('關機排水', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('沒有在途摘要 → 回 0，不等待', async () => {
+    expect(await waitForPendingSummaries(1000)).toBe(0)
+  })
+
+  it('在途摘要做完 → 等到它結束才回；結束後從集合移除', async () => {
+    let done = false
+    const job = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        done = true
+        resolve()
+      }, 500),
+    )
+    trackSummary(job)
+
+    const waiting = waitForPendingSummaries(10_000)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(await waiting).toBe(1)
+    expect(done).toBe(true)
+
+    // 清理生效：同一份不會在下一次關機時再被等一遍
+    expect(await waitForPendingSummaries(1000)).toBe(0)
+  })
+
+  it('摘要失敗（reject）也算做完 → 不卡住關機', async () => {
+    await trackSummary(Promise.reject(new Error('Dify 掛了')))
+    expect(await waitForPendingSummaries(1000)).toBe(0)
+  })
+
+  it('摘要卡住超過寬限時間 → 逾時放行，不把進程卡死', async () => {
+    trackSummary(new Promise<void>(() => {})) // 永遠不 resolve
+
+    const waiting = waitForPendingSummaries(1_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await waiting).toBe(1)
   })
 })

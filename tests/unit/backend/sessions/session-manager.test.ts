@@ -28,7 +28,12 @@ vi.mock('../../../../backend/src/sessions/interjection', () => ({
   clearInterjection: vi.fn(),
   startIcebreaker: vi.fn(),
 }))
-vi.mock('../../../../backend/src/sessions/summary.service', () => ({ generateSummaryAsync }))
+// trackSummary 只是把在途的 promise 登記起來給關機排水用，對 session-manager
+// 的行為沒有影響 → mock 成原樣回傳即可。
+vi.mock('../../../../backend/src/sessions/summary.service', () => ({
+  generateSummaryAsync,
+  trackSummary: (job: Promise<void>) => job,
+}))
 
 import { activeSessions } from '../../../../backend/src/sessions/session-store'
 import {

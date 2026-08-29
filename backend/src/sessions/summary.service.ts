@@ -10,6 +10,62 @@ export const SUMMARY_POLL_INTERVAL_MS = 3_000
 export const SUMMARY_STABLE_POLLS = 2
 export const SUMMARY_TIMEOUT_MS = 30_000
 
+// ── 在途摘要追蹤（關機排水用）──────────────────────────────────────────────
+//
+// 摘要是 handleSessionClose 之後的 fire-and-forget 背景工作，從啟動到落地要
+// 11–35 秒（SUMMARY_INITIAL_WAIT_MS 起跳，再輪詢到逐字稿穩定 → 上傳 Storage
+// → Dify）。Node 沒有 SIGTERM handler 時收到訊號會**立刻**退出，那段工作連同
+// 只活在記憶體的逐字稿一起消失。
+//
+// 2026-08-26 實測踩過：會議 11:23:43 結束、11:23:53 進程被關掉，摘要死在第一個
+// sleep 裡。因為當時 generateSummaryAsync 只在「完成」與「失敗」時記 log，
+// 中途被殺等於零紀錄，事後只能靠「log 最後一行的時間」反推。所以除了排水，
+// 進來時也記一行。
+
+const pendingSummaries = new Set<Promise<void>>()
+
+/**
+ * 登記一份在途摘要，讓關機時等得到它。呼叫端維持 fire-and-forget。
+ *
+ * 存進集合的是**包過的** promise，不是原本那份：清理掛在 finally 上，只有等
+ * 包過的這份 settle 才保證已經移除。存原本那份的話，等到的時機比清理早一個
+ * microtask，集合會殘留（測試就是這樣抓到的）。
+ * catch 收在裡面 → 集合裡的 promise 永遠不 reject，呼叫端不 await 也不會產生
+ * unhandledRejection（generateSummaryAsync 自己有 try/catch，這裡是防禦性的）。
+ */
+export function trackSummary(job: Promise<void>): Promise<void> {
+  const tracked: Promise<void> = job
+    .catch((err) => {
+      logger.error({ err }, 'trackSummary: 摘要工作異常結束')
+    })
+    .finally(() => {
+      pendingSummaries.delete(tracked)
+    })
+  pendingSummaries.add(tracked)
+  return tracked
+}
+
+/**
+ * 等所有在途摘要做完，最多等 timeoutMs。回傳當下在途的份數（0 = 沒事可等）。
+ *
+ * 用 Promise.race 而不是只等 allSettled：逾時要能放行，否則一份卡住的摘要
+ * 會讓進程永遠退不掉，比丟掉摘要更糟（orchestrator 會改送 SIGKILL）。
+ * allSettled 而非 all：一份失敗不該讓其他份的等待提前結束。
+ */
+export async function waitForPendingSummaries(timeoutMs: number): Promise<number> {
+  const count = pendingSummaries.size
+  if (count === 0) return 0
+  let timer: NodeJS.Timeout | undefined
+  await Promise.race([
+    Promise.allSettled([...pendingSummaries]),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs)
+    }),
+  ])
+  if (timer) clearTimeout(timer)
+  return count
+}
+
 export function formatSeconds(seconds: number): string {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
@@ -143,6 +199,12 @@ export async function generateSummaryAsync(params: {
   /** 聊天訊息時間換算錨點（bot admitted 的 epoch ms）。 */
   sessionStartedAt?: number
 }): Promise<void> {
+  // 進來就記一行：這是唯一能證明「摘要有開始跑」的證據。少了它，中途被關機殺掉
+  // 的摘要在 log 裡完全不存在（見檔頭「在途摘要追蹤」）。
+  logger.info(
+    { meetingInstanceId: params.meetingInstanceId, hasSession: Boolean(params.session) },
+    'generateSummaryAsync started',
+  )
   try {
     // 用 provider 抽象層取逐字稿；session 不在時無法補抓（重啟後 bot session 已消失）。
     const fetchSegments: () => Promise<TranscriptSegment[]> = params.session
