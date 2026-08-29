@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
+  CalendarIcon,
   DocIcon,
   MeetingIcon,
   PeopleIcon,
@@ -16,6 +17,7 @@ interface Props {
 const TABS = [
   { href: 'materials', label: '資料', icon: DocIcon },
   { href: 'meetings', label: '會議', icon: MeetingIcon },
+  { href: 'calendar', label: '行事曆', icon: CalendarIcon },
   { href: 'members', label: '成員', icon: PeopleIcon },
   { href: 'history', label: '歷史', icon: ClockIcon },
 ]
