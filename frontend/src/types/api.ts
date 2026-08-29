@@ -229,3 +229,76 @@ export interface TranscriptResponse {
   page: number
   perPage: number
 }
+
+// ── 行事曆 ────────────────────────────────────────────
+
+export type RsvpStatus = 'ACCEPTED' | 'TENTATIVE' | 'DECLINED' | 'PENDING'
+
+/** 成員的 Google Calendar 同步狀態：未連結與授權失效要分開，使用者的下一步不同。 */
+export type CalendarSyncState = 'synced' | 'unsynced' | 'expired'
+
+export interface CalendarMemberDto {
+  userId: number
+  name: string | null
+  email: string
+  isOwner: boolean
+  syncState: CalendarSyncState
+}
+
+export interface CalendarAttendeeDto {
+  userId: number
+  rsvp: RsvpStatus
+  respondedAt: string | null
+}
+
+/** 行事曆上的會議。時間一律是 ISO 8601 絕對時間（UTC），由前端換成本地時間顯示。 */
+export interface CalendarMeetingDto {
+  id: string
+  projectId: string | null
+  projectName?: string | null
+  name: string
+  googleMeetUrl: string
+  status: 'SCHEDULED' | 'PENDING' | 'ACTIVE' | 'ENDED' | 'FAILED' | 'CANCELED'
+  scheduledStartAt: string | null
+  scheduledEndAt: string | null
+  timezone: string | null
+  createdByUserId: number
+  attendees: CalendarAttendeeDto[]
+}
+
+/** 從成員 GCal 匯入的忙碌時段：只有起訖，沒有標題（隱私）。 */
+export interface BusyBlockDto {
+  id: string
+  userId: number
+  startAt: string
+  endAt: string
+}
+
+export interface ProjectCalendarResponse {
+  members: CalendarMemberDto[]
+  meetings: CalendarMeetingDto[]
+  busyBlocks: BusyBlockDto[]
+}
+
+export interface GlobalCalendarResponse {
+  meetings: CalendarMeetingDto[]
+  busyBlocks: BusyBlockDto[]
+  /** 這批會議的與會者姓名對照（全域層跨專案，沒有單一成員名單可查） */
+  people: Array<{ userId: number; name: string | null; email: string }>
+}
+
+export interface FreeSlotDto {
+  start: string
+  end: string
+}
+
+export interface FreeSlotsResponse {
+  slots: FreeSlotDto[]
+  /** 這些成員尚未同步 GCal → 結果僅依已知忙碌計算（spec §4.3） */
+  unsyncedMembers: Array<{
+    userId: number
+    name: string | null
+    email: string
+    syncState: CalendarSyncState
+  }>
+}

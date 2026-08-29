@@ -15,6 +15,7 @@ interface Props {
   onDurationChange: (minutes: number) => void
   onSearch: () => void
   onClear: () => void
+  isSearching?: boolean
   /** null = 還沒搜尋過；[] = 搜尋過但查無空檔 */
   results: TimeSlot[] | null
   onPick: (slot: TimeSlot) => void
@@ -26,6 +27,7 @@ export function FindSlotPanel({
   onDurationChange,
   onSearch,
   onClear,
+  isSearching = false,
   results,
   onPick,
 }: Props) {
@@ -55,8 +57,13 @@ export function FindSlotPanel({
       </select>
 
       <div className="mt-3 flex gap-2">
-        <Button size="sm" className="flex-1" onClick={onSearch} disabled={participants.length === 0}>
-          搜尋空檔
+        <Button
+          size="sm"
+          className="flex-1"
+          onClick={onSearch}
+          disabled={participants.length === 0 || isSearching}
+        >
+          {isSearching ? '搜尋中…' : '搜尋空檔'}
         </Button>
         {results !== null && (
           <Button size="sm" variant="outline" onClick={onClear}>

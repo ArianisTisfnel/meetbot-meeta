@@ -60,6 +60,26 @@ export async function requireProjectMeetingManageAccess(
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
 }
 
+/**
+ * 行事曆共用的權限入口：確認使用者能檢視／能安排此專案的會議。
+ *
+ * 權限規則只寫一次。行事曆需要同一套判斷（spec §5「僅專案成員可見該專案行事曆；
+ * 發送提醒／建立會議等操作限主辦或具權限成員」），在 calendar.service 另抄一份
+ * 遲早會走鐘，所以由這裡把既有的私有 helper 包成具名的公開函式。
+ */
+export async function requireProjectViewAccess(projectId: string, userId: number) {
+  const project = await getProjectWithAccess(projectId, userId)
+  requireCanView(project, userId)
+  return project
+}
+
+/** 需要「建立會議」權限的操作（排會議、改時間、取消）。 */
+export async function requireProjectMeetingAccess(projectId: string, userId: number) {
+  const project = await getProjectWithAccess(projectId, userId)
+  requireCanMeeting(project, userId)
+  return project
+}
+
 // ── Create meeting ─────────────────────────────────────────────────────────────
 
 export async function createMeeting(params: {

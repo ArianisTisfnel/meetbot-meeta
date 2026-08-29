@@ -190,16 +190,92 @@ model MeetingInstance {
   keyTopics             Json?         @map("key_topics")
   decisions             Json?
   transcriptStoragePath String?       @map("transcript_storage_path")
+  /// 排定的開始／結束時間（UTC）。null = 舊資料或「立刻開」的會議，行事曆上不顯示。
+  /// startedAt/endedAt 記的是「實際」發生時間，兩者不可混用：行事曆一律看 scheduled*。
+  scheduledStartAt      DateTime?     @map("scheduled_start_at")
+  scheduledEndAt        DateTime?     @map("scheduled_end_at")
+  /// 建立者當下的 IANA 時區（例：Asia/Taipei）。僅供顯示與 GCal 寫回，計算一律用 UTC。
+  timezone              String?
+  /// 寫回 Google Calendar 後的事件 id，供後續更新／取消時對應同一筆 GCal 事件。
+  gcalEventId           String?       @map("gcal_event_id")
   createdAt             DateTime      @default(now()) @map("created_at")
   updatedAt             DateTime      @updatedAt @map("updated_at")
 
-  project Project? @relation(fields: [projectId], references: [id])
+  project   Project?          @relation(fields: [projectId], references: [id])
+  attendees MeetingAttendee[]
 
   @@index([projectId, createdAt(sort: Desc)])
   @@index([createdByUserId, createdAt(sort: Desc)])
   @@index([status])
   @@index([createdByUserId, status])
+  @@index([projectId, scheduledStartAt])
   @@map("meeting_instances")
+  @@schema("app")
+}
+
+/// 會議的與會者與其出席回覆（RSVP）。
+///
+/// 沿用專案既有的「邏輯 FK」策略：userId 不建 FK 約束（比照 ProjectMember.userId）。
+/// meetingId 有 FK，因為會議被硬刪時這些回覆必須跟著消失。
+model MeetingAttendee {
+  id          String     @id @default(uuid())
+  meetingId   String     @map("meeting_id")
+  userId      Int        @map("vexa_user_id")
+  rsvp        RsvpStatus @default(PENDING)
+  /// 最後一次回覆的時間；null = 從未回覆（催辦名單看這個）
+  respondedAt DateTime?  @map("responded_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  meeting MeetingInstance @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@unique([meetingId, userId])
+  @@index([userId])
+  @@map("meeting_attendees")
+  @@schema("app")
+}
+
+/// 使用者的 Google Calendar 授權。
+///
+/// 為什麼 refresh token 要存在後端而不是沿用 NextAuth 的 JWT：疊圖同步與會前提醒
+/// 都是背景工作，使用者不在線上時也要能呼叫 Google API，而 JWT 只在瀏覽器有 session
+/// 時才拿得到。前端登入時把 refresh token 交給 /internal/calendar-connection 落庫。
+///
+/// ⚠️ refresh token 目前明文儲存（本機／自架 DB 的開發階段取捨）。上線前應以
+/// KMS 或 app 層對稱加密包一層，見 docs/11-優化清單.md。
+model CalendarConnection {
+  id                   Int              @id @default(autoincrement())
+  userId               Int              @unique @map("vexa_user_id")
+  refreshToken         String           @map("refresh_token")
+  /// 快取的 access token；過期就用 refreshToken 換新的，省下每次呼叫都換一次
+  accessToken          String?          @map("access_token")
+  accessTokenExpiresAt DateTime?        @map("access_token_expires_at")
+  /// Google Calendar 增量同步的 syncToken（有就只抓異動，沒有就整批重抓）
+  syncToken            String?          @map("sync_token")
+  status               ConnectionStatus @default(ACTIVE)
+  lastSyncedAt         DateTime?        @map("last_synced_at")
+  lastSyncError        String?          @map("last_sync_error")
+  createdAt            DateTime         @default(now()) @map("created_at")
+  updatedAt            DateTime         @updatedAt @map("updated_at")
+
+  @@map("calendar_connections")
+  @@schema("app")
+}
+
+/// 從成員 Google Calendar 匯入的忙碌時段快取。
+///
+/// 只存「幾點到幾點忙」，不存標題與與會者——疊圖與找空檔只需要這個，
+/// 少存一份別人的行程內容也少一份隱私風險（spec §5 隱私）。
+model BusyBlock {
+  id        String   @id @default(uuid())
+  userId    Int      @map("vexa_user_id")
+  startAt   DateTime @map("start_at")
+  endAt     DateTime @map("end_at")
+  /// 這批快取是哪一次同步抓回來的；重抓某區間時用它整批汰換
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+
+  @@index([userId, startAt])
+  @@map("busy_blocks")
   @@schema("app")
 }
 
@@ -249,11 +325,36 @@ enum InvitationStatus {
   @@schema("app")
 }
 
+/// SCHEDULED = 已排定但蜜塔還沒進去（行事曆專用，**不佔並發額度**）
+/// PENDING   = 蜜塔加入中；ACTIVE = 蜜塔在會議裡（並發上限看這個）
+/// CANCELED  = 會議被取消（行事曆上劃掉、不佔忙碌判斷）。與 FAILED 不同：
+///             FAILED 是「蜜塔沒進去」，CANCELED 是「這場會不開了」。
+enum RsvpStatus {
+  ACCEPTED
+  TENTATIVE
+  DECLINED
+  PENDING
+
+  @@map("rsvp_status")
+  @@schema("app")
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  /// refresh token 被撤銷或失效 → 前端提示重新連結，期間退回僅本系統資料
+  EXPIRED
+
+  @@map("connection_status")
+  @@schema("app")
+}
+
 enum MeetingStatus {
+  SCHEDULED
   PENDING
   ACTIVE
   ENDED
   FAILED
+  CANCELED
 
   @@map("meeting_status")
   @@schema("app")
