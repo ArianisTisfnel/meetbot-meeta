@@ -23,9 +23,19 @@ import {
 import { CONFLICT_COLOR, seriesColorAt } from '@/lib/calendar-colors'
 import { MOCK_MEMBERS, MOCK_PROJECT_EVENTS } from '@/lib/calendar-mock'
 
-/** 找空檔時視為「可排會議」的時段（週一~週日的這個區間內）。 */
+/** 找空檔時視為「可排會議」的時段。 */
 const WORK_START_HOUR = 9
 const WORK_END_HOUR = 18
+
+/**
+ * 要搜尋的日子：跳過週六日。整週都算的話，週末會整天反白成「可排 9 小時」，
+ * 把真正值得看的平日空檔淹掉——不是不能約週末，是不該由系統主動建議。
+ */
+function searchDays(weekStart: Date): Date[] {
+  return Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)).filter(
+    (day) => day.getDay() !== 0 && day.getDay() !== 6,
+  )
+}
 
 export default function ProjectCalendarPage() {
   // 整頁等掛載後才畫：週次與「今天」都取自 new Date()，SSR 與瀏覽器時區可能不同
@@ -63,7 +73,7 @@ export default function ProjectCalendarPage() {
       .map(({ start, end }) => ({ start, end }))
     const found = findCommonSlots({
       busy,
-      days: Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
+      days: searchDays(weekStart),
       workStartHour: WORK_START_HOUR,
       workEndHour: WORK_END_HOUR,
       durationMin: duration,
