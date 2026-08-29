@@ -620,9 +620,27 @@ export async function getMeetingTranscriptMarkdown(meetingId: string): Promise<s
   return downloadTextFile(meeting.transcriptStoragePath)
 }
 
-export async function updateMeetingName(
+/**
+ * 更新會議的可編輯欄位：名稱，以及摘要卡的四個欄位（摘要／交辦事項／重點主題／決議）。
+ *
+ * 為什麼四個都能改：它們全是 LLM 生成的，會出錯（實測有把「精品」聽成「競品」的
+ * 例子），而且主管在會後常常想自己補一條交辦事項——那不是 AI 漏抓，是會議當下沒講
+ * 出口的事。這種東西不該逼使用者去改資料庫。
+ *
+ * ⚠️ 只更新有傳進來的欄位——patch 裡沒有的 key 不能寫進 data，否則改名會把摘要
+ * 蓋成 undefined。這也是 summary 允許空字串的原因：'' 是「已嘗試但無內容」的哨兵，
+ * 使用者手動清空摘要與哨兵在 DB 裡長得一樣，前端行為一致（顯示「無摘要」），
+ * 所以不需要為它另設一個狀態。三個陣列同理，空陣列 = 本次沒有。
+ */
+export async function updateMeeting(
   meetingId: string,
-  name: string,
+  patch: {
+    name?: string
+    summary?: string
+    actionItems?: Array<{ task: string; owner: string; done?: boolean }>
+    keyTopics?: string[]
+    decisions?: string[]
+  },
   userId: number,
   projectId?: string,
 ) {
@@ -637,13 +655,27 @@ export async function updateMeetingName(
   } else {
     // 全局：只有建立者可修改
     if (meeting.createdByUserId !== userId) {
-      throw new AppError('PERMISSION_DENIED', 403, '只有建立者可修改此會議名稱')
+      throw new AppError('PERMISSION_DENIED', 403, '只有建立者可修改此會議')
     }
   }
 
   const updated = await prisma.meetingInstance.update({
     where: { id: meetingId },
-    data: { name },
+    data: {
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+      ...(patch.actionItems !== undefined ? { actionItems: patch.actionItems } : {}),
+      ...(patch.keyTopics !== undefined ? { keyTopics: patch.keyTopics } : {}),
+      ...(patch.decisions !== undefined ? { decisions: patch.decisions } : {}),
+    },
   })
-  return { id: updated.id, name: updated.name, updatedAt: updated.updatedAt }
+  return {
+    id: updated.id,
+    name: updated.name,
+    summary: updated.summary,
+    actionItems: updated.actionItems,
+    keyTopics: updated.keyTopics,
+    decisions: updated.decisions,
+    updatedAt: updated.updatedAt,
+  }
 }

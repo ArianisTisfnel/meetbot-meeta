@@ -166,6 +166,11 @@ export type MeetingStatus = 'PENDING' | 'ACTIVE' | 'ENDED' | 'FAILED'
 export interface ActionItem {
   task: string
   owner: string
+  /**
+   * 已完成。舊資料沒有這個欄位（undefined = 未完成），所以是選填——
+   * 加它是為了讓交辦事項那個方框變成真的能勾，而不是一個點了沒反應的裝飾。
+   */
+  done?: boolean
 }
 
 export interface MeetingListItem {

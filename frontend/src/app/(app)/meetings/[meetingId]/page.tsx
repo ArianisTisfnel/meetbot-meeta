@@ -121,6 +121,8 @@ export default function GlobalMeetingDetailPage({ params }: Props) {
             decisions={meeting.decisions}
           />
           <MeetingSummary
+            meetingId={meetingId}
+            projectId={null}
             summary={meeting.summary}
             actionItems={meeting.actionItems}
             keyTopics={meeting.keyTopics}

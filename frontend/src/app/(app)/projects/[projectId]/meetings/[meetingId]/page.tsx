@@ -154,6 +154,8 @@ export default function MeetingDetailPage({ params }: Props) {
             decisions={meeting.decisions}
           />
           <MeetingSummary
+            meetingId={meetingId}
+            projectId={projectId}
             summary={meeting.summary}
             actionItems={meeting.actionItems}
             keyTopics={meeting.keyTopics}

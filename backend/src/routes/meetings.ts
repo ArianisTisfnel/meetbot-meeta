@@ -13,7 +13,23 @@ const createMeetingSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
 })
 
-const updateMeetingSchema = z.object({ name: z.string().min(1) })
+// 摘要那四個欄位都可編輯：它們是 LLM 生成的、會出錯，而且主管可能想自己補交辦事項。
+// 全部選填，但不能一個都不給——空 patch 會靜默成功卻什麼都沒改，前端看不出差別。
+// summary 允許空字串（等同「無摘要」哨兵）；陣列允許空陣列（等同「本次沒有」）。
+const actionItemSchema = z.object({
+  task: z.string().min(1),
+  owner: z.string(),
+  done: z.boolean().optional(),
+})
+const updateMeetingSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    summary: z.string().optional(),
+    actionItems: z.array(actionItemSchema).optional(),
+    keyTopics: z.array(z.string().min(1)).optional(),
+    decisions: z.array(z.string().min(1)).optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: '至少要提供一個要更新的欄位' })
 
 // ── 全局 meeting 端點 ──────────────────────────────────────────────────────
 
@@ -51,13 +67,13 @@ app.get('/meetings/:meetingId', async (c) => {
   return c.json(meeting)
 })
 
-// PATCH /meetings/:meetingId — 全局改名（建立者本人）
+// PATCH /meetings/:meetingId — 全局更新名稱／摘要（建立者本人）
 app.patch('/meetings/:meetingId', async (c) => {
   const body = await c.req.json().catch(() => ({}))
-  const { name } = updateMeetingSchema.parse(body)
-  const result = await meetingService.updateMeetingName(
+  const patch = updateMeetingSchema.parse(body)
+  const result = await meetingService.updateMeeting(
     c.req.param('meetingId'),
-    name,
+    patch,
     c.get('userId'),
   )
   return c.json(result)
@@ -179,10 +195,10 @@ app.get('/projects/:projectId/meetings/:meetingId', async (c) => {
 // PATCH /projects/:projectId/meetings/:meetingId
 app.patch('/projects/:projectId/meetings/:meetingId', async (c) => {
   const body = await c.req.json().catch(() => ({}))
-  const { name } = updateMeetingSchema.parse(body)
-  const result = await meetingService.updateMeetingName(
+  const patch = updateMeetingSchema.parse(body)
+  const result = await meetingService.updateMeeting(
     c.req.param('meetingId'),
-    name,
+    patch,
     c.get('userId'),
     c.req.param('projectId'),
   )

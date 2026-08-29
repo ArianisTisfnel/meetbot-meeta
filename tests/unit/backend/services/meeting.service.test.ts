@@ -15,7 +15,7 @@ vi.mock('../../../../backend/src/services/activity.service', () => ({
 }))
 
 import { parseGoogleMeetUrl } from '../../../../backend/src/lib/google-meet'
-import { createMeeting, leaveMeeting, reinviteBot } from '../../../../backend/src/services/meeting.service'
+import { createMeeting, leaveMeeting, reinviteBot, updateMeeting } from '../../../../backend/src/services/meeting.service'
 import * as sessionManagerMock from '../../../../backend/src/sessions/session-manager'
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -246,6 +246,72 @@ describe('reinviteBot', () => {
       statusCode: 400,
     })
     expect(mockPrisma.meetingInstance.create).not.toHaveBeenCalled()
+    expect(mockPrisma.meetingInstance.update).not.toHaveBeenCalled()
+  })
+})
+
+// ── updateMeeting ────────────────────────────────────────────────────────────
+//
+// 這組釘的是**部分更新**：patch 裡沒有的欄位絕對不能出現在 prisma 的 data 裡。
+// 少了那個判斷，改一次名字就會把 summary 寫成 undefined —— 使用者辛苦改好的摘要
+// 在下一次改名時無聲消失，而且畫面要重整才看得出來。
+describe('updateMeeting — 部分更新', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockPrisma.meetingInstance.findUnique.mockResolvedValue({ ...MOCK_MEETING })
+    mockPrisma.meetingInstance.update.mockResolvedValue({
+      ...MOCK_MEETING,
+      name: '新名字',
+      summary: '原本的摘要',
+    })
+  })
+
+  it('只給 name → data 裡不會出現 summary', async () => {
+    await updateMeeting('meet-uuid-1', { name: '新名字' }, 1)
+
+    const data = mockPrisma.meetingInstance.update.mock.calls[0][0].data
+    expect(data).toEqual({ name: '新名字' })
+    expect('summary' in data).toBe(false)
+  })
+
+  it('只給 summary → data 裡不會出現 name', async () => {
+    await updateMeeting('meet-uuid-1', { summary: '改過的摘要' }, 1)
+
+    const data = mockPrisma.meetingInstance.update.mock.calls[0][0].data
+    expect(data).toEqual({ summary: '改過的摘要' })
+    expect('name' in data).toBe(false)
+  })
+
+  it('summary 允許空字串（等同「無摘要」哨兵，不能被當成沒給）', async () => {
+    await updateMeeting('meet-uuid-1', { summary: '' }, 1)
+
+    expect(mockPrisma.meetingInstance.update.mock.calls[0][0].data).toEqual({ summary: '' })
+  })
+
+  it('只給 actionItems → 其他三個欄位都不在 data 裡', async () => {
+    await updateMeeting(
+      'meet-uuid-1',
+      { actionItems: [{ task: '準備簡報', owner: 'WENDY HSU' }] },
+      1,
+    )
+
+    expect(mockPrisma.meetingInstance.update.mock.calls[0][0].data).toEqual({
+      actionItems: [{ task: '準備簡報', owner: 'WENDY HSU' }],
+    })
+  })
+
+  // 空陣列 = 「本次會議沒有」，是使用者刻意清空的結果，不能被當成「沒給這個欄位」
+  it('陣列允許清空（空陣列要真的寫進 DB）', async () => {
+    await updateMeeting('meet-uuid-1', { decisions: [], keyTopics: [] }, 1)
+
+    expect(mockPrisma.meetingInstance.update.mock.calls[0][0].data).toEqual({
+      decisions: [],
+      keyTopics: [],
+    })
+  })
+
+  it('全局會議非建立者 → 403，不會寫 DB', async () => {
+    await expect(updateMeeting('meet-uuid-1', { summary: '亂改' }, 999)).rejects.toThrow()
     expect(mockPrisma.meetingInstance.update).not.toHaveBeenCalled()
   })
 })

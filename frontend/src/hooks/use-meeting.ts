@@ -1,7 +1,7 @@
 'use client'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
-import type { MeetingDetail, MeetingTranscriptResponse } from '@/types/api'
+import type { ActionItem, MeetingDetail, MeetingTranscriptResponse } from '@/types/api'
 
 /**
  * 計算 useMeeting 的 refetchInterval。
@@ -74,21 +74,25 @@ export function useMeetingTranscript(
 }
 
 /**
- * 會議改名。專案會議走專案端點（需 canMeeting），全局會議走全局端點（限建立者）。
+ * 會議更新（名稱／摘要）。專案會議走專案端點（需 canMeeting），
+ * 全局會議走全局端點（限建立者）。後端只更新 patch 裡有的欄位。
  */
-export function useRenameMeeting(projectId: string | null, meetingId: string) {
+export function useUpdateMeeting(projectId: string | null, meetingId: string) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (name: string) =>
+    mutationFn: (patch: {
+      name?: string
+      summary?: string
+      actionItems?: ActionItem[]
+      keyTopics?: string[]
+      decisions?: string[]
+    }) =>
       projectId
         ? apiClient.patch<{ id: string; name: string }>(
             `/projects/${projectId}/meetings/${meetingId}`,
-            { name }
+            patch
           )
-        : apiClient.patch<{ id: string; name: string }>(
-            `/meetings/${meetingId}`,
-            { name }
-          ),
+        : apiClient.patch<{ id: string; name: string }>(`/meetings/${meetingId}`, patch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] })
       queryClient.invalidateQueries({ queryKey: ['meetings'] })

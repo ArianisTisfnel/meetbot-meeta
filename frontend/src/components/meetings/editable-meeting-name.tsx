@@ -1,7 +1,7 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
 import { Input } from '@/components/ui/input'
-import { useRenameMeeting } from '@/hooks/use-meeting'
+import { useUpdateMeeting } from '@/hooks/use-meeting'
 import { toast } from 'sonner'
 
 interface Props {
@@ -22,7 +22,7 @@ export function EditableMeetingName({ meetingId, projectId, name, className }: P
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(name)
   const inputRef = useRef<HTMLInputElement>(null)
-  const rename = useRenameMeeting(projectId ?? null, meetingId)
+  const rename = useUpdateMeeting(projectId ?? null, meetingId)
 
   useEffect(() => {
     if (editing) inputRef.current?.focus()
@@ -33,7 +33,7 @@ export function EditableMeetingName({ meetingId, projectId, name, className }: P
     setEditing(false)
     if (!trimmed || trimmed === name) return
     try {
-      await rename.mutateAsync(trimmed)
+      await rename.mutateAsync({ name: trimmed })
       toast.success('已更新會議名稱')
     } catch (err: any) {
       toast.error(err?.message ?? '更新失敗')

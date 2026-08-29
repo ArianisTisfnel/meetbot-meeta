@@ -50,6 +50,18 @@ export const apiClient = {
     return res.json()
   },
 
+  /** 回傳二進位檔（目前只有 PDF）。錯誤處理與其他方法共用 throwHttpError。 */
+  async postBlob(path: string, body: unknown): Promise<Blob> {
+    const headers = await getAuthHeader()
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) await throwHttpError(res)
+    return res.blob()
+  },
+
   async postForm<T>(path: string, formData: FormData): Promise<T> {
     const headers = await getAuthHeader()
     const res = await fetch(`${BASE_URL}${path}`, {
