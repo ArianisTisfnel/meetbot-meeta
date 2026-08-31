@@ -582,6 +582,19 @@ export async function resolveAnswerRouted(
     factAnswer = answer
   }
 
+  // factual 查無資料 → 別急著說「找不到」，退回逐字稿當後備事實來源。
+  // 只在踩到哨兵時才多花一次 LLM 呼叫，一般 factual 命中的低延遲路徑不受影響；
+  // hybrid 不需要這條分支，它本來就會把 factAnswer（可能是哨兵）與逐字稿一起丟給
+  // 下面的合成步驟，LLM 天然會靠 context 答出來。
+  if (intent === 'factual' && factAnswer === dify.DIFY_NO_RESULT_SENTINEL) {
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId },
+      'resolveAnswer: factual RAG missed, falling back to transcript',
+    )
+    const { answer } = await answerFromTranscript(session, question)
+    return { answer, route: 'transcript' }
+  }
+
   if (intent !== 'hybrid') return { answer: factAnswer, route }
 
   // hybrid：把檢索到的事實與近期對話脈絡合成（合成失敗退回純檢索答案）
