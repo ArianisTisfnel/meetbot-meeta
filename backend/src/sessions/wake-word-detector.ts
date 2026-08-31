@@ -502,19 +502,23 @@ export async function resolveAnswerRouted(
   // 句中提及／連續追問／插話這三條路的 intent 是跟定址一起判出來的（knownIntent），
   // 只有純規則定案的句首呼喚才需要在這裡補一次呼叫——總量與舊制的 classifyIntent 相同。
   const classifyStart = Date.now()
-  const intent =
-    knownIntent ??
-    (
-      await decideTurn({
-        window: windowEndingWith(session, {
-          speaker: '參與者',
-          text: question,
-          source: mode,
-          fromBot: false,
-        }),
-        kbContentCard: session.kbContentCard,
-      })
-    ).intent
+  let intent: QuestionIntent
+  let intentClassificationFailed = false
+  if (knownIntent) {
+    intent = knownIntent
+  } else {
+    const turnDecision = await decideTurn({
+      window: windowEndingWith(session, {
+        speaker: '參與者',
+        text: question,
+        source: mode,
+        fromBot: false,
+      }),
+      kbContentCard: session.kbContentCard,
+    })
+    intent = turnDecision.intent
+    intentClassificationFailed = turnDecision.failed
+  }
   const route = routeForIntent(intent, true)
   logger.info(
     {
@@ -525,6 +529,9 @@ export async function resolveAnswerRouted(
       question: question.slice(0, 40),
       classifyMs: Date.now() - classifyStart,
       fromTurnDecision: knownIntent !== undefined,
+      // true＝decideTurn 呼叫或解析失敗，intent 是 FAILED_DECISION 的保守預設值，不是真分類——
+      // 過去這種情況跟「真的判成 factual」印出來一模一樣，事後查 log 分不出是模型判斷還是 fallback。
+      intentClassificationFailed,
     },
     'resolveAnswer: intent classified',
   )
