@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import * as calendarService from '../services/calendar.service.js'
+import * as calendarSync from '../services/calendar-sync.service.js'
 import { AppError } from '../middleware/error-handler.js'
 import type { AppEnv } from '../types/hono.js'
 
@@ -145,6 +146,24 @@ app.post('/calendar/meetings/:meetingId/rsvp', async (c) => {
     rsvp,
   })
   return c.json(result)
+})
+
+// ── Google Calendar 連結 ──────────────────────────────────────────────────────
+
+// GET /calendar/connection — 我的同步狀態（前端據此顯示引導／重新連結／錯誤）
+app.get('/calendar/connection', async (c) => {
+  return c.json(await calendarSync.getConnectionStatus(c.get('userId')))
+})
+
+// DELETE /calendar/connection — 中斷連結（連同已快取的忙碌時段一起清掉）
+app.delete('/calendar/connection', async (c) => {
+  await calendarSync.disconnect(c.get('userId'))
+  return c.body(null, 204)
+})
+
+// POST /calendar/sync — 手動立即同步忙碌時段
+app.post('/calendar/sync', async (c) => {
+  return c.json(await calendarSync.syncMe(c.get('userId')))
 })
 
 export default app

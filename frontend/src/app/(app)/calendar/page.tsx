@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { WeekGrid } from '@/components/calendar/week-grid'
 import { EventDialog } from '@/components/calendar/event-dialog'
+import { CalendarConnectionCard } from '@/components/calendar/connection-card'
 import {
   CalendarLegend,
   CalendarToolbar,
@@ -139,6 +140,7 @@ export default function GlobalCalendarPage() {
 
       <div className="flex min-h-0 flex-1 gap-4">
         <aside className="w-60 shrink-0 space-y-3 overflow-y-auto">
+          <CalendarConnectionCard />
           <section className="rounded-lg border bg-card p-3">
             <h2 className="mb-2 text-sm font-bold">專案</h2>
             {projects.length === 0 ? (

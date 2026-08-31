@@ -7,6 +7,7 @@ import { MemberPanel } from '@/components/calendar/member-panel'
 import { FindSlotPanel } from '@/components/calendar/find-slot-panel'
 import { EventDialog } from '@/components/calendar/event-dialog'
 import { ScheduleMeetingDialog } from '@/components/calendar/schedule-meeting-dialog'
+import { CalendarConnectionCard } from '@/components/calendar/connection-card'
 import {
   CalendarLegend,
   CalendarToolbar,
@@ -133,6 +134,7 @@ export default function ProjectCalendarPage({ params }: Props) {
     <div className="flex h-full min-h-0 gap-4">
       {/* 左欄：疊圖開關 + 找空檔 */}
       <aside className="w-64 shrink-0 space-y-3 overflow-y-auto">
+        <CalendarConnectionCard />
         <MemberPanel
           members={members}
           visible={visible}

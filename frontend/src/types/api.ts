@@ -302,3 +302,20 @@ export interface FreeSlotsResponse {
     syncState: CalendarSyncState
   }>
 }
+
+/** GET /calendar/connection：我的 Google Calendar 同步狀態。 */
+export interface CalendarConnectionResponse {
+  /** 後端有沒有設定 GOOGLE_CLIENT_ID/SECRET；false 表示整個同步功能停用 */
+  configured: boolean
+  connected: boolean
+  status: 'ACTIVE' | 'EXPIRED' | null
+  lastSyncedAt: string | null
+  lastSyncError: string | null
+}
+
+export interface CalendarSyncResult {
+  userId: number
+  synced: boolean
+  blockCount: number
+  error?: string
+}

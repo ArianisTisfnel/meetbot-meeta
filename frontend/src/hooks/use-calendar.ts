@@ -2,6 +2,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/lib/api-client'
 import type {
+  CalendarConnectionResponse,
+  CalendarSyncResult,
   CalendarMeetingDto,
   FreeSlotsResponse,
   GlobalCalendarResponse,
@@ -121,5 +123,33 @@ export function useCancelScheduledMeeting() {
       queryClient.invalidateQueries({ queryKey: ['calendar'] })
       queryClient.invalidateQueries({ queryKey: ['meetings'] })
     },
+  })
+}
+
+// ── Google Calendar 連結 ──────────────────────────────────────────────────────
+
+export function useCalendarConnection() {
+  return useQuery({
+    queryKey: ['calendar', 'connection'],
+    queryFn: () => apiClient.get<CalendarConnectionResponse>('/calendar/connection'),
+  })
+}
+
+/**
+ * 手動同步忙碌時段。成功後把行事曆查詢一併失效——同步的重點就是讓疊圖立刻更新。
+ */
+export function useSyncCalendar() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => apiClient.post<CalendarSyncResult>('/calendar/sync'),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['calendar'] }),
+  })
+}
+
+export function useDisconnectCalendar() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => apiClient.delete('/calendar/connection'),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['calendar'] }),
   })
 }

@@ -7,6 +7,10 @@ import {
   requireProjectViewAccess,
 } from './meeting.service.js'
 import { recordActivity } from './activity.service.js'
+import {
+  pushMeetingToGoogle,
+  removeMeetingFromGoogle,
+} from './calendar-sync.service.js'
 
 /**
  * 行事曆服務。
@@ -372,7 +376,26 @@ export async function scheduleMeeting(params: ScheduleMeetingParams) {
     targetLabel: name,
   })
 
-  return serializeMeeting(meeting)
+  // 寫回主辦人的 Google Calendar（由 Google 寄出邀請）。
+  // 刻意 await：使用者按下「排定」後就該看到最終結果（含 Google 生成的 Meet 連結），
+  // 而且 pushMeetingToGoogle 內部已吞掉所有錯誤，不會讓排定失敗。
+  await pushMeetingToGoogle({
+    id: meeting.id,
+    name: meeting.name,
+    scheduledStartAt: meeting.scheduledStartAt,
+    scheduledEndAt: meeting.scheduledEndAt,
+    timezone: meeting.timezone,
+    createdByUserId: meeting.createdByUserId,
+    gcalEventId: meeting.gcalEventId,
+    attendeeUserIds: meeting.attendees.map((a) => a.userId),
+  })
+
+  // 寫回可能補上了 gcalEventId 與 Meet 連結，重讀一次才不會回舊值
+  const fresh = await prisma.meetingInstance.findUnique({
+    where: { id: meeting.id },
+    include: { attendees: true },
+  })
+  return serializeMeeting(fresh ?? meeting)
 }
 
 /** 取回一筆排定會議並確認呼叫者有權管理它。 */
@@ -454,6 +477,18 @@ export async function updateMeetingSchedule(params: {
     })
   })
 
+  // 時間或與會者變了就同步更新 GCal（Google 會通知所有與會者）
+  await pushMeetingToGoogle({
+    id: updated.id,
+    name: updated.name,
+    scheduledStartAt: updated.scheduledStartAt,
+    scheduledEndAt: updated.scheduledEndAt,
+    timezone: updated.timezone,
+    createdByUserId: updated.createdByUserId,
+    gcalEventId: updated.gcalEventId,
+    attendeeUserIds: updated.attendees.map((a) => a.userId),
+  })
+
   return { ...serializeMeeting(updated), rsvpReset: Boolean(timeChanged) }
 }
 
@@ -478,6 +513,13 @@ export async function cancelScheduledMeeting(meetingId: string, userId: number) 
     data: { status: 'CANCELED' },
     include: { attendees: true },
   })
+
+  await removeMeetingFromGoogle({
+    id: updated.id,
+    createdByUserId: updated.createdByUserId,
+    gcalEventId: updated.gcalEventId,
+  })
+
   return serializeMeeting(updated)
 }
 
