@@ -795,11 +795,27 @@ async function dispatchQuestion(
 
 const CHITCHAT_FALLBACK = '我在喔！有什麼需要幫忙的，隨時叫我～'
 
+/**
+ * 蜜塔真實能力清單，塞進閒聊 prompt 當背景知識——不是要她背稿念出來，是不讓她自己腦補做不到的事。
+ * 範圍取自 reply-tags.ts 的五條發話路徑＋summary.service 的會後摘要。
+ *
+ * 為什麼要放進閒聊路徑：③ 規則已把「你還在嗎、你能做什麼」這類自我狀態問題分進 chitchat
+ * （interjection-prompts.ts），但這裡原本沒有任何背景知識，模型會順著使用者的話附和說
+ * 「可以幫你錄影」「可以寄信」——這兩個功能都不存在。
+ */
+const MEETA_CAPABILITIES =
+  '你真正能做的事：用語音或聊天室回答問題（查專案上傳的資料，或依本場會議逐字稿回答）、' +
+  '沒人叫你但問題沒人接時主動補充、冷場時開口暖場、會議結束後自動整理摘要。' +
+  '你不會錄影、不會寄信，也不能操作會議本身（靜音、邀請人、開關鏡頭等）——' +
+  '被問到做不到的事要老實說做不到，不要附和說可以。'
+
 async function answerChitchat(question: string): Promise<string> {
   try {
     const text = await completeText({
-      system:
+      system: [
         '你是在線的 AI 會議助理蜜塔（Meeta）。有人跟你寒暄或閒聊，請用一到兩句話友善回應，口語、繁體中文、40 字內。不要查資料、不要反問。',
+        MEETA_CAPABILITIES,
+      ].join('\n'),
       prompt: question,
       maxTokens: 100,
     })

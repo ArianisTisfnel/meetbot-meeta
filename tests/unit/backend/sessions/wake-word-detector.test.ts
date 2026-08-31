@@ -441,6 +441,24 @@ describe('回覆功能標籤（REPLY_TAGS）', () => {
     expect(chats.some((t) => t.startsWith('【閒聊】'))).toBe(true)
   })
 
+  // 回報問題 4：「你能不能幫我錄影」被 ③ 規則分進 chitchat 後，answerChitchat 若沒有能力清單
+  // 背景知識，模型會附和說可以——這裡只鎖住能力宣告字串本身還在，不斷言確切措辭。
+  it('閒聊路徑餵給 completeText 的 system 帶有蜜塔真實能力清單（不會腦補做不到的事）', async () => {
+    const session = makeSession()
+    ;(completeText as any)
+      .mockResolvedValueOnce('{"addressed":"address","question":"你能幫我錄影嗎","intent":"chitchat","interject":false}')
+      .mockResolvedValueOnce('我沒辦法錄影喔～')
+    await handleTranscriptSegment(session, {
+      segment_id: 'seg-capabilities',
+      text: '蜜塔，你能幫我錄影嗎',
+      speaker: 'A',
+      start_time: 1,
+      end_time: 2,
+    })
+    const chitchatCall = (completeText as any).mock.calls.find((c: any[]) => c[0].prompt === '你能幫我錄影嗎')
+    expect(chitchatCall[0].system).toContain('不會錄影')
+  })
+
   it('無知識庫 → 標【會議記錄】', async () => {
     const session = makeSession({ difyDatasetId: null })
     await handleChatMessage(session, {
