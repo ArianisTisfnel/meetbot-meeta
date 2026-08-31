@@ -20,7 +20,7 @@ import type { MeetingSession } from '../types/session.js'
 import type { ChatMessageEvent } from '../provider/types.js'
 
 // 意圖四分類的定義已移到 response-policy.ts（它現在是每輪語意決策的產出之一）。
-// 這裡 re-export 保持既有 import 路徑不變（scripts/eval-meeting.ts、單元測試）。
+// 這裡 re-export 保持既有 import 路徑不變（tests/unit/backend/sessions/wake-word-detector.test.ts）。
 export { parseIntent, routeForIntent, type QuestionIntent }
 
 /** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
@@ -474,19 +474,6 @@ export async function speakProactive(
 // 「你覺得這方案如何」直接丟 Dify RAG 會答「資料沒提到」→ 先判意圖再選資料來源。
 // 判斷本身在 response-policy.ts 的 decideTurn（與定址／插話同一次呼叫），
 // 本檔只負責「拿到 intent 之後要怎麼取答案」。分類失敗一律回退 factual（保持原行為）。
-
-/**
- * 單一問題的意圖分類。**線上不再用它**——線上的 intent 一律來自 decideTurn 的同一次
- * 呼叫（見 resolveAnswerRouted）。留著是給 `scripts/eval-meeting.ts --intent` 用的：
- * 那個評測要的正是「單看這個問題該走哪條路」，退化成只有一則的對話窗即可。
- */
-export async function classifyIntent(question: string, kbContentCard: string | null): Promise<QuestionIntent> {
-  const { intent } = await decideTurn({
-    window: [{ speaker: '參與者', text: question, source: 'voice', fromBot: false }],
-    kbContentCard,
-  })
-  return intent
-}
 
 // ── 問答路由 ───────────────────────────────────────────────────────────────────
 

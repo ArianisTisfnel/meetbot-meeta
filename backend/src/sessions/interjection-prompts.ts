@@ -7,7 +7,7 @@
  *      保證「線上跑的」與「評測的」永遠是同一版，不會抄寫走鐘
  *
  * ⚠️ 修改字串前，先跑 `npx tsx --env-file .env scripts/eval-interjection.ts --variant live`
- *    與 `scripts/eval-meeting.ts --address` 取得現行版基準，改完再跑一次比較。
+ *    與 `scripts/eval-meeting.ts --address --intent` 取得現行版基準，改完再跑一次比較。
  *    這份 prompt 現在同時餵這兩個評測（見 TURN_DECISION_SYSTEM 的說明）。
  */
 
