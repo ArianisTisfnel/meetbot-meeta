@@ -84,6 +84,37 @@ const FAILED_DECISION: TurnDecision = {
 }
 
 /**
+ * TurnDecision 的 JSON schema（小寫 JSON Schema；llm.ts 呼叫 Gemini 時會自動轉大寫）。
+ * 交給 completeText 的 responseSchema 在 API 層強制輸出形狀與列舉值，
+ * 取代原本寫在 TURN_DECISION_SYSTEM 裡「只回傳 JSON」的文字指示——
+ * 格式描述留在這裡，欄位語意（怎麼判斷）仍在 prompt 裡，兩者不重複。
+ */
+const TURN_DECISION_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    addressed: {
+      type: 'string',
+      enum: ['address', 'mention', 'none'],
+      description: '最後一則是不是在對蜜塔說話',
+    },
+    question: {
+      type: 'string',
+      description: '要回答的問題，忠實取自對話原文；沒有就是空字串',
+    },
+    intent: {
+      type: 'string',
+      enum: ['chitchat', 'factual', 'context', 'hybrid'],
+      description: '這個問題該去哪裡找答案',
+    },
+    interject: {
+      type: 'boolean',
+      description: '沒人叫蜜塔時，現在主動補充恰不恰當',
+    },
+  },
+  required: ['addressed', 'question', 'intent', 'interject'],
+}
+
+/**
  * 對「剛講完的這一輪」做一次語意決策。
  *
  * window 的**最後一則必須是要判斷的那一句**（格式與插話決策層完全相同，
@@ -104,6 +135,7 @@ export async function decideTurn(params: {
       maxTokens: 200,
       temperature: 0, // 判定要穩定：同一段對話必須永遠同一個結果
       purpose: 'interjection',
+      responseSchema: TURN_DECISION_SCHEMA,
     })
     return parseTurnDecision(raw)
   } catch (err) {

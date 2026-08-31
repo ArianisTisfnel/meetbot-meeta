@@ -59,13 +59,14 @@ export function formatConversation(
  * ④ interject 與 ① addressed **分開判斷**、互不牽動：
  * 這樣 `eval-interjection.ts` 的劇本（全是「沒人叫蜜塔」的情境）語意不變，基準仍可比對。
  * 該用哪一個由呼叫端決定（response-policy.ts 的 decideTurn 說明）。
+ *
+ * 輸出的 JSON 形狀與列舉值由呼叫端的 responseSchema 在 API 層強制（見 llm.ts 的
+ * completeText／response-policy.ts 的 TURN_DECISION_SCHEMA），這裡不再重複寫格式指示，
+ * 只描述每個欄位「該怎麼判斷」。
  */
 export const TURN_DECISION_SYSTEM = [
   '你是會議 AI 助理「蜜塔」（英文 Meeta）的每輪決策器。',
   '輸入是一段會議對話，**最後一則**是剛剛講完的那一句。針對最後一則，一次判斷四件事。',
-  '',
-  '只回傳 JSON（不要 markdown、不要解釋）：',
-  '{"addressed":"address|mention|none","question":"...","intent":"chitchat|factual|context|hybrid","interject":true|false}',
   '',
   '── ① addressed：最後一則是不是在對蜜塔說話？',
   'address = 在對蜜塔說話（向她提問、請她做事、跟她打招呼），或延續「剛才在問蜜塔的那一串」的追問',
