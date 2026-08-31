@@ -29,14 +29,26 @@ function welcomeMessage(difyDatasetId: string | null): string {
 // ── 知識庫內容卡 ──────────────────────────────────────────────────────────────
 //
 // 把專案內「已索引完成」文件的摘要卡（indexing-poller 產生的 contentCard）
-// 組成清單掛在 session 上。意圖分類器（classifyIntent）靠它判斷問題是否
-// 與知識庫相關，避免「今年銷售多少」在知識庫沒有銷售資料時仍被分成 factual。
-// 摘要卡還沒產出來時（poller 尚未跑到）退回只列文件名稱。
+// 組成清單掛在 session 上。意圖分類（decideTurn 的 ③ 規則，見 interjection-prompts.ts）
+// 靠它判斷問題是否與知識庫相關，避免「今年銷售多少」在知識庫沒有銷售資料時仍被分成 factual。
 
 /** 注入分類器 prompt 的內容卡總長上限（字元）。 */
 const KB_CARD_MAX_CHARS = 2000
 
-async function loadKbContentCard(session: MeetingSession, difyDatasetId: string): Promise<void> {
+/**
+ * 單一文件的內容卡行。純函式，可測。
+ *
+ * contentCard 有三態（indexing-poller.ts）：真摘要／`''`（已嘗試但抽不出內容，例如掃描檔，
+ * 不會再重試）／`null`（poller 還沒跑到，之後會補產生）。過去後兩者被印成同一行「【檔名】」，
+ * 分類器只能從檔名瞎猜涵蓋範圍——這裡把「涵蓋範圍未知」講清楚，不讓模型誤以為檔名就是全部資訊。
+ */
+export function formatContentCardLine(material: { displayName: string; contentCard: string | null }): string {
+  if (material.contentCard) return `【${material.displayName}】${material.contentCard}`
+  const reason = material.contentCard === '' ? '已嘗試產生摘要但抽不出內容（可能是掃描檔或圖片）' : '摘要尚未產生'
+  return `【${material.displayName}】（${reason}，涵蓋範圍未知）`
+}
+
+export async function loadKbContentCard(session: MeetingSession, difyDatasetId: string): Promise<void> {
   try {
     const materials = await prisma.material.findMany({
       where: { project: { difyDatasetId }, indexingStatus: 'COMPLETED', deletedAt: null },
@@ -44,9 +56,10 @@ async function loadKbContentCard(session: MeetingSession, difyDatasetId: string)
       orderBy: { uploadedAt: 'desc' },
       take: 30,
     })
-    const lines = materials.map((m) =>
-      m.contentCard ? `【${m.displayName}】${m.contentCard}` : `【${m.displayName}】`,
-    )
+    // 有真摘要的文件排前面：KB_CARD_MAX_CHARS 截斷時，真正有用的摘要不該被排在前面的
+    // 「涵蓋範圍未知」佔位行擠掉。同組內維持原本的 uploadedAt desc。
+    const sorted = [...materials].sort((a, b) => Number(Boolean(b.contentCard)) - Number(Boolean(a.contentCard)))
+    const lines = sorted.map(formatContentCardLine)
     session.kbContentCard = lines.length ? lines.join('\n').slice(0, KB_CARD_MAX_CHARS) : null
     logger.info(
       {
