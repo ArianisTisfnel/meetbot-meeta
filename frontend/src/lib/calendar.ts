@@ -47,6 +47,8 @@ export interface CalendarEvent {
   meetUrl?: string
   /** 時間到時自動派蜜塔進去 */
   botAutoJoin?: boolean
+  /** 我是不是與會者；不是的話沒有 meetUrl，也不該顯示加入入口 */
+  isParticipant?: boolean
 }
 
 export interface TimeSlot {

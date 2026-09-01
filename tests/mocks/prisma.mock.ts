@@ -67,4 +67,25 @@ export const mockPrisma = {
     delete: vi.fn(),
     count: vi.fn(),
   },
+  meetingAttendee: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    createMany: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  calendarConnection: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+    update: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  busyBlock: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
 }

@@ -89,6 +89,11 @@ export function EventDialog({
                   <span className="min-w-0 flex-1 truncate font-medium">加入 Google Meet</span>
                   <span className="shrink-0 text-muted-foreground">開啟 ↗</span>
                 </a>
+              ) : event.isParticipant === false ? (
+                <p className="rounded-md bg-muted px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  你不在這場會議的與會者名單中，因此看不到加入連結。
+                  需要參加的話請主辦人把你加進與會者。
+                </p>
               ) : (
                 <p className="rounded-md bg-muted px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
                   這場會議沒有 Meet 連結。連結是排定時由 Google Calendar 產生的——

@@ -53,6 +53,7 @@ export function toMeetingEvent(dto: CalendarMeetingDto): CalendarEvent | null {
     canceled: dto.status === 'CANCELED',
     meetUrl: dto.googleMeetUrl || undefined,
     botAutoJoin: dto.botAutoJoin,
+    isParticipant: dto.isParticipant,
   }
 }
 

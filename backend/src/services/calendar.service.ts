@@ -120,7 +120,7 @@ export async function getProjectCalendar(
 
   return {
     members,
-    meetings: meetings.map(serializeMeeting),
+    meetings: meetings.map((m) => serializeMeeting(m, userId)),
     busyBlocks: busyBlocks.map((b) => ({
       id: b.id,
       userId: b.userId,
@@ -130,7 +130,14 @@ export async function getProjectCalendar(
   }
 }
 
-/** 會議序列化：行事曆只需要排程資訊與 RSVP，逐字稿／摘要不在這裡回。 */
+/**
+ * 會議序列化：行事曆只需要排程資訊與 RSVP，逐字稿／摘要不在這裡回。
+ *
+ * viewerUserId 有給時，**非與會者拿不到 Meet 連結**。主辦挑了與會者，就代表
+ * 其他人不該進這場會——把連結一併發給整個專案等於那份挑選沒有意義。
+ * 會議本身仍然回傳：它佔著那些人的時間，對「誰有空」的判斷有用，
+ * 藏起來反而會讓行事曆說謊。
+ */
 function serializeMeeting(meeting: {
   id: string
   projectId: string | null
@@ -143,12 +150,19 @@ function serializeMeeting(meeting: {
   createdByUserId: number
   botAutoJoin: boolean
   attendees: Array<{ userId: number; rsvp: RsvpStatus; respondedAt: Date | null }>
-}) {
+}, viewerUserId?: number) {
+  const isParticipant =
+    viewerUserId === undefined ||
+    meeting.createdByUserId === viewerUserId ||
+    meeting.attendees.some((a) => a.userId === viewerUserId)
+
   return {
     id: meeting.id,
     projectId: meeting.projectId,
     name: meeting.name,
-    googleMeetUrl: meeting.googleMeetUrl,
+    googleMeetUrl: isParticipant ? meeting.googleMeetUrl : '',
+    /** 我是不是這場會議的與會者（決定看不看得到連結） */
+    isParticipant,
     status: meeting.status,
     scheduledStartAt: meeting.scheduledStartAt?.toISOString() ?? null,
     scheduledEndAt: meeting.scheduledEndAt?.toISOString() ?? null,
@@ -206,7 +220,7 @@ export async function getGlobalCalendar(userId: number, range: CalendarRange) {
   return {
     people: people.map((u) => ({ userId: u.id, name: u.name, email: u.email })),
     meetings: meetings.map((m) => ({
-      ...serializeMeeting(m),
+      ...serializeMeeting(m, userId),
       projectName: m.project?.name ?? null,
     })),
     busyBlocks: busyBlocks.map((b) => ({

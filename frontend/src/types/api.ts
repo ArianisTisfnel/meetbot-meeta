@@ -265,6 +265,8 @@ export interface CalendarMeetingDto {
   createdByUserId: number
   /** 時間到時自動派蜜塔進去 */
   botAutoJoin: boolean
+  /** 我是不是這場會議的與會者。false 時後端不會給 googleMeetUrl */
+  isParticipant: boolean
   attendees: CalendarAttendeeDto[]
 }
 
