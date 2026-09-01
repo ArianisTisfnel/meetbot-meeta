@@ -161,7 +161,17 @@ export type PaginatedActivity = PaginatedResponse<ActivityItem>
 
 // ── 會議 ─────────────────────────────────────────────
 
-export type MeetingStatus = 'PENDING' | 'ACTIVE' | 'ENDED' | 'FAILED'
+/**
+ * 蜜塔（Bot）的加入狀態，外加行事曆帶來的兩個會議層級狀態：
+ * SCHEDULED = 已排入行事曆、蜜塔還沒進去；CANCELED = 這場會不開了。
+ */
+export type MeetingStatus =
+  | 'SCHEDULED'
+  | 'PENDING'
+  | 'ACTIVE'
+  | 'ENDED'
+  | 'FAILED'
+  | 'CANCELED'
 
 export interface ActionItem {
   task: string
@@ -177,6 +187,8 @@ export interface MeetingListItem {
   projectName?: string | null
   startedAt: string | null
   endedAt: string | null
+  /** 行事曆排定的開始時間；SCHEDULED 的會議還沒有 startedAt，時間欄靠這個 */
+  scheduledStartAt?: string | null
   /** 目前使用者是否可刪除此會議（專案會議＝擁有者、全局會議＝建立者）。 */
   canDelete: boolean
   createdAt: string

@@ -506,6 +506,8 @@ export async function listMeetings(userId: number, params: ListMeetingsParams = 
       projectName: m.project?.name ?? null,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      // 排定時間：SCHEDULED 的會議還沒 startedAt，列表要靠這個顯示「什麼時候開」
+      scheduledStartAt: m.scheduledStartAt ?? null,
       // 刪除權：專案會議看擁有者、全局會議看建立者
       canDelete: m.projectId
         ? m.project?.ownerUserId === userId
@@ -561,6 +563,7 @@ export async function listProjectMeetings(
       status: m.status,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      scheduledStartAt: m.scheduledStartAt ?? null,
       canDelete,
       createdAt: m.createdAt,
     })),

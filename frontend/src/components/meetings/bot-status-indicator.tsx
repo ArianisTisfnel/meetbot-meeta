@@ -8,6 +8,12 @@ const STATUS_CONFIG: Record<
   MeetingStatus,
   { dot: string; label: string; color: string; hint: string }
 > = {
+  SCHEDULED: {
+    dot: 'bg-honey/50',
+    label: '已排定',
+    color: 'text-honey-deep',
+    hint: '會議已排入行事曆，蜜塔還沒加入。若排定時勾了「讓蜜塔加入」，開始前 2 分鐘會自動進去；否則可按右側「邀請蜜塔」。',
+  },
   PENDING: {
     dot: 'bg-honey animate-pulse motion-reduce:animate-none',
     label: '蜜塔加入中',
@@ -31,6 +37,12 @@ const STATUS_CONFIG: Record<
     label: '蜜塔加入失敗',
     color: 'text-destructive',
     hint: '蜜塔未能進入會議。常見原因：Google Meet 限制訪客加入、或候客室未放行。點進去可看詳情並重新邀請。',
+  },
+  CANCELED: {
+    dot: 'bg-muted-foreground/40',
+    label: '已取消',
+    color: 'text-muted-foreground',
+    hint: '這場會議已取消，不會發生，也不列入忙碌判斷。',
   },
 }
 
