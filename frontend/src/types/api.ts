@@ -185,7 +185,10 @@ export interface MeetingListItem {
 export interface MeetingDetail {
   id: string
   name: string
+  /** 非與會者拿不到（後端回空字串），見 isParticipant */
   googleMeetUrl: string
+  /** 我是不是這場會議的與會者。會議沒有與會者名單時一律為 true。 */
+  isParticipant: boolean
   status: MeetingStatus
   projectId?: string | null
   projectName?: string | null

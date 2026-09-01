@@ -2,6 +2,7 @@ import type { RsvpStatus } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { AppError } from '../middleware/error-handler.js'
 import { findFreeSlots, type Interval } from '../lib/free-slots.js'
+import { canSeeJoinLink } from '../lib/meeting-access.js'
 import {
   requireProjectMeetingAccess,
   requireProjectViewAccess,
@@ -153,8 +154,11 @@ function serializeMeeting(meeting: {
 }, viewerUserId?: number) {
   const isParticipant =
     viewerUserId === undefined ||
-    meeting.createdByUserId === viewerUserId ||
-    meeting.attendees.some((a) => a.userId === viewerUserId)
+    canSeeJoinLink({
+      viewerUserId,
+      createdByUserId: meeting.createdByUserId,
+      attendeeUserIds: meeting.attendees.map((a) => a.userId),
+    })
 
   return {
     id: meeting.id,

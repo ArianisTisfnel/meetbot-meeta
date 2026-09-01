@@ -4,6 +4,7 @@ import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
 import { startBotSession, closeSession, handleSessionClose } from '../sessions/session-manager.js'
 import { recordActivity } from './activity.service.js'
+import { canSeeJoinLink, visibleJoinUrl } from '../lib/meeting-access.js'
 
 // ── Permission helpers ────────────────────────────────────────────────────────
 
@@ -482,7 +483,11 @@ export async function listMeetings(userId: number, params: ListMeetingsParams = 
       orderBy: { createdAt: order },
       skip: (page - 1) * perPage,
       take: perPage,
-      include: { project: { select: { name: true, ownerUserId: true } } },
+      include: {
+        project: { select: { name: true, ownerUserId: true } },
+        // 加入連結只給與會者，故需要名單
+        attendees: { select: { userId: true } },
+      },
     }),
     prisma.meetingInstance.count({ where }),
   ])
@@ -491,7 +496,11 @@ export async function listMeetings(userId: number, params: ListMeetingsParams = 
     items: items.map((m) => ({
       id: m.id,
       name: m.name,
-      googleMeetUrl: m.googleMeetUrl,
+      googleMeetUrl: visibleJoinUrl(m.googleMeetUrl, {
+        viewerUserId: userId,
+        createdByUserId: m.createdByUserId,
+        attendeeUserIds: m.attendees.map((a) => a.userId),
+      }),
       status: m.status,
       projectId: m.projectId ?? null,
       projectName: m.project?.name ?? null,
@@ -533,6 +542,7 @@ export async function listProjectMeetings(
       orderBy: { createdAt: order },
       skip: (page - 1) * perPage,
       take: perPage,
+      include: { attendees: { select: { userId: true } } },
     }),
     prisma.meetingInstance.count({ where }),
   ])
@@ -543,7 +553,11 @@ export async function listProjectMeetings(
     items: items.map((m) => ({
       id: m.id,
       name: m.name,
-      googleMeetUrl: m.googleMeetUrl,
+      googleMeetUrl: visibleJoinUrl(m.googleMeetUrl, {
+        viewerUserId: userId,
+        createdByUserId: m.createdByUserId,
+        attendeeUserIds: m.attendees.map((a) => a.userId),
+      }),
       status: m.status,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
@@ -559,7 +573,10 @@ export async function listProjectMeetings(
 export async function getMeeting(meetingId: string, userId: number) {
   const meeting = await prisma.meetingInstance.findUnique({
     where: { id: meetingId },
-    include: { project: { select: { name: true, ownerUserId: true, members: { where: { userId } } } } },
+    include: {
+      project: { select: { name: true, ownerUserId: true, members: { where: { userId } } } },
+      attendees: { select: { userId: true } },
+    },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
 
@@ -579,10 +596,17 @@ export async function getMeeting(meetingId: string, userId: number) {
     select: { name: true },
   })
 
+  const isParticipant = canSeeJoinLink({
+    viewerUserId: userId,
+    createdByUserId: meeting.createdByUserId,
+    attendeeUserIds: meeting.attendees.map((a) => a.userId),
+  })
+
   return {
     id: meeting.id,
     name: meeting.name,
-    googleMeetUrl: meeting.googleMeetUrl,
+    googleMeetUrl: isParticipant ? meeting.googleMeetUrl : '',
+    isParticipant,
     status: meeting.status,
     projectId: meeting.projectId ?? null,
     projectName: meeting.project?.name ?? null,
@@ -612,6 +636,7 @@ export async function getProjectMeeting(
 
   const meeting = await prisma.meetingInstance.findUnique({
     where: { id: meetingId, projectId },
+    include: { attendees: { select: { userId: true } } },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
 
@@ -620,10 +645,17 @@ export async function getProjectMeeting(
     select: { name: true },
   })
 
+  const isParticipant = canSeeJoinLink({
+    viewerUserId: userId,
+    createdByUserId: meeting.createdByUserId,
+    attendeeUserIds: meeting.attendees.map((a) => a.userId),
+  })
+
   return {
     id: meeting.id,
     name: meeting.name,
-    googleMeetUrl: meeting.googleMeetUrl,
+    googleMeetUrl: isParticipant ? meeting.googleMeetUrl : '',
+    isParticipant,
     status: meeting.status,
     createdBy: { userId: meeting.createdByUserId, name: creator?.name ?? null },
     startedAt: meeting.startedAt ?? null,
