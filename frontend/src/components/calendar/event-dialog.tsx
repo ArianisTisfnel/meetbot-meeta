@@ -7,6 +7,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { formatTime, type CalendarEvent, type CalendarMember, type RsvpStatus } from '@/lib/calendar'
 import type { RsvpStatus as RsvpDto } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -35,6 +36,8 @@ interface Props {
   /** 有權管理這場會議（主辦／具 canMeeting）才給取消 */
   canManage?: boolean
   onCancel?: (meetingId: string) => void
+  /** 切換「時間到時讓蜜塔加入」 */
+  onToggleBot?: (meetingId: string, botAutoJoin: boolean) => void
   isPending?: boolean
 }
 
@@ -46,6 +49,7 @@ export function EventDialog({
   onRespond,
   canManage,
   onCancel,
+  onToggleBot,
   isPending,
 }: Props) {
   if (!event) return null
@@ -72,6 +76,49 @@ export function EventDialog({
 
         <div className="space-y-3 text-sm">
           <p className="tabular-nums text-muted-foreground">{dateLabel}</p>
+
+          {event.kind === 'meeting' && !event.canceled && (
+            <>
+              {event.meetUrl ? (
+                <a
+                  href={event.meetUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-2 text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span className="min-w-0 flex-1 truncate font-medium">加入 Google Meet</span>
+                  <span className="shrink-0 text-muted-foreground">開啟 ↗</span>
+                </a>
+              ) : (
+                <p className="rounded-md bg-muted px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  這場會議沒有 Meet 連結。連結是排定時由 Google Calendar 產生的——
+                  主辦人未連結 Google Calendar 就不會有。
+                </p>
+              )}
+
+              <label
+                className={cn(
+                  'flex items-start gap-2 rounded-md border p-2.5',
+                  canManage && onToggleBot ? 'cursor-pointer' : 'opacity-70',
+                )}
+              >
+                <Checkbox
+                  checked={event.botAutoJoin ?? false}
+                  disabled={!canManage || !onToggleBot || isPending}
+                  onCheckedChange={(checked) => onToggleBot?.(event.id, checked)}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-medium">時間到時讓蜜塔加入</span>
+                  <span className="block text-[11px] leading-relaxed text-muted-foreground">
+                    {event.botAutoJoin
+                      ? '會議開始前會自動派蜜塔進去做逐字稿與摘要。'
+                      : '目前不會自動加入；需要的話勾起來，或到會議頁手動邀請。'}
+                  </span>
+                </span>
+              </label>
+            </>
+          )}
 
           {event.canceled && (
             <p className="rounded-md bg-muted px-2.5 py-1.5 text-xs text-muted-foreground">

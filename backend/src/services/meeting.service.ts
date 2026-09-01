@@ -263,6 +263,7 @@ export async function deleteMeeting(
       transcriptStoragePath: true,
       projectId: true,
       createdByUserId: true,
+      gcalEventId: true,
     },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
@@ -286,6 +287,20 @@ export async function deleteMeeting(
     const { deleteFile } = await import('../lib/storage.js')
     await deleteFile(meeting.transcriptStoragePath).catch((err: unknown) =>
       logger.warn({ err, meetingId }, 'deleteMeeting: failed to delete transcript storage file'),
+    )
+  }
+
+  // 刪掉本系統的紀錄前，先把寫回 Google Calendar 的事件也移除。
+  // 「取消會議」有做這件事，硬刪除原本漏了——結果是會議在蜜塔裡消失，
+  // 卻永遠留在所有與會者的 Google 日曆上，而且再也沒有 gcalEventId 可以對應回去。
+  if (meeting.gcalEventId) {
+    const { removeMeetingFromGoogle } = await import('./calendar-sync.service.js')
+    await removeMeetingFromGoogle({
+      id: meeting.id,
+      createdByUserId: meeting.createdByUserId,
+      gcalEventId: meeting.gcalEventId,
+    }).catch((err: unknown) =>
+      logger.warn({ err, meetingId }, 'deleteMeeting: 移除 GCal 事件失敗，繼續刪除本地紀錄'),
     )
   }
 

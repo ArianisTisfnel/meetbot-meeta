@@ -82,6 +82,7 @@ export interface ScheduleMeetingInput {
   scheduledEndAt: Date
   attendeeUserIds: number[]
   googleMeetUrl?: string
+  botAutoJoin: boolean
 }
 
 export function useScheduleMeeting(projectId: string) {
@@ -96,12 +97,23 @@ export function useScheduleMeeting(projectId: string) {
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         attendeeUserIds: input.attendeeUserIds,
         googleMeetUrl: input.googleMeetUrl ?? null,
+        botAutoJoin: input.botAutoJoin,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['calendar'] })
       // 會議列表也會多一筆 SCHEDULED
       queryClient.invalidateQueries({ queryKey: ['meetings'] })
     },
+  })
+}
+
+/** 更新已排定會議（目前用於切換「讓蜜塔加入」）。 */
+export function useUpdateMeetingSchedule() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ meetingId, botAutoJoin }: { meetingId: string; botAutoJoin: boolean }) =>
+      apiClient.patch<CalendarMeetingDto>(`/calendar/meetings/${meetingId}`, { botAutoJoin }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['calendar'] }),
   })
 }
 

@@ -18,6 +18,7 @@ import {
   useFindFreeSlots,
   useProjectCalendar,
   useRespondRsvp,
+  useUpdateMeetingSchedule,
 } from '@/hooks/use-calendar'
 import { useMe } from '@/hooks/use-me'
 import {
@@ -54,6 +55,7 @@ export default function ProjectCalendarPage({ params }: Props) {
   const findSlots = useFindFreeSlots(projectId)
   const respond = useRespondRsvp()
   const cancelMeeting = useCancelScheduledMeeting()
+  const updateSchedule = useUpdateMeetingSchedule()
   const { data: me } = useMe()
 
   const members = useMemo(() => (data?.members ?? []).map(toMember), [data])
@@ -223,7 +225,7 @@ export default function ProjectCalendarPage({ params }: Props) {
         members={members}
         currentUserId={me?.userId}
         canManage
-        isPending={respond.isPending || cancelMeeting.isPending}
+        isPending={respond.isPending || cancelMeeting.isPending || updateSchedule.isPending}
         onOpenChange={(open) => !open && setOpenEvent(null)}
         onRespond={async (meetingId, rsvp) => {
           try {
@@ -232,6 +234,15 @@ export default function ProjectCalendarPage({ params }: Props) {
             setOpenEvent(null)
           } catch (err: any) {
             toast.error(err?.message ?? '回覆失敗')
+          }
+        }}
+        onToggleBot={async (meetingId, botAutoJoin) => {
+          try {
+            await updateSchedule.mutateAsync({ meetingId, botAutoJoin })
+            toast.success(botAutoJoin ? '時間到時蜜塔會自動加入' : '已取消蜜塔自動加入')
+            setOpenEvent(null)
+          } catch (err: any) {
+            toast.error(err?.message ?? '更新失敗')
           }
         }}
         onCancel={async (meetingId) => {

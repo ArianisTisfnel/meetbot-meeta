@@ -43,7 +43,10 @@ export interface CalendarEvent {
   projectName?: string
   /** 已取消的會議：畫成刪除線樣式，且不佔忙碌判斷 */
   canceled?: boolean
-  location?: string
+  /** 會議的 Google Meet 連結（GCal 寫回時由 Google 產生） */
+  meetUrl?: string
+  /** 時間到時自動派蜜塔進去 */
+  botAutoJoin?: boolean
 }
 
 export interface TimeSlot {

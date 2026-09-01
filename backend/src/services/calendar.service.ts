@@ -141,6 +141,7 @@ function serializeMeeting(meeting: {
   scheduledEndAt: Date | null
   timezone: string | null
   createdByUserId: number
+  botAutoJoin: boolean
   attendees: Array<{ userId: number; rsvp: RsvpStatus; respondedAt: Date | null }>
 }) {
   return {
@@ -153,6 +154,7 @@ function serializeMeeting(meeting: {
     scheduledEndAt: meeting.scheduledEndAt?.toISOString() ?? null,
     timezone: meeting.timezone,
     createdByUserId: meeting.createdByUserId,
+    botAutoJoin: meeting.botAutoJoin,
     attendees: meeting.attendees.map((a) => ({
       userId: a.userId,
       rsvp: a.rsvp,
@@ -318,6 +320,8 @@ export interface ScheduleMeetingParams {
   timezone?: string | null
   googleMeetUrl?: string | null
   attendeeUserIds: number[]
+  /** 時間到時要不要自動派蜜塔進去 */
+  botAutoJoin?: boolean
 }
 
 function assertSchedule(start: Date, end: Date): void {
@@ -355,6 +359,7 @@ export async function scheduleMeeting(params: ScheduleMeetingParams) {
       googleMeetUrl: params.googleMeetUrl ?? '',
       status: 'SCHEDULED',
       createdByUserId: userId,
+      botAutoJoin: params.botAutoJoin ?? false,
       scheduledStartAt,
       scheduledEndAt,
       timezone: params.timezone ?? null,
@@ -421,6 +426,7 @@ export async function updateMeetingSchedule(params: {
   scheduledStartAt?: Date
   scheduledEndAt?: Date
   attendeeUserIds?: number[]
+  botAutoJoin?: boolean
 }) {
   const { meetingId, userId } = params
   const meeting = await requireManageableMeeting(meetingId, userId)
@@ -472,6 +478,9 @@ export async function updateMeetingSchedule(params: {
         ...(params.name !== undefined ? { name: params.name } : {}),
         ...(params.scheduledStartAt ? { scheduledStartAt: params.scheduledStartAt } : {}),
         ...(params.scheduledEndAt ? { scheduledEndAt: params.scheduledEndAt } : {}),
+        ...(params.botAutoJoin !== undefined ? { botAutoJoin: params.botAutoJoin } : {}),
+        // 改了時間就把派送標記清掉，讓排程器依新時間重新判斷
+        ...(timeChanged ? { botDispatchedAt: null } : {}),
       },
       include: { attendees: true },
     })

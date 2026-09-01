@@ -53,6 +53,7 @@ export function ScheduleMeetingDialog({
   const [time, setTime] = useState('')
   const [duration, setDuration] = useState(60)
   const [attendees, setAttendees] = useState<Set<string>>(new Set())
+  const [botAutoJoin, setBotAutoJoin] = useState(false)
 
   // 每次開啟都重新帶入預設值：帶著上一次的殘留值開啟，比空白更容易讓人排錯時間
   useEffect(() => {
@@ -73,6 +74,8 @@ export function ScheduleMeetingDialog({
         : 60,
     )
     setAttendees(new Set(presetMemberIds ?? members.map((m) => m.id)))
+    // 預設不勾：蜜塔進會議是按分鐘計費的，該由排會議的人明確決定
+    setBotAutoJoin(false)
   }, [open, presetSlot, presetMemberIds, members])
 
   const toggleAttendee = (id: string) =>
@@ -101,6 +104,7 @@ export function ScheduleMeetingDialog({
         scheduledStartAt: start,
         scheduledEndAt: end,
         attendeeUserIds: [...attendees].map(Number),
+        botAutoJoin,
       })
       toast.success('會議已排定', {
         description: `${start.getMonth() + 1}/${start.getDate()} ${formatTime(start)}–${formatTime(end)}`,
@@ -212,6 +216,20 @@ export function ScheduleMeetingDialog({
               ))}
             </ul>
           </div>
+
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border bg-muted/40 p-2.5">
+            <Checkbox
+              checked={botAutoJoin}
+              onCheckedChange={setBotAutoJoin}
+              className="mt-0.5"
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">讓蜜塔加入這場會議</span>
+              <span className="block text-[11px] leading-relaxed text-muted-foreground">
+                會議開始前自動派蜜塔進去做逐字稿與摘要。之後仍可在會議詳情裡改。
+              </span>
+            </span>
+          </label>
         </div>
 
         <DialogFooter>

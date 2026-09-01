@@ -37,6 +37,7 @@ const scheduleSchema = z.object({
   timezone: z.string().optional().nullable(),
   googleMeetUrl: z.string().optional().nullable(),
   attendeeUserIds: z.array(z.number().int()).default([]),
+  botAutoJoin: z.boolean().default(false),
 })
 
 const updateScheduleSchema = z.object({
@@ -44,6 +45,7 @@ const updateScheduleSchema = z.object({
   scheduledStartAt: isoDate.optional(),
   scheduledEndAt: isoDate.optional(),
   attendeeUserIds: z.array(z.number().int()).optional(),
+  botAutoJoin: z.boolean().optional(),
 })
 
 const rsvpSchema = z.object({
@@ -104,6 +106,7 @@ app.post('/projects/:projectId/calendar/meetings', async (c) => {
     timezone: parsed.timezone,
     googleMeetUrl: parsed.googleMeetUrl,
     attendeeUserIds: parsed.attendeeUserIds,
+    botAutoJoin: parsed.botAutoJoin,
   })
   return c.json(result, 201)
 })
@@ -121,6 +124,7 @@ app.patch('/calendar/meetings/:meetingId', async (c) => {
     scheduledStartAt: parsed.scheduledStartAt ? new Date(parsed.scheduledStartAt) : undefined,
     scheduledEndAt: parsed.scheduledEndAt ? new Date(parsed.scheduledEndAt) : undefined,
     attendeeUserIds: parsed.attendeeUserIds,
+    botAutoJoin: parsed.botAutoJoin,
   })
   return c.json(result)
 })

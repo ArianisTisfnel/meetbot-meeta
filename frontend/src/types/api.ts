@@ -263,6 +263,8 @@ export interface CalendarMeetingDto {
   scheduledEndAt: string | null
   timezone: string | null
   createdByUserId: number
+  /** 時間到時自動派蜜塔進去 */
+  botAutoJoin: boolean
   attendees: CalendarAttendeeDto[]
 }
 

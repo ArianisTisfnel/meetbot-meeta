@@ -198,6 +198,12 @@ model MeetingInstance {
   timezone              String?
   /// 寫回 Google Calendar 後的事件 id，供後續更新／取消時對應同一筆 GCal 事件。
   gcalEventId           String?       @map("gcal_event_id")
+  /// 時間到時要不要自動派蜜塔進去。不是每場會議都需要她（一對一、對外會議就不用），
+  /// 而且 Recall 按 bot 分鐘計費，預設全進去會燒掉額度，所以由排會議的人明確勾選。
+  botAutoJoin           Boolean       @default(false) @map("bot_auto_join")
+  /// 排程器實際派出蜜塔的時間。用它當冪等標記：有值就不再派第二次，
+  /// 避免 poller 每輪都重複派、或後端重啟後又派一次。
+  botDispatchedAt       DateTime?     @map("bot_dispatched_at")
   createdAt             DateTime      @default(now()) @map("created_at")
   updatedAt             DateTime      @updatedAt @map("updated_at")
 

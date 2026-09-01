@@ -90,6 +90,9 @@ const envSchema = z.object({
   CALENDAR_SYNC_DAYS_AHEAD: z.coerce.number().default(35),
   // 背景同步間隔（分鐘）。設 0 關閉排程，只留手動同步。
   CALENDAR_SYNC_INTERVAL_MINUTES: z.coerce.number().default(15),
+  // 檢查「排定的會議是否該派蜜塔進去」的間隔（秒）。設 0 關閉自動加入。
+  // 要比行事曆同步頻繁得多——它決定蜜塔會不會準時到。
+  MEETING_DISPATCH_INTERVAL_SECONDS: z.coerce.number().default(60),
   INTERNAL_AUTH_SECRET: z.string().min(16).optional(),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),
