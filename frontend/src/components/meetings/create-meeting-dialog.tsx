@@ -133,15 +133,36 @@ export function CreateMeetingDialog(props: Props) {
         throw new Error(`Calendar API 錯誤（${res.status}）`)
       }
       const event = await res.json()
+      const eventId: string | undefined = event.id
       const link: string | undefined =
         event.hangoutLink ??
         event.conferenceData?.entryPoints?.find((p: any) => p.entryPointType === 'video')?.uri
-      if (!link) throw new Error('Google 未回傳 Meet 連結')
+
+      // Meet 連結一旦生成即獨立於日曆事件存活 → 用完就刪事件，日曆零殘留
+      //（成功與失敗路徑都刪；fire-and-forget，刪失敗不影響開會）
+      const deleteEvent = () => {
+        if (!eventId) return
+        void fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
+          { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } }
+        ).catch(() => {})
+      }
+
+      if (!link) {
+        deleteEvent()
+        throw new Error('Google 未回傳 Meet 連結')
+      }
 
       setMeetUrl(link)
-      await handleSubmit(link) // 建會議＋派蜜塔（失敗會 throw，不會開空會議室）
+      try {
+        await handleSubmit(link) // 建會議＋派蜜塔（失敗會 throw，不會開空會議室）
+      } catch (err) {
+        deleteEvent()
+        throw err
+      }
       if (win) win.location.replace(link)
       else toast.info(`彈出視窗被攔截，請手動開啟：${link}`, { duration: 10000 })
+      deleteEvent()
     } catch (err: any) {
       win?.close()
       toast.error(err?.message ?? '一鍵建立失敗，可改用手動貼連結')
