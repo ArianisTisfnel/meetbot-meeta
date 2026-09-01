@@ -38,3 +38,40 @@ describe('buildGeminiGenerationConfig — thinkingConfig 分流', () => {
     })
   })
 })
+
+/**
+ * 回歸測試：responseSchema 強制輸出結構化 JSON。
+ * Gemini 的 responseSchema 用大寫 Type 列舉（OBJECT/STRING/...），呼叫端統一寫小寫
+ * JSON Schema，這裡驗證轉換不漏欄位、且 enum/required/description 原樣透傳。
+ */
+describe('buildGeminiGenerationConfig — responseSchema 轉換', () => {
+  it('遞迴把 type 轉大寫，properties／items 都要轉；enum/required 原樣保留', () => {
+    const cfg = buildGeminiGenerationConfig({
+      model: 'gemini-2.5-flash',
+      maxTokens: 200,
+      responseSchema: {
+        type: 'object',
+        properties: {
+          intent: { type: 'string', enum: ['a', 'b'] },
+          tags: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['intent'],
+      },
+    })
+    expect(cfg.responseMimeType).toBe('application/json')
+    expect(cfg.responseSchema).toEqual({
+      type: 'OBJECT',
+      properties: {
+        intent: { type: 'STRING', enum: ['a', 'b'] },
+        tags: { type: 'ARRAY', items: { type: 'STRING' } },
+      },
+      required: ['intent'],
+    })
+  })
+
+  it('未給 responseSchema 就不帶 responseMimeType/responseSchema', () => {
+    const cfg = buildGeminiGenerationConfig({ model: 'gemini-2.5-flash', maxTokens: 200 })
+    expect(cfg).not.toHaveProperty('responseMimeType')
+    expect(cfg).not.toHaveProperty('responseSchema')
+  })
+})

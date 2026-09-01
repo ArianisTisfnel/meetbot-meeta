@@ -35,6 +35,8 @@ import {
   startBotSession,
   handleSessionClose,
   closeSession,
+  formatContentCardLine,
+  loadKbContentCard,
 } from '../../../../backend/src/sessions/session-manager'
 import type { BotSession } from '../../../../backend/src/provider/types'
 import type { MeetingSession } from '../../../../backend/src/types/session'
@@ -214,5 +216,47 @@ describe('closeSession', () => {
     expect(activeSessions.has('meet-1')).toBe(false)
     expect(mockBotProvider.leave).toHaveBeenCalledWith(session.botSession)
     expect(generateSummaryAsync).not.toHaveBeenCalled()
+  })
+})
+
+describe('formatContentCardLine', () => {
+  it('有真摘要 → 檔名後面接摘要內容', () => {
+    expect(formatContentCardLine({ displayName: '簡章.pdf', contentCard: '報名期間 6/1–6/30' })).toBe(
+      '【簡章.pdf】報名期間 6/1–6/30',
+    )
+  })
+
+  it("contentCard 為空字串（已嘗試但抽不出內容）→ 標『抽不出內容』，不是裸檔名", () => {
+    const line = formatContentCardLine({ displayName: '掃描檔.pdf', contentCard: '' })
+    expect(line).toContain('【掃描檔.pdf】')
+    expect(line).toContain('抽不出內容')
+    expect(line).not.toBe('【掃描檔.pdf】')
+  })
+
+  it('contentCard 為 null（尚未產生）→ 標『尚未產生』，不是裸檔名', () => {
+    const line = formatContentCardLine({ displayName: '附件3_final.pdf', contentCard: null })
+    expect(line).toContain('【附件3_final.pdf】')
+    expect(line).toContain('尚未產生')
+    expect(line).not.toBe('【附件3_final.pdf】')
+  })
+})
+
+describe('loadKbContentCard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('有摘要的文件排在沒摘要的前面，避免截斷時被佔位行擠掉', async () => {
+    mockPrisma.material.findMany.mockResolvedValue([
+      { displayName: '沒摘要.pdf', contentCard: null },
+      { displayName: '有摘要.pdf', contentCard: '這份文件講的是報名規則' },
+    ])
+    const session = putSession()
+
+    await loadKbContentCard(session, 'dataset-abc')
+
+    const lines = session.kbContentCard!.split('\n')
+    expect(lines[0]).toBe('【有摘要.pdf】這份文件講的是報名規則')
+    expect(lines[1]).toContain('尚未產生')
   })
 })

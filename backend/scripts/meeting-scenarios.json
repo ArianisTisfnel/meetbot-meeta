@@ -17,9 +17,17 @@
     "",
     "expect 欄位：",
     "  respond: true/false  —— 蜜塔該不該對這句做出回應",
-    "  route: rag|transcript|chitchat —— respond=true 時，期待走哪條資料來源（可省略）",
+    "  intent: chitchat|factual|context|hybrid —— 4 分類的正解（比 route 更精細：",
+    "    factual 與 hybrid 目前都路由到 rag，只看 route 分不出這兩者混淆——這正是 intent 欄位要抓的）。",
+    "    給了 intent 時只比對 intent，route 純供閱讀（由 intent 自動推導出來印在結果裡，不會被比對），",
+    "    避免同一輪 intent／route 兩個期望值互相矛盾時結果曖昧不清。只有 --intent 才會比對。",
+    "  route: rag|transcript|chitchat —— 沒給 intent 時，respond=true 的期待資料來源（可省略）",
     "  question: 字串 —— 期待擷取出的問題須包含此子字串（驗證問題擷取的忠實度，可省略）",
     "  gapMs: 距離上一句的毫秒數（預設 5000）。用來測 debounce 與待命窗這類時間相關行為。",
+    "",
+    "kbContentCard: 場景層級欄位，模擬 session.kbContentCard（『知識庫目前的文件與內容摘要』），",
+    "  餵給 decideTurn 的 ③ 規則（只給文件涵蓋得到的問題分 factual/hybrid）。省略＝沒有內容卡——",
+    "  過去 --address／--intent 都沒有傳過任何內容卡進去，評測看到的輸入分佈跟線上不一致。",
     "",
     "knownFail: 標記『目前已知做不到、等後續實作才會過』的案例。目前沒有任何案例掛這個標記",
     "  評測分開統計：回歸失敗（本來會過的壞掉了）／已知缺口／略過，不混在一起。",
@@ -101,15 +109,35 @@
           "speaker": "Arianis",
           "text": "那名額有限制嗎",
           "gapMs": 12000,
-          "expect": { "respond": true, "route": "rag" },
-          "why": "上一句才問過蜜塔，這是同一串對話的追問（2026-07-29 起由語意層接住）"
+          "expect": { "respond": true, "intent": "factual" },
+          "why": "上一句才問過蜜塔，這是同一串對話的追問（2026-07-29 起由語意層接住）——單句評測看不到「那」指涉的上下文，容易誤判成 context"
         },
         {
           "speaker": "Arianis",
           "text": "那如果超過了會怎樣",
           "gapMs": 8000,
-          "expect": { "respond": true, "route": "rag" },
+          "expect": { "respond": true, "intent": "factual" },
           "why": "連續第三輪追問，人不會每句都喊名字"
+        }
+      ]
+    },
+    {
+      "name": "B.1 factual 與 hybrid 分辨：依文件評估我們的規劃",
+      "kb": true,
+      "kbContentCard": "【簡章.pdf】報名期間 6/1–6/30，名額 100 人，須於截止日前完成書面審查與面試複審兩階段。",
+      "turns": [
+        { "speaker": "小華", "text": "我們打算 6 月 28 號才交件，抓兩天緩衝", "expect": { "respond": false } },
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，報名截止日是什麼時候",
+          "expect": { "respond": true, "intent": "factual" }
+        },
+        {
+          "speaker": "Arianis",
+          "text": "蜜塔，依照簡章看，我們剛說的這個時程夠嗎",
+          "gapMs": 10000,
+          "expect": { "respond": true, "intent": "hybrid" },
+          "why": "評估對象是文件內容（截止日）+ 會議脈絡（我們剛說的時程）——factual/hybrid 都路由 rag，只有比對 intent 才抓得到分類錯誤"
         }
       ]
     },
