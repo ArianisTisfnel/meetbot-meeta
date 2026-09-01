@@ -43,7 +43,7 @@ cd D:\grp\meetbot-demo
 | # | 問題 | 處理 |
 |---|---|---|
 | 1 | **`start.bat` 卡在 prisma** | 7/20 的 schema 還有 Vexa 欄位，對著現有資料庫 `db push` 會產生破壞性差異 → prisma 停在互動式確認 → 腳本卡死。改成 **`prisma db push --accept-data-loss`**（demo 用獨立資料庫，沒有要保的資料） |
-| 2 | **與主 repo 搶同一組容器與資料庫** | 兩邊 compose project 名都叫 `meetbot`，等於共用容器、volume、schema。demo 改成獨立堆疊：project `meetbot-demo`、容器 `meetbot-demo-*`、**port 5434 / 9002 / 9003 / 5051**、volume 自動隔離 |
+| 2 | **與主 repo 搶同一組容器與資料庫** | 兩邊 compose project 名都叫 `meetbot`，等於共用容器、volume、schema。demo 改成獨立堆疊：project `meetbot-demo`、容器 `meetbot-demo-*`、**port 5434 / 19002 / 19003 / 5051**、volume 自動隔離 |
 | 3 | 健康檢查抓錯容器 | `docker inspect meetbot-postgres` → `meetbot-demo-postgres` |
 | 4 | **要申請 ngrok 帳號與固定網域** | 把你 8/02 的隧道整併（`ee17214`）縫進來：**一條 cloudflared 同時供應 webhook 與 agent 網頁**，網址自動寫回 `.env`，`RECALL_WEBHOOK_TOKEN` 沒設會自動產生。ngrok 降為退路 |
 | 5 | `.env` 要手動改 | `backend/.env`、`frontend/.env`、`frontend/.env.local` 已從主 repo 複製並改好 port；`RECALL_WEBHOOK_URL` 與 `AGENT_PAGE_URL` 清空，交給 `start.ps1` 每次自動填 |
@@ -81,8 +81,8 @@ docker exec meetbot-demo-postgres psql -U meetbot -d meetbot -f /tmp/bootstrap.s
 | 服務 | 主 repo | **demo** |
 |---|---|---|
 | Postgres | 5433 | **5434** |
-| MinIO S3 | 9000 | **9002** |
-| MinIO Console | 9001 | **9003** |
+| MinIO S3 | 9000 | **19002** |
+| MinIO Console | 9001 | **19003** |
 | pgAdmin | 5050 | **5051** |
 | 後端 / 前端 | 4000 / 3000 | 4000 / 3000（**相同**） |
 
