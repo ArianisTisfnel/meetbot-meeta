@@ -21,6 +21,7 @@ import {
   useUpdateMeetingSchedule,
 } from '@/hooks/use-calendar'
 import { useMe } from '@/hooks/use-me'
+import { usePermissions } from '@/hooks/use-permissions'
 import {
   addDays,
   detectConflicts,
@@ -57,6 +58,9 @@ export default function ProjectCalendarPage({ params }: Props) {
   const cancelMeeting = useCancelScheduledMeeting()
   const updateSchedule = useUpdateMeetingSchedule()
   const { data: me } = useMe()
+  // 沒有會議權的成員只能看：後端本來就會擋（requireProjectMeetingAccess 回 403），
+  // 但畫面上不該給一顆按了才發現沒權限的按鈕。
+  const { canMeeting } = usePermissions(projectId)
 
   const members = useMemo(() => (data?.members ?? []).map(toMember), [data])
 
@@ -152,6 +156,7 @@ export default function ProjectCalendarPage({ params }: Props) {
           onClear={() => setSlots(null)}
           isSearching={findSlots.isPending}
           results={slots}
+          canSchedule={canMeeting}
           onPick={openScheduleWithSlot}
         />
       </aside>
@@ -162,9 +167,11 @@ export default function ProjectCalendarPage({ params }: Props) {
           weekStart={weekStart}
           onWeekStartChange={setWeekStart}
           actions={
-            <Button size="sm" onClick={() => openScheduleWithSlot(null)}>
-              + 排定會議
-            </Button>
+            canMeeting ? (
+              <Button size="sm" onClick={() => openScheduleWithSlot(null)}>
+                + 排定會議
+              </Button>
+            ) : null
           }
         />
 
@@ -199,10 +206,18 @@ export default function ProjectCalendarPage({ params }: Props) {
         {events.length === 0 && slots === null ? (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border border-dashed bg-card p-8 text-center">
             <p className="mb-1 font-medium">這一週還沒有會議</p>
-            <p className="mb-4 text-sm text-muted-foreground">
-              排定第一場會議，它會自動出現在行事曆上。
-            </p>
-            <Button onClick={() => openScheduleWithSlot(null)}>+ 排定會議</Button>
+            {canMeeting ? (
+              <>
+                <p className="mb-4 text-sm text-muted-foreground">
+                  排定第一場會議，它會自動出現在行事曆上。
+                </p>
+                <Button onClick={() => openScheduleWithSlot(null)}>+ 排定會議</Button>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                你沒有在此專案建立會議的權限。有人排了會議就會出現在這裡。
+              </p>
+            )}
           </div>
         ) : (
           <WeekGrid
@@ -215,7 +230,7 @@ export default function ProjectCalendarPage({ params }: Props) {
               e.kind === 'busy' ? nameOf(e.memberId ?? '') : `${e.attendees?.length ?? 0} 人`
             }
             onEventClick={setOpenEvent}
-            onSlotClick={openScheduleWithSlot}
+            onSlotClick={canMeeting ? openScheduleWithSlot : undefined}
           />
         )}
       </div>
@@ -224,7 +239,7 @@ export default function ProjectCalendarPage({ params }: Props) {
         event={openEvent}
         members={members}
         currentUserId={me?.userId}
-        canManage
+        canManage={canMeeting}
         isPending={respond.isPending || cancelMeeting.isPending || updateSchedule.isPending}
         onOpenChange={(open) => !open && setOpenEvent(null)}
         onRespond={async (meetingId, rsvp) => {

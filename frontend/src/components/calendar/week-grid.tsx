@@ -135,22 +135,38 @@ export function WeekGrid({
                 {daySlots.map((slot, i) => {
                   const { top, height } = place(slot)
                   const minutes = Math.round((slot.end.getTime() - slot.start.getTime()) / 60_000)
+                  const label = height >= 34 && (
+                    <>
+                      <span className="text-[11px] font-medium text-honey-deep">可排</span>
+                      <span className="text-[10px] text-honey-deep/80">
+                        {formatDuration(minutes)}
+                      </span>
+                    </>
+                  )
+                  const base =
+                    'absolute inset-x-1 z-0 flex flex-col items-center justify-center rounded-md border border-dashed border-honey-deep bg-honey/20 text-center'
+
+                  // 沒有建立會議的權限時仍然顯示空檔（知道大家什麼時候有空本身就有用），
+                  // 但畫成靜態區塊而不是按鈕——一顆按了沒反應的按鈕比沒有按鈕更糟。
+                  if (!onSlotClick) {
+                    return (
+                      <div key={`slot-${i}`} style={{ top, height }} className={base}>
+                        {label}
+                      </div>
+                    )
+                  }
                   return (
                     <button
                       key={`slot-${i}`}
                       type="button"
-                      onClick={() => onSlotClick?.(slot)}
+                      onClick={() => onSlotClick(slot)}
                       style={{ top, height }}
-                      className="absolute inset-x-1 z-0 flex flex-col items-center justify-center rounded-md border border-dashed border-honey-deep bg-honey/20 text-center transition-colors hover:bg-honey/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {height >= 34 && (
-                        <>
-                          <span className="text-[11px] font-medium text-honey-deep">可排</span>
-                          <span className="text-[10px] text-honey-deep/80">
-                            {formatDuration(minutes)}
-                          </span>
-                        </>
+                      className={cn(
+                        base,
+                        'transition-colors hover:bg-honey/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       )}
+                    >
+                      {label}
                     </button>
                   )
                 })}

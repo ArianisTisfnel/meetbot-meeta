@@ -18,6 +18,8 @@ interface Props {
   isSearching?: boolean
   /** null = 還沒搜尋過；[] = 搜尋過但查無空檔 */
   results: TimeSlot[] | null
+  /** 沒有建立會議權限時，結果只供檢視，不可點擊建立 */
+  canSchedule?: boolean
   onPick: (slot: TimeSlot) => void
 }
 
@@ -29,6 +31,7 @@ export function FindSlotPanel({
   onClear,
   isSearching = false,
   results,
+  canSchedule = true,
   onPick,
 }: Props) {
   const unsynced = participants.filter((m) => m.syncState !== 'synced')
@@ -88,28 +91,40 @@ export function FindSlotPanel({
           ) : (
             <>
               <p className="mb-1.5 text-xs text-muted-foreground">
-                共 {results.length} 個時段，點選即可建立會議
+                共 {results.length} 個時段{canSchedule && '，點選即可建立會議'}
               </p>
               <ul className="max-h-56 space-y-1 overflow-y-auto">
-                {results.map((slot, i) => (
-                  <li key={i}>
-                    <button
-                      type="button"
-                      onClick={() => onPick(slot)}
-                      className={cn(
-                        'flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
-                        'hover:bg-honey/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      )}
-                    >
+                {results.map((slot, i) => {
+                  const content = (
+                    <>
                       <span className="font-medium">
                         週{WEEKDAY_LABELS[(slot.start.getDay() + 6) % 7]}
                       </span>
                       <span className="tabular-nums text-muted-foreground">
                         {formatTime(slot.start)}–{formatTime(slot.end)}
                       </span>
-                    </button>
-                  </li>
-                ))}
+                    </>
+                  )
+                  const rowClass = 'flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left text-xs'
+                  return (
+                    <li key={i}>
+                      {canSchedule ? (
+                        <button
+                          type="button"
+                          onClick={() => onPick(slot)}
+                          className={cn(
+                            rowClass,
+                            'transition-colors hover:bg-honey/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                          )}
+                        >
+                          {content}
+                        </button>
+                      ) : (
+                        <div className={rowClass}>{content}</div>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
             </>
           )}
