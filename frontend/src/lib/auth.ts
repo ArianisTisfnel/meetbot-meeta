@@ -48,17 +48,65 @@ async function getTokenViaBackend(email: string, name?: string | null): Promise<
   }
 }
 
+/**
+ * 把 Google refresh token 交給後端保存，讓背景同步在使用者離線時也能運作。
+ *
+ * 一律 best-effort：這裡失敗只代表行事曆同步不會動，不該讓登入失敗。
+ * Google 沒發新的 refresh token 時照樣呼叫——後端會保留既有連結，
+ * 順便藉此確認連結還在。
+ */
+async function saveCalendarConnection(
+  email: string,
+  refreshToken?: string | null,
+): Promise<void> {
+  const secret = process.env.INTERNAL_AUTH_SECRET
+  if (!secret) return
+  const base =
+    process.env.INTERNAL_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
+  try {
+    const res = await fetch(`${base}/internal/calendar-connection`, {
+      method: 'POST',
+      headers: { 'x-internal-secret': secret, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, refreshToken: refreshToken ?? null }),
+    })
+    if (!res.ok) {
+      console.error(
+        `[auth] /internal/calendar-connection 回 ${res.status} → 行事曆同步不會運作（其餘功能不受影響）。`,
+      )
+    }
+  } catch (err) {
+    console.error('[auth] 保存 Google Calendar 連結失敗 → 行事曆同步不會運作。', err)
+  }
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID ?? '',
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
-      // calendar.events：一鍵建立會議用（前端以使用者身分呼叫 Calendar API 生成 Meet 連結）。
+      // calendar.events：一鍵建立會議 + 行事曆把會議寫回與會者日曆。
+      // calendar.freebusy：只讀「幾點到幾點忙」，不讀行程標題與內容——疊圖與找空檔
+      //   只需要這個，是能滿足需求的最小權限（spec §5 隱私）。
+      //
+      // access_type=offline + prompt=consent：後端要拿得到 refresh token，才能在
+      // 使用者離線時同步忙碌時段。Google 只在「重新同意授權」時發 refresh token，
+      // 不強制 prompt 的話換一台裝置登入就再也拿不到，背景同步會無聲失效。
+      // 代價是每次登入都會看到同意畫面——若覺得太吵，可改成拿掉 prompt 並另做一顆
+      // 「連結 Google Calendar」按鈕走獨立授權流程。
+      //
       // 新 scope 生效需重新登入一次；使用者若在同意畫面拒絕日曆權限，登入仍成功，
-      // 僅一鍵建立退化為手動貼連結。
+      // 只是行事曆同步與一鍵建立會退化。
       authorization: {
         params: {
-          scope: 'openid email profile https://www.googleapis.com/auth/calendar.events',
+          scope: [
+            'openid',
+            'email',
+            'profile',
+            'https://www.googleapis.com/auth/calendar.events',
+            'https://www.googleapis.com/auth/calendar.freebusy',
+          ].join(' '),
+          access_type: 'offline',
+          prompt: 'consent',
         },
       },
     }),
@@ -68,6 +116,8 @@ export const authOptions: NextAuthOptions = {
       if (account && profile?.email) {
         const authToken = await getTokenViaBackend(profile.email, profile.name)
         token.authToken = authToken
+        // 必須排在取得 authToken 之後：後端要先有這個使用者才存得了連結
+        await saveCalendarConnection(profile.email, account.refresh_token)
       }
       if (account) {
         // Google access token（約 1 小時效期）：一鍵建立會議的 Calendar API 呼叫用。

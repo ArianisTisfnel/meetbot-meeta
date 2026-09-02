@@ -3,6 +3,7 @@ import { use } from 'react'
 import { useHistory } from '@/hooks/use-history'
 import { formatDate, displayName } from '@/lib/utils'
 import {
+  CalendarIcon,
   UploadIcon,
   TrashIcon,
   MailIcon,
@@ -28,6 +29,7 @@ const ACTION_CONFIG: Record<ActivityAction, { Icon: IconComponent; label: string
   MEMBER_REMOVE:            { Icon: MinusIcon, label: '移除成員' },
   MEMBER_PERMISSION_UPDATE: { Icon: SlidersIcon, label: '調整權限' },
   MEETING_CREATE:           { Icon: MeetingIcon, label: '建立會議' },
+  MEETING_SCHEDULE:         { Icon: CalendarIcon, label: '排定會議' },
   MEETING_DELETE:           { Icon: TrashIcon, label: '刪除會議' },
   PROJECT_RENAME:           { Icon: PencilIcon, label: '重新命名專案' },
 }

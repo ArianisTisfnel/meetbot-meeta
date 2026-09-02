@@ -56,6 +56,13 @@ export const mockPrisma = {
     findMany: vi.fn(),
     create: vi.fn(),
     count: vi.fn(),
+    groupBy: vi.fn(),
+  },
+  projectReadState: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    count: vi.fn(),
   },
   meetingInstance: {
     findFirst: vi.fn(),
@@ -66,5 +73,26 @@ export const mockPrisma = {
     updateMany: vi.fn(),
     delete: vi.fn(),
     count: vi.fn(),
+  },
+  meetingAttendee: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    createMany: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  calendarConnection: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+    update: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  busyBlock: {
+    findMany: vi.fn(),
+    createMany: vi.fn(),
+    deleteMany: vi.fn(),
   },
 }

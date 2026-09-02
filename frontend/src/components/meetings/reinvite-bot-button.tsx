@@ -10,6 +10,8 @@ interface Props {
   meetingId: string
   variant?: 'default' | 'outline'
   label?: string
+  /** 緊湊模式下的文案。排定中的會議蜜塔從沒進去過，叫「重邀」會讓人以為漏看了什麼 */
+  compactLabel?: string
   /** 緊湊模式：用於列表列 */
   compact?: boolean
 }
@@ -19,6 +21,7 @@ export function ReinviteBotButton({
   meetingId,
   variant = 'default',
   label = '重新邀請蜜塔',
+  compactLabel = '重邀',
   compact,
 }: Props) {
   const router = useRouter()
@@ -28,7 +31,7 @@ export function ReinviteBotButton({
     e.stopPropagation()
     reinvite.mutate(undefined, {
       onSuccess: (data) => {
-        toast.success('已重新邀請蜜塔，加入中…')
+        toast.success('已邀請蜜塔，加入中…')
         // ENDED 會議重邀會另建新會議實例（原紀錄保留），導向新會議頁
         if (data.id !== meetingId) {
           router.push(
@@ -51,7 +54,7 @@ export function ReinviteBotButton({
       className={compact ? 'h-7 gap-1 px-2 text-xs' : 'gap-1.5'}
     >
       <RefreshIcon className={compact ? 'size-3.5' : 'size-4'} />
-      {reinvite.isPending ? '邀請中…' : compact ? '重邀' : label}
+      {reinvite.isPending ? '邀請中…' : compact ? compactLabel : label}
     </Button>
   )
 }

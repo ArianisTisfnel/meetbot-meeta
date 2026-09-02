@@ -41,6 +41,8 @@ export interface ProjectListItem {
   memberCount: number
   materialCount: number
   activeMeetingCount: number
+  /** 未讀動態 + 待回覆會議，專案卡右上角圓點顯示的數字 */
+  unread: ProjectUnread
   createdAt: string
 }
 
@@ -49,6 +51,7 @@ export interface ProjectDetail {
   name: string
   role: 'owner' | 'member'
   permissions: UserPermissions
+  unread: ProjectUnread
   owner: UserSummary
   memberCount: number
   materialCount: number
@@ -145,6 +148,7 @@ export type ActivityAction =
   | 'MEMBER_REMOVE'
   | 'MEMBER_PERMISSION_UPDATE'
   | 'MEETING_CREATE'
+  | 'MEETING_SCHEDULE'
   | 'MEETING_DELETE'
   | 'PROJECT_RENAME'
 
@@ -159,9 +163,53 @@ export interface ActivityItem {
 
 export type PaginatedActivity = PaginatedResponse<ActivityItem>
 
+// ── 通知 ─────────────────────────────────────────────
+
+/** 專案內的分頁，對應路由 /projects/:id/<section> */
+export type SectionKey =
+  | 'materials'
+  | 'meetings'
+  | 'calendar'
+  | 'members'
+  | 'history'
+
+export interface ProjectUnread {
+  /** 各分頁相加，專案卡圓點顯示這個 */
+  total: number
+  activityCount: number
+  rsvpCount: number
+  /** 哪個分頁有變動就在哪裡亮；各分頁相加 = total */
+  sections: Record<SectionKey, number>
+}
+
+export interface PendingRsvpItem {
+  meetingId: string
+  name: string
+  scheduledStartAt: string | null
+  scheduledEndAt: string | null
+}
+
+export interface ProjectNotifications {
+  /** 我還沒回覆出席的會議（打開專案不會清掉，要真的回覆） */
+  rsvpItems: PendingRsvpItem[]
+  /** 我還沒看過、且不是我做的專案動態（各帶所屬分頁） */
+  activityItems: (ActivityItem & { section: SectionKey })[]
+  unread: ProjectUnread
+}
+
 // ── 會議 ─────────────────────────────────────────────
 
-export type MeetingStatus = 'PENDING' | 'ACTIVE' | 'ENDED' | 'FAILED'
+/**
+ * 蜜塔（Bot）的加入狀態，外加行事曆帶來的兩個會議層級狀態：
+ * SCHEDULED = 已排入行事曆、蜜塔還沒進去；CANCELED = 這場會不開了。
+ */
+export type MeetingStatus =
+  | 'SCHEDULED'
+  | 'PENDING'
+  | 'ACTIVE'
+  | 'ENDED'
+  | 'FAILED'
+  | 'CANCELED'
 
 export interface ActionItem {
   task: string
@@ -177,6 +225,8 @@ export interface MeetingListItem {
   projectName?: string | null
   startedAt: string | null
   endedAt: string | null
+  /** 行事曆排定的開始時間；SCHEDULED 的會議還沒有 startedAt，時間欄靠這個 */
+  scheduledStartAt?: string | null
   /** 目前使用者是否可刪除此會議（專案會議＝擁有者、全局會議＝建立者）。 */
   canDelete: boolean
   createdAt: string
@@ -185,7 +235,10 @@ export interface MeetingListItem {
 export interface MeetingDetail {
   id: string
   name: string
+  /** 非與會者拿不到（後端回空字串），見 isParticipant */
   googleMeetUrl: string
+  /** 我是不是這場會議的與會者。會議沒有與會者名單時一律為 true。 */
+  isParticipant: boolean
   status: MeetingStatus
   projectId?: string | null
   projectName?: string | null
@@ -228,4 +281,100 @@ export interface TranscriptResponse {
   total: number
   page: number
   perPage: number
+}
+
+// ── 行事曆 ────────────────────────────────────────────
+
+export type RsvpStatus = 'ACCEPTED' | 'TENTATIVE' | 'DECLINED' | 'PENDING'
+
+/** 成員的 Google Calendar 同步狀態：未連結與授權失效要分開，使用者的下一步不同。 */
+export type CalendarSyncState = 'synced' | 'unsynced' | 'expired'
+
+export interface CalendarMemberDto {
+  userId: number
+  name: string | null
+  email: string
+  isOwner: boolean
+  syncState: CalendarSyncState
+}
+
+export interface CalendarAttendeeDto {
+  userId: number
+  rsvp: RsvpStatus
+  respondedAt: string | null
+}
+
+/** 行事曆上的會議。時間一律是 ISO 8601 絕對時間（UTC），由前端換成本地時間顯示。 */
+export interface CalendarMeetingDto {
+  id: string
+  projectId: string | null
+  projectName?: string | null
+  name: string
+  googleMeetUrl: string
+  status: 'SCHEDULED' | 'PENDING' | 'ACTIVE' | 'ENDED' | 'FAILED' | 'CANCELED'
+  scheduledStartAt: string | null
+  scheduledEndAt: string | null
+  timezone: string | null
+  createdByUserId: number
+  /** 時間到時自動派蜜塔進去 */
+  botAutoJoin: boolean
+  /** 我是不是這場會議的與會者。false 時後端不會給 googleMeetUrl */
+  isParticipant: boolean
+  /** 我自己的出席回覆；null = 我不是與會者（與 'PENDING' 是不同的意思） */
+  myRsvp: RsvpStatus | null
+  attendees: CalendarAttendeeDto[]
+}
+
+/** 從成員 GCal 匯入的忙碌時段：只有起訖，沒有標題（隱私）。 */
+export interface BusyBlockDto {
+  id: string
+  userId: number
+  startAt: string
+  endAt: string
+}
+
+export interface ProjectCalendarResponse {
+  members: CalendarMemberDto[]
+  meetings: CalendarMeetingDto[]
+  busyBlocks: BusyBlockDto[]
+}
+
+export interface GlobalCalendarResponse {
+  meetings: CalendarMeetingDto[]
+  busyBlocks: BusyBlockDto[]
+  /** 這批會議的與會者姓名對照（全域層跨專案，沒有單一成員名單可查） */
+  people: Array<{ userId: number; name: string | null; email: string }>
+}
+
+export interface FreeSlotDto {
+  start: string
+  end: string
+}
+
+export interface FreeSlotsResponse {
+  slots: FreeSlotDto[]
+  /** 這些成員尚未同步 GCal → 結果僅依已知忙碌計算（spec §4.3） */
+  unsyncedMembers: Array<{
+    userId: number
+    name: string | null
+    email: string
+    syncState: CalendarSyncState
+  }>
+}
+
+/** GET /calendar/connection：我的 Google Calendar 同步狀態。 */
+export interface CalendarConnectionResponse {
+  /** 後端有沒有設定 GOOGLE_CLIENT_ID/SECRET；false 表示整個同步功能停用 */
+  configured: boolean
+  connected: boolean
+  status: 'ACTIVE' | 'EXPIRED' | null
+  lastSyncedAt: string | null
+  lastSyncError: string | null
+}
+
+export interface CalendarSyncResult {
+  userId: number
+  synced: boolean
+  blockCount: number
+  error?: string
 }

@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { EditableProjectName } from './editable-project-name'
+import { UnreadBadge } from './unread-badge'
 import type { ProjectListItem } from '@/types/api'
 
 interface Props {
@@ -14,6 +15,12 @@ export function ProjectCard({ project }: Props) {
 
   return (
     <Card className="relative transition-shadow hover:shadow-md">
+      {/* 右上角未讀圓點：故意壓在卡片邊框外，卡片再多內容也不會擠到它 */}
+      <UnreadBadge
+        projectId={project.id}
+        projectName={project.name}
+        unread={project.unread}
+      />
       <CardContent className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">

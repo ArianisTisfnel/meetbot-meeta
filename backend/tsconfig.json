@@ -5,9 +5,12 @@
     "moduleResolution": "bundler",
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": ".",
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    // 後端沒有 build step（dev 走 tsx、測試走 vitest），tsc 只用來做型別檢查。
+    // 原本的 outDir/rootDir 從未產出過 dist，且 rootDir 會跟下面的 ../tests 打架。
+    "noEmit": true
   },
-  "include": ["src/**/*", "../tests/**/*"]
+  // 只收後端自己的測試。原本寫 ../tests/**/* 會把 tests/unit/frontend 的 .tsx
+  // 一起拉進來，那些需要 jsx 與 dom lib，屬於 frontend/tsconfig.json 的守備範圍。
+  "include": ["src/**/*", "../tests/unit/backend/**/*", "../tests/mocks/**/*"]
 }

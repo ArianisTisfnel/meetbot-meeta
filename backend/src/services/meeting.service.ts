@@ -4,6 +4,7 @@ import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
 import { startBotSession, closeSession, handleSessionClose } from '../sessions/session-manager.js'
 import { recordActivity } from './activity.service.js'
+import { canSeeJoinLink, visibleJoinUrl } from '../lib/meeting-access.js'
 
 // ── Permission helpers ────────────────────────────────────────────────────────
 
@@ -58,6 +59,26 @@ export async function requireProjectMeetingManageAccess(
     select: { id: true },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
+}
+
+/**
+ * 行事曆共用的權限入口：確認使用者能檢視／能安排此專案的會議。
+ *
+ * 權限規則只寫一次。行事曆需要同一套判斷（spec §5「僅專案成員可見該專案行事曆；
+ * 發送提醒／建立會議等操作限主辦或具權限成員」），在 calendar.service 另抄一份
+ * 遲早會走鐘，所以由這裡把既有的私有 helper 包成具名的公開函式。
+ */
+export async function requireProjectViewAccess(projectId: string, userId: number) {
+  const project = await getProjectWithAccess(projectId, userId)
+  requireCanView(project, userId)
+  return project
+}
+
+/** 需要「建立會議」權限的操作（排會議、改時間、取消）。 */
+export async function requireProjectMeetingAccess(projectId: string, userId: number) {
+  const project = await getProjectWithAccess(projectId, userId)
+  requireCanMeeting(project, userId)
+  return project
 }
 
 // ── Create meeting ─────────────────────────────────────────────────────────────
@@ -243,6 +264,7 @@ export async function deleteMeeting(
       transcriptStoragePath: true,
       projectId: true,
       createdByUserId: true,
+      gcalEventId: true,
     },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
@@ -266,6 +288,20 @@ export async function deleteMeeting(
     const { deleteFile } = await import('../lib/storage.js')
     await deleteFile(meeting.transcriptStoragePath).catch((err: unknown) =>
       logger.warn({ err, meetingId }, 'deleteMeeting: failed to delete transcript storage file'),
+    )
+  }
+
+  // 刪掉本系統的紀錄前，先把寫回 Google Calendar 的事件也移除。
+  // 「取消會議」有做這件事，硬刪除原本漏了——結果是會議在蜜塔裡消失，
+  // 卻永遠留在所有與會者的 Google 日曆上，而且再也沒有 gcalEventId 可以對應回去。
+  if (meeting.gcalEventId) {
+    const { removeMeetingFromGoogle } = await import('./calendar-sync.service.js')
+    await removeMeetingFromGoogle({
+      id: meeting.id,
+      createdByUserId: meeting.createdByUserId,
+      gcalEventId: meeting.gcalEventId,
+    }).catch((err: unknown) =>
+      logger.warn({ err, meetingId }, 'deleteMeeting: 移除 GCal 事件失敗，繼續刪除本地紀錄'),
     )
   }
 
@@ -447,7 +483,11 @@ export async function listMeetings(userId: number, params: ListMeetingsParams = 
       orderBy: { createdAt: order },
       skip: (page - 1) * perPage,
       take: perPage,
-      include: { project: { select: { name: true, ownerUserId: true } } },
+      include: {
+        project: { select: { name: true, ownerUserId: true } },
+        // 加入連結只給與會者，故需要名單
+        attendees: { select: { userId: true } },
+      },
     }),
     prisma.meetingInstance.count({ where }),
   ])
@@ -456,12 +496,18 @@ export async function listMeetings(userId: number, params: ListMeetingsParams = 
     items: items.map((m) => ({
       id: m.id,
       name: m.name,
-      googleMeetUrl: m.googleMeetUrl,
+      googleMeetUrl: visibleJoinUrl(m.googleMeetUrl, {
+        viewerUserId: userId,
+        createdByUserId: m.createdByUserId,
+        attendeeUserIds: m.attendees.map((a) => a.userId),
+      }),
       status: m.status,
       projectId: m.projectId ?? null,
       projectName: m.project?.name ?? null,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      // 排定時間：SCHEDULED 的會議還沒 startedAt，列表要靠這個顯示「什麼時候開」
+      scheduledStartAt: m.scheduledStartAt ?? null,
       // 刪除權：專案會議看擁有者、全局會議看建立者
       canDelete: m.projectId
         ? m.project?.ownerUserId === userId
@@ -498,6 +544,7 @@ export async function listProjectMeetings(
       orderBy: { createdAt: order },
       skip: (page - 1) * perPage,
       take: perPage,
+      include: { attendees: { select: { userId: true } } },
     }),
     prisma.meetingInstance.count({ where }),
   ])
@@ -508,10 +555,15 @@ export async function listProjectMeetings(
     items: items.map((m) => ({
       id: m.id,
       name: m.name,
-      googleMeetUrl: m.googleMeetUrl,
+      googleMeetUrl: visibleJoinUrl(m.googleMeetUrl, {
+        viewerUserId: userId,
+        createdByUserId: m.createdByUserId,
+        attendeeUserIds: m.attendees.map((a) => a.userId),
+      }),
       status: m.status,
       startedAt: m.startedAt ?? null,
       endedAt: m.endedAt ?? null,
+      scheduledStartAt: m.scheduledStartAt ?? null,
       canDelete,
       createdAt: m.createdAt,
     })),
@@ -524,7 +576,10 @@ export async function listProjectMeetings(
 export async function getMeeting(meetingId: string, userId: number) {
   const meeting = await prisma.meetingInstance.findUnique({
     where: { id: meetingId },
-    include: { project: { select: { name: true, ownerUserId: true, members: { where: { userId } } } } },
+    include: {
+      project: { select: { name: true, ownerUserId: true, members: { where: { userId } } } },
+      attendees: { select: { userId: true } },
+    },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
 
@@ -544,10 +599,17 @@ export async function getMeeting(meetingId: string, userId: number) {
     select: { name: true },
   })
 
+  const isParticipant = canSeeJoinLink({
+    viewerUserId: userId,
+    createdByUserId: meeting.createdByUserId,
+    attendeeUserIds: meeting.attendees.map((a) => a.userId),
+  })
+
   return {
     id: meeting.id,
     name: meeting.name,
-    googleMeetUrl: meeting.googleMeetUrl,
+    googleMeetUrl: isParticipant ? meeting.googleMeetUrl : '',
+    isParticipant,
     status: meeting.status,
     projectId: meeting.projectId ?? null,
     projectName: meeting.project?.name ?? null,
@@ -577,6 +639,7 @@ export async function getProjectMeeting(
 
   const meeting = await prisma.meetingInstance.findUnique({
     where: { id: meetingId, projectId },
+    include: { attendees: { select: { userId: true } } },
   })
   if (!meeting) throw new AppError('NOT_FOUND', 404, '找不到此會議')
 
@@ -585,10 +648,17 @@ export async function getProjectMeeting(
     select: { name: true },
   })
 
+  const isParticipant = canSeeJoinLink({
+    viewerUserId: userId,
+    createdByUserId: meeting.createdByUserId,
+    attendeeUserIds: meeting.attendees.map((a) => a.userId),
+  })
+
   return {
     id: meeting.id,
     name: meeting.name,
-    googleMeetUrl: meeting.googleMeetUrl,
+    googleMeetUrl: isParticipant ? meeting.googleMeetUrl : '',
+    isParticipant,
     status: meeting.status,
     createdBy: { userId: meeting.createdByUserId, name: creator?.name ?? null },
     startedAt: meeting.startedAt ?? null,

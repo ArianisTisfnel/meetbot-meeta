@@ -27,6 +27,10 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
     : `/meetings/${meeting.id}`
 
   const isFinished = meeting.status === 'FAILED' || meeting.status === 'ENDED'
+  // 排定中：蜜塔還沒進去過，可以現在就請她進來
+  const isScheduled = meeting.status === 'SCHEDULED'
+  // 尚未開始或已結束的都能刪（後端只擋 ACTIVE / PENDING）
+  const isDeletable = isFinished || isScheduled || meeting.status === 'CANCELED'
 
   // 整列 hover 顯示狀態提示（tooltip 用 portal 固定定位，不被表格 overflow 裁切）。
   // 提示框跟著游標走：enter 時以 state 掛載，move 時直接寫 DOM style，避免每個 pixel 都 re-render。
@@ -77,7 +81,9 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
         </td>
       )}
       <td className="py-3 px-4 text-muted-foreground text-sm">
-        {formatDate(meeting.startedAt ?? meeting.createdAt)}
+        {/* 已開始的看實際時間；還沒開始的看排定時間——顯示建立時間會讓
+            「下週三的會議」在列表上寫著今天的日期。 */}
+        {formatDate(meeting.startedAt ?? meeting.scheduledStartAt ?? meeting.createdAt)}
         {meeting.endedAt && ` ~ ${formatDate(meeting.endedAt)}`}
       </td>
       <td className="py-3 px-4">
@@ -96,6 +102,14 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
               compact
             />
           )}
+          {canEnd && isScheduled && (
+            <ReinviteBotButton
+              projectId={projectId ?? null}
+              meetingId={meeting.id}
+              compactLabel="邀請蜜塔"
+              compact
+            />
+          )}
           {canEnd && isFinished && (
             <ReinviteBotButton
               projectId={projectId ?? null}
@@ -103,14 +117,14 @@ export function MeetingRow({ meeting, projectId, canEnd }: Props) {
               compact
             />
           )}
-          {meeting.canDelete && isFinished && (
+          {meeting.canDelete && isDeletable && (
             <DeleteMeetingButton
               projectId={projectId ?? null}
               meetingId={meeting.id}
               compact
             />
           )}
-          {meeting.status !== 'ENDED' && meeting.googleMeetUrl && (
+          {meeting.status !== 'ENDED' && meeting.status !== 'CANCELED' && meeting.googleMeetUrl && (
             <a
               href={meeting.googleMeetUrl}
               target="_blank"
