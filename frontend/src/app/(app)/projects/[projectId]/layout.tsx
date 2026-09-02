@@ -1,8 +1,9 @@
 'use client'
-import { use, useState } from 'react'
+import { use, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useProject, useDeleteProject } from '@/hooks/use-projects'
+import { useMarkProjectRead } from '@/hooks/use-notifications'
 import { ProjectTabs } from '@/components/layout/project-tabs'
 import { EditableProjectName } from '@/components/projects/editable-project-name'
 import { Button } from '@/components/ui/button'
@@ -16,10 +17,29 @@ import {
 } from '@/components/ui/dialog'
 import { ArrowLeftIcon, TrashIcon } from '@/components/ui/icons'
 import { toast } from 'sonner'
+import type { SectionKey } from '@/types/api'
 
 interface Props {
   children: React.ReactNode
   params: Promise<{ projectId: string }>
+}
+
+const SECTIONS: SectionKey[] = [
+  'materials',
+  'meetings',
+  'calendar',
+  'members',
+  'history',
+]
+
+/**
+ * 從路徑取出目前在哪個分頁。/projects/:id/meetings/:meetingId 這種子路由
+ * 仍算在 meetings，所以只看 projectId 後面那一段。
+ */
+function sectionOf(pathname: string, projectId: string): SectionKey | null {
+  const rest = pathname.split(`/projects/${projectId}/`)[1]
+  const first = rest?.split('/')[0]
+  return SECTIONS.includes(first as SectionKey) ? (first as SectionKey) : null
 }
 
 export default function ProjectLayout({ children, params }: Props) {
@@ -28,6 +48,23 @@ export default function ProjectLayout({ children, params }: Props) {
   const { data: project, isLoading } = useProject(projectId)
   const deleteProject = useDeleteProject()
   const [confirmOpen, setConfirmOpen] = useState(false)
+
+  // 打開哪個分頁就清哪個分頁的紅點——只清這一個，別把還沒看的其他分頁一起蓋掉。
+  // 待回覆的會議不受影響（那是待辦，要真的回覆才消失）。
+  const pathname = usePathname()
+  const section = sectionOf(pathname, projectId)
+  const markRead = useMarkProjectRead()
+  const markReadRef = useRef(markRead.mutate)
+  markReadRef.current = markRead.mutate
+  // markedRef 擋掉 StrictMode 的重複執行，以及同一分頁內換子路由（例如點進某場會議）時的重打
+  const markedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!section) return
+    const key = `${projectId}:${section}`
+    if (markedRef.current === key) return
+    markedRef.current = key
+    markReadRef.current({ projectId, section })
+  }, [projectId, section])
 
   if (isLoading) {
     return (
@@ -102,7 +139,7 @@ export default function ProjectLayout({ children, params }: Props) {
           </Button>
         </PermissionGuard>
       </div>
-      <ProjectTabs projectId={projectId} />
+      <ProjectTabs projectId={projectId} unread={project.unread} />
       <div className="flex-1 overflow-auto p-6">{children}</div>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

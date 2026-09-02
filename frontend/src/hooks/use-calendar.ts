@@ -122,7 +122,12 @@ export function useRespondRsvp() {
   return useMutation({
     mutationFn: ({ meetingId, rsvp }: { meetingId: string; rsvp: RsvpStatus }) =>
       apiClient.post<CalendarMeetingDto>(`/calendar/meetings/${meetingId}/rsvp`, { rsvp }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['calendar'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['calendar'] })
+      // 回覆完出席，專案卡的未讀圓點要跟著少一顆
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['project-notifications'] })
+    },
   })
 }
 

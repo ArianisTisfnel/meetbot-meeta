@@ -9,12 +9,15 @@ import {
   ClockIcon,
 } from '@/components/ui/icons'
 import { cn } from '@/lib/utils'
+import type { ProjectUnread, SectionKey } from '@/types/api'
 
 interface Props {
   projectId: string
+  /** 各分頁的未讀數；哪裡有變動就在哪個分頁亮紅點 */
+  unread?: ProjectUnread
 }
 
-const TABS = [
+const TABS: { href: SectionKey; label: string; icon: typeof DocIcon }[] = [
   { href: 'materials', label: '資料', icon: DocIcon },
   { href: 'meetings', label: '會議', icon: MeetingIcon },
   { href: 'calendar', label: '行事曆', icon: CalendarIcon },
@@ -22,7 +25,7 @@ const TABS = [
   { href: 'history', label: '歷史', icon: ClockIcon },
 ]
 
-export function ProjectTabs({ projectId }: Props) {
+export function ProjectTabs({ projectId, unread }: Props) {
   const pathname = usePathname()
 
   return (
@@ -30,6 +33,7 @@ export function ProjectTabs({ projectId }: Props) {
       {TABS.map(({ href: slug, label, icon: Icon }) => {
         const href = `/projects/${projectId}/${slug}`
         const isActive = pathname.startsWith(href)
+        const count = unread?.sections?.[slug] ?? 0
         return (
           <Link
             key={slug}
@@ -44,6 +48,17 @@ export function ProjectTabs({ projectId }: Props) {
           >
             <Icon className={cn(isActive && 'text-honey-deep')} />
             {label}
+            {count > 0 && (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
+                >
+                  {count > 99 ? '99+' : count}
+                </span>
+                <span className="sr-only">，{count} 則未讀</span>
+              </>
+            )}
           </Link>
         )
       })}

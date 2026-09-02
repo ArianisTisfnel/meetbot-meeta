@@ -160,6 +160,13 @@ function serializeMeeting(meeting: {
       attendeeUserIds: meeting.attendees.map((a) => a.userId),
     })
 
+  // 我自己的出席回覆。前端拿它在行事曆上標「待回覆」，不必自己拿 userId 去對 attendees。
+  // null = 我不是與會者（或沒有 viewer 脈絡），與 'PENDING'（是與會者但還沒回）不同。
+  const myRsvp =
+    viewerUserId === undefined
+      ? null
+      : (meeting.attendees.find((a) => a.userId === viewerUserId)?.rsvp ?? null)
+
   return {
     id: meeting.id,
     projectId: meeting.projectId,
@@ -167,6 +174,7 @@ function serializeMeeting(meeting: {
     googleMeetUrl: isParticipant ? meeting.googleMeetUrl : '',
     /** 我是不是這場會議的與會者（決定看不看得到連結） */
     isParticipant,
+    myRsvp,
     status: meeting.status,
     scheduledStartAt: meeting.scheduledStartAt?.toISOString() ?? null,
     scheduledEndAt: meeting.scheduledEndAt?.toISOString() ?? null,
@@ -392,10 +400,12 @@ export async function scheduleMeeting(params: ScheduleMeetingParams) {
     include: { attendees: true },
   })
 
+  // MEETING_SCHEDULE 不是 MEETING_CREATE：排定未來的會議屬於「行事曆」，
+  // 立刻開一場（meeting.service）才屬於「會議」。未讀紅點靠這個分辨要亮在哪個分頁。
   await recordActivity({
     projectId,
     actorUserId: userId,
-    action: 'MEETING_CREATE',
+    action: 'MEETING_SCHEDULE',
     targetLabel: name,
   })
 
@@ -418,7 +428,7 @@ export async function scheduleMeeting(params: ScheduleMeetingParams) {
     where: { id: meeting.id },
     include: { attendees: true },
   })
-  return serializeMeeting(fresh ?? meeting)
+  return serializeMeeting(fresh ?? meeting, userId)
 }
 
 /** 取回一筆排定會議並確認呼叫者有權管理它。 */
@@ -516,7 +526,7 @@ export async function updateMeetingSchedule(params: {
     attendeeUserIds: updated.attendees.map((a) => a.userId),
   })
 
-  return { ...serializeMeeting(updated), rsvpReset: Boolean(timeChanged) }
+  return { ...serializeMeeting(updated, params.userId), rsvpReset: Boolean(timeChanged) }
 }
 
 /**
@@ -532,7 +542,7 @@ export async function cancelScheduledMeeting(meetingId: string, userId: number) 
     throw new AppError('INVALID_REQUEST', 400, '已開始或已結束的會議不能取消')
   }
   if (meeting.status === 'CANCELED') {
-    return serializeMeeting(meeting)
+    return serializeMeeting(meeting, userId)
   }
 
   const updated = await prisma.meetingInstance.update({
@@ -547,7 +557,7 @@ export async function cancelScheduledMeeting(meetingId: string, userId: number) 
     gcalEventId: updated.gcalEventId,
   })
 
-  return serializeMeeting(updated)
+  return serializeMeeting(updated, userId)
 }
 
 // ── RSVP ──────────────────────────────────────────────────────────────────────
@@ -576,5 +586,5 @@ export async function respondToMeeting(params: {
     where: { id: meetingId },
     include: { attendees: true },
   })
-  return serializeMeeting(meeting!)
+  return serializeMeeting(meeting!, userId)
 }

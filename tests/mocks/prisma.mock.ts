@@ -56,6 +56,13 @@ export const mockPrisma = {
     findMany: vi.fn(),
     create: vi.fn(),
     count: vi.fn(),
+    groupBy: vi.fn(),
+  },
+  projectReadState: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    count: vi.fn(),
   },
   meetingInstance: {
     findFirst: vi.fn(),

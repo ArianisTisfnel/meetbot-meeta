@@ -41,6 +41,8 @@ export interface ProjectListItem {
   memberCount: number
   materialCount: number
   activeMeetingCount: number
+  /** 未讀動態 + 待回覆會議，專案卡右上角圓點顯示的數字 */
+  unread: ProjectUnread
   createdAt: string
 }
 
@@ -49,6 +51,7 @@ export interface ProjectDetail {
   name: string
   role: 'owner' | 'member'
   permissions: UserPermissions
+  unread: ProjectUnread
   owner: UserSummary
   memberCount: number
   materialCount: number
@@ -145,6 +148,7 @@ export type ActivityAction =
   | 'MEMBER_REMOVE'
   | 'MEMBER_PERMISSION_UPDATE'
   | 'MEETING_CREATE'
+  | 'MEETING_SCHEDULE'
   | 'MEETING_DELETE'
   | 'PROJECT_RENAME'
 
@@ -158,6 +162,40 @@ export interface ActivityItem {
 }
 
 export type PaginatedActivity = PaginatedResponse<ActivityItem>
+
+// ── 通知 ─────────────────────────────────────────────
+
+/** 專案內的分頁，對應路由 /projects/:id/<section> */
+export type SectionKey =
+  | 'materials'
+  | 'meetings'
+  | 'calendar'
+  | 'members'
+  | 'history'
+
+export interface ProjectUnread {
+  /** 各分頁相加，專案卡圓點顯示這個 */
+  total: number
+  activityCount: number
+  rsvpCount: number
+  /** 哪個分頁有變動就在哪裡亮；各分頁相加 = total */
+  sections: Record<SectionKey, number>
+}
+
+export interface PendingRsvpItem {
+  meetingId: string
+  name: string
+  scheduledStartAt: string | null
+  scheduledEndAt: string | null
+}
+
+export interface ProjectNotifications {
+  /** 我還沒回覆出席的會議（打開專案不會清掉，要真的回覆） */
+  rsvpItems: PendingRsvpItem[]
+  /** 我還沒看過、且不是我做的專案動態（各帶所屬分頁） */
+  activityItems: (ActivityItem & { section: SectionKey })[]
+  unread: ProjectUnread
+}
 
 // ── 會議 ─────────────────────────────────────────────
 
@@ -282,6 +320,8 @@ export interface CalendarMeetingDto {
   botAutoJoin: boolean
   /** 我是不是這場會議的與會者。false 時後端不會給 googleMeetUrl */
   isParticipant: boolean
+  /** 我自己的出席回覆；null = 我不是與會者（與 'PENDING' 是不同的意思） */
+  myRsvp: RsvpStatus | null
   attendees: CalendarAttendeeDto[]
 }
 
