@@ -178,13 +178,18 @@ export function WeekGrid({
                   const caption = captionOf?.(event)
                   const conflicted = conflicts?.has(event.id) ?? false
                   const compact = height < 34
+                  // 我被列為與會者但還沒回覆出席。已取消的會議就別再催了。
+                  const needsReply =
+                    event.kind === 'meeting' && event.myRsvp === 'pending' && !event.canceled
 
                   return (
                     <button
                       key={event.id}
                       type="button"
                       onClick={() => onEventClick?.(event)}
-                      title={`${event.title}　${formatTime(event.start)}–${formatTime(event.end)}`}
+                      title={`${event.title}　${formatTime(event.start)}–${formatTime(event.end)}${
+                        needsReply ? '（尚未回覆出席）' : ''
+                      }`}
                       style={{
                         top,
                         height,
@@ -203,13 +208,27 @@ export function WeekGrid({
                         event.canceled && 'border-dashed opacity-55',
                       )}
                     >
+                      {needsReply && (
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            'absolute right-1 top-1 flex size-3.5 items-center justify-center rounded-full border text-[9px] font-bold leading-none',
+                            accent
+                              ? 'border-ink bg-ink text-paper'
+                              : 'border-hive-fg bg-hive-fg text-ink',
+                          )}
+                        >
+                          ?
+                        </span>
+                      )}
                       <div
                         className={cn(
-                          'truncate text-[11px] font-medium leading-tight',
+                          'truncate pr-4 text-[11px] font-medium leading-tight',
                           event.canceled && 'line-through',
                         )}
                       >
                         {event.title}
+                        {needsReply && <span className="sr-only">（尚未回覆出席）</span>}
                       </div>
                       {!compact && (
                         <div

@@ -133,7 +133,7 @@ export function EventDialog({
 
           {event.kind === 'busy' ? (
             <p className="text-xs text-muted-foreground">
-              來自 {nameOf(event.memberId ?? '')} 的 Google Calendar 忙碌時段，僅供排程參考。
+              來自 {nameOf(event.memberId ?? '')} 的 Google Calendar 忙碌時段
             </p>
           ) : (
             <>
@@ -170,7 +170,12 @@ export function EventDialog({
 
               {myAttendance && !event.canceled && onRespond && (
                 <div className="border-t pt-3">
-                  <p className="mb-1.5 text-xs text-muted-foreground">我的回覆</p>
+                  <p className="mb-1.5 text-xs text-muted-foreground">
+                    我的回覆
+                    {myAttendance.rsvp === 'pending' && (
+                      <span className="ml-1 font-medium text-ink">· 尚未回覆</span>
+                    )}
+                  </p>
                   <div className="flex gap-1.5">
                     {MY_RSVP_CHOICES.map((choice) => (
                       <Button

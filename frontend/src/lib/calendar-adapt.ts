@@ -54,6 +54,7 @@ export function toMeetingEvent(dto: CalendarMeetingDto): CalendarEvent | null {
     meetUrl: dto.googleMeetUrl || undefined,
     botAutoJoin: dto.botAutoJoin,
     isParticipant: dto.isParticipant,
+    myRsvp: dto.myRsvp ? RSVP_MAP[dto.myRsvp] : null,
   }
 }
 

@@ -49,6 +49,8 @@ export interface CalendarEvent {
   botAutoJoin?: boolean
   /** 我是不是與會者；不是的話沒有 meetUrl，也不該顯示加入入口 */
   isParticipant?: boolean
+  /** 我自己的出席回覆；'pending' 時色塊上標記號提醒我還沒回。null = 我不是與會者 */
+  myRsvp?: RsvpStatus | null
 }
 
 export interface TimeSlot {
