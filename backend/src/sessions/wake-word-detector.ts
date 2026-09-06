@@ -20,7 +20,7 @@ import type { MeetingSession } from '../types/session.js'
 import type { ChatMessageEvent } from '../provider/types.js'
 
 // 意圖四分類的定義已移到 response-policy.ts（它現在是每輪語意決策的產出之一）。
-// 這裡 re-export 保持既有 import 路徑不變（scripts/eval-meeting.ts、單元測試）。
+// 這裡 re-export 保持既有 import 路徑不變（tests/unit/backend/sessions/wake-word-detector.test.ts）。
 export { parseIntent, routeForIntent, type QuestionIntent }
 
 /** 取得已 admitted 的 bot session（喚醒詞只會在 admitted 後觸發，故必為非 null）。 */
@@ -475,19 +475,6 @@ export async function speakProactive(
 // 判斷本身在 response-policy.ts 的 decideTurn（與定址／插話同一次呼叫），
 // 本檔只負責「拿到 intent 之後要怎麼取答案」。分類失敗一律回退 factual（保持原行為）。
 
-/**
- * 單一問題的意圖分類。**線上不再用它**——線上的 intent 一律來自 decideTurn 的同一次
- * 呼叫（見 resolveAnswerRouted）。留著是給 `scripts/eval-meeting.ts --intent` 用的：
- * 那個評測要的正是「單看這個問題該走哪條路」，退化成只有一則的對話窗即可。
- */
-export async function classifyIntent(question: string, kbContentCard: string | null): Promise<QuestionIntent> {
-  const { intent } = await decideTurn({
-    window: [{ speaker: '參與者', text: question, source: 'voice', fromBot: false }],
-    kbContentCard,
-  })
-  return intent
-}
-
 // ── 問答路由 ───────────────────────────────────────────────────────────────────
 
 /**
@@ -515,19 +502,23 @@ export async function resolveAnswerRouted(
   // 句中提及／連續追問／插話這三條路的 intent 是跟定址一起判出來的（knownIntent），
   // 只有純規則定案的句首呼喚才需要在這裡補一次呼叫——總量與舊制的 classifyIntent 相同。
   const classifyStart = Date.now()
-  const intent =
-    knownIntent ??
-    (
-      await decideTurn({
-        window: windowEndingWith(session, {
-          speaker: '參與者',
-          text: question,
-          source: mode,
-          fromBot: false,
-        }),
-        kbContentCard: session.kbContentCard,
-      })
-    ).intent
+  let intent: QuestionIntent
+  let intentClassificationFailed = false
+  if (knownIntent) {
+    intent = knownIntent
+  } else {
+    const turnDecision = await decideTurn({
+      window: windowEndingWith(session, {
+        speaker: '參與者',
+        text: question,
+        source: mode,
+        fromBot: false,
+      }),
+      kbContentCard: session.kbContentCard,
+    })
+    intent = turnDecision.intent
+    intentClassificationFailed = turnDecision.failed
+  }
   const route = routeForIntent(intent, true)
   logger.info(
     {
@@ -538,6 +529,9 @@ export async function resolveAnswerRouted(
       question: question.slice(0, 40),
       classifyMs: Date.now() - classifyStart,
       fromTurnDecision: knownIntent !== undefined,
+      // true＝decideTurn 呼叫或解析失敗，intent 是 FAILED_DECISION 的保守預設值，不是真分類——
+      // 過去這種情況跟「真的判成 factual」印出來一模一樣，事後查 log 分不出是模型判斷還是 fallback。
+      intentClassificationFailed,
     },
     'resolveAnswer: intent classified',
   )
@@ -580,6 +574,19 @@ export async function resolveAnswerRouted(
     session.difyConversationId = conversationId
     session.lastQuestionAt = Date.now()
     factAnswer = answer
+  }
+
+  // factual 查無資料 → 別急著說「找不到」，退回逐字稿當後備事實來源。
+  // 只在踩到哨兵時才多花一次 LLM 呼叫，一般 factual 命中的低延遲路徑不受影響；
+  // hybrid 不需要這條分支，它本來就會把 factAnswer（可能是哨兵）與逐字稿一起丟給
+  // 下面的合成步驟，LLM 天然會靠 context 答出來。
+  if (intent === 'factual' && factAnswer === dify.DIFY_NO_RESULT_SENTINEL) {
+    logger.info(
+      { meetingInstanceId: session.meetingInstanceId },
+      'resolveAnswer: factual RAG missed, falling back to transcript',
+    )
+    const { answer } = await answerFromTranscript(session, question)
+    return { answer, route: 'transcript' }
   }
 
   if (intent !== 'hybrid') return { answer: factAnswer, route }
@@ -788,11 +795,27 @@ async function dispatchQuestion(
 
 const CHITCHAT_FALLBACK = '我在喔！有什麼需要幫忙的，隨時叫我～'
 
+/**
+ * 蜜塔真實能力清單，塞進閒聊 prompt 當背景知識——不是要她背稿念出來，是不讓她自己腦補做不到的事。
+ * 範圍取自 reply-tags.ts 的五條發話路徑＋summary.service 的會後摘要。
+ *
+ * 為什麼要放進閒聊路徑：③ 規則已把「你還在嗎、你能做什麼」這類自我狀態問題分進 chitchat
+ * （interjection-prompts.ts），但這裡原本沒有任何背景知識，模型會順著使用者的話附和說
+ * 「可以幫你錄影」「可以寄信」——這兩個功能都不存在。
+ */
+const MEETA_CAPABILITIES =
+  '你真正能做的事：用語音或聊天室回答問題（查專案上傳的資料，或依本場會議逐字稿回答）、' +
+  '沒人叫你但問題沒人接時主動補充、冷場時開口暖場、會議結束後自動整理摘要。' +
+  '你不會錄影、不會寄信，也不能操作會議本身（靜音、邀請人、開關鏡頭等）——' +
+  '被問到做不到的事要老實說做不到，不要附和說可以。'
+
 async function answerChitchat(question: string): Promise<string> {
   try {
     const text = await completeText({
-      system:
+      system: [
         '你是在線的 AI 會議助理蜜塔（Meeta）。有人跟你寒暄或閒聊，請用一到兩句話友善回應，口語、繁體中文、40 字內。不要查資料、不要反問。',
+        MEETA_CAPABILITIES,
+      ].join('\n'),
       prompt: question,
       maxTokens: 100,
     })

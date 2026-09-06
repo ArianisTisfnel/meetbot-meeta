@@ -31,7 +31,7 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { decideAddressing, type AddressingState } from '../src/sessions/addressing.js'
 import type { ConversationEntryLike } from '../src/sessions/interjection-prompts.js'
-import type { TurnDecision } from '../src/sessions/response-policy.js'
+import type { TurnDecision, QuestionIntent } from '../src/sessions/response-policy.js'
 
 interface Turn {
   speaker: string
@@ -39,11 +39,19 @@ interface Turn {
   gapMs?: number
   why?: string
   knownFail?: boolean
-  expect: { respond: boolean; route?: 'rag' | 'transcript' | 'chitchat'; question?: string }
+  expect: {
+    respond: boolean
+    /** 4 分類正解。給了就只比對 intent（route 純供 note 顯示，不比對）——見 _readme。 */
+    intent?: QuestionIntent
+    route?: 'rag' | 'transcript' | 'chitchat'
+    question?: string
+  }
 }
 interface Scenario {
   name: string
   kb: boolean
+  /** 模擬 session.kbContentCard，餵給 decideTurn 的 ③ 規則。省略＝沒有內容卡。 */
+  kbContentCard?: string
   turns: Turn[]
 }
 interface ScenarioFile {
@@ -87,7 +95,7 @@ if (!scenarios.length) {
 
 // ── 一筆評測結果 ──────────────────────────────────────────────────────────────
 
-type Failure = 'false-fire' | 'missed' | 'question-fidelity' | 'wrong-route'
+type Failure = 'false-fire' | 'missed' | 'question-fidelity' | 'wrong-route' | 'wrong-intent'
 
 interface Row {
   scenario: string
@@ -104,6 +112,7 @@ const FAILURE_LABEL: Record<Failure, string> = {
   missed: '漏回應（該回應卻沉默）',
   'question-fidelity': '問題擷取不符',
   'wrong-route': '資料來源走錯',
+  'wrong-intent': '意圖判錯（factual/hybrid/context/chitchat 分類錯誤）',
 }
 
 /**
@@ -113,8 +122,8 @@ const FAILURE_LABEL: Record<Failure, string> = {
  */
 async function runScenario(
   s: Scenario,
-  classify: ((q: string, kb: boolean) => Promise<'rag' | 'transcript' | 'chitchat'>) | null,
-  decide: ((window: ConversationEntryLike[]) => Promise<TurnDecision>) | null,
+  decide: ((window: ConversationEntryLike[], kbContentCard?: string | null) => Promise<TurnDecision>) | null,
+  routeForIntent: ((intent: QuestionIntent, hasKb: boolean) => 'rag' | 'transcript' | 'chitchat') | null,
 ): Promise<Row[]> {
   const state: AddressingState = { lastWakeAt: 0, lastEngagedAt: 0 }
   let now = 1_700_000_000_000 // 固定起點：結果可重現
@@ -136,16 +145,20 @@ async function runScenario(
     //   followup-candidate 沒喊名字，但對話串還開著（可能是連續追問）
     // --address 未開時一律當沉默並標記略過——規則層本來就無從判斷，算它失敗只是假訊號。
     let skipped = false
+    // 這輪若在此處已經打過語意層，下面的 intent/route 檢查直接重用這次結果，不再多打一次
+    // （--address 與 --intent 同開時，過去分別打一次，其中一次還是準度較差的單句假窗）。
+    let addressTurnDecision: TurnDecision | undefined
     if (decision.kind === 'ambiguous' || decision.kind === 'followup-candidate') {
       const isMention = decision.kind === 'ambiguous'
       const candidate = decision.candidate
-      if (!decide) {
+      if (!decide || !WITH_ADDRESS) {
         skipped = true
         decision = { kind: 'ignore', reason: '需要語意層（未開 --address，預設沉默）' }
       } else {
         if (DELAY_MS) await sleep(DELAY_MS)
-        const turnDecision = await decide(window)
-        const failed = turnDecision.addressed === 'unknown'
+        const turnDecision = await decide(window, s.kbContentCard ?? null)
+        addressTurnDecision = turnDecision
+        const failed = turnDecision.failed
         if (failed) unknownCount++
         // 呼叫失敗的退回方向兩邊相反，與線上完全一致（見 AddressVerdict 的說明）：
         //   有喊名字 → 照常回答（判不出來不等於沒在叫我）
@@ -196,14 +209,49 @@ async function runScenario(
         pass = false
         failure = 'question-fidelity'
         note = `question「${decision.question}」未包含預期的「${turn.expect.question}」`
-      } else if (classify && turn.expect.route) {
-        const route = await classify(decision.question, s.kb)
-        if (route !== turn.expect.route) {
-          pass = false
-          failure = 'wrong-route'
-          note = `走了 ${route}，預期 ${turn.expect.route}（question=「${decision.question}」）`
+      } else if (WITH_INTENT && (turn.expect.intent || turn.expect.route)) {
+        let turnDecision: TurnDecision
+        let callFailed: boolean
+        if (addressTurnDecision) {
+          // 這輪的定址已經用真實對話窗打過一次 decideTurn（句中提及／連續追問）→ 重用同一次
+          // 呼叫的 intent，不再打第二次（失敗次數已經在上面那個區塊算過，這裡不重複計）。
+          turnDecision = addressTurnDecision
+          callFailed = addressTurnDecision.failed
         } else {
-          note += ` route=${route}`
+          // 規則層純靠正則定案的呼喚句（"蜜塔，X"）：定址不需要語意層，但 intent 仍要——
+          // 與線上完全對應（resolveAnswerRouted 在 knownIntent 為 undefined 時的那次呼叫），
+          // 用累積到這一輪的真實對話窗，不是單句假窗。
+          if (DELAY_MS) await sleep(DELAY_MS)
+          turnDecision = await decide!(window, s.kbContentCard ?? null)
+          callFailed = turnDecision.failed
+          if (callFailed) unknownCount++
+        }
+
+        if (callFailed) {
+          // 呼叫/解析失敗：intent 是 FAILED_DECISION 的保守預設值 'factual'，不是真分類。
+          // 不比對、不判 pass/fail——讓它跟著 unknownCount 機制一起讓整輪結果「不可信」，
+          // 而不是讓 routeForIntent('factual', kb) 巧合對到 expect.route 變成假通過。
+          note += ' ｜⚠ intent/route 語意層呼叫失敗，未計分'
+        } else {
+          const intent = turnDecision.intent
+          const route = routeForIntent!(intent, s.kb)
+          if (turn.expect.intent) {
+            if (intent !== turn.expect.intent) {
+              pass = false
+              failure = 'wrong-intent'
+              note = `intent 判為 ${intent}，預期 ${turn.expect.intent}（question=「${decision.question}」）`
+            } else {
+              note += ` intent=${intent} route=${route}`
+            }
+          } else if (turn.expect.route) {
+            if (route !== turn.expect.route) {
+              pass = false
+              failure = 'wrong-route'
+              note = `走了 ${route}，預期 ${turn.expect.route}（question=「${decision.question}」）`
+            } else {
+              note += ` route=${route}`
+            }
+          }
         }
       }
     } else {
@@ -216,25 +264,29 @@ async function runScenario(
 }
 
 async function main() {
-  // 規則層評測完全不需要 .env；只有 --intent 才載入會讀 env 的線上模組。
-  let classify: ((q: string, kb: boolean) => Promise<'rag' | 'transcript' | 'chitchat'>) | null = null
-  if (WITH_INTENT) {
-    const wwd = await import('../src/sessions/wake-word-detector.js')
-    classify = async (q, kb) => wwd.routeForIntent(await wwd.classifyIntent(q, null), kb)
-    console.log('（--intent：意圖分流會打 LLM，每個回應案例一次呼叫）')
-  }
-
-  let decide: ((window: ConversationEntryLike[]) => Promise<TurnDecision>) | null = null
-  if (WITH_ADDRESS) {
-    const { decideTurn } = await import('../src/sessions/response-policy.js')
-    decide = (window) => decideTurn({ window })
-    console.log(`（--address：規則層不定案的句子會送語意層，每次呼叫間隔 ${DELAY_MS}ms 以避開免費層限流）`)
+  // 規則層評測完全不需要 .env；只有 --address／--intent 才載入會讀 env 的線上模組。
+  let decide: ((window: ConversationEntryLike[], kbContentCard?: string | null) => Promise<TurnDecision>) | null = null
+  let routeForIntent: ((intent: QuestionIntent, hasKb: boolean) => 'rag' | 'transcript' | 'chitchat') | null = null
+  if (WITH_ADDRESS || WITH_INTENT) {
+    // --address 與 --intent 現在共用同一支 decideTurn：--address 用它裁決定址，--intent 用它
+    // （或重用同一次呼叫的結果）拿 intent。不再 import wake-word-detector.js 的 classifyIntent——
+    // 那支函式把 decideTurn 塞進一個單句、kbContentCard 永遠 null 的假窗，測不出追問脈絡與 KB
+    // 相關性，且與 --address 的呼叫各自獨立，同開時等於多打一次較不準的 LLM 呼叫。
+    const rp = await import('../src/sessions/response-policy.js')
+    decide = (window, kbContentCard) => rp.decideTurn({ window, kbContentCard })
+    routeForIntent = rp.routeForIntent
+    if (WITH_ADDRESS) {
+      console.log(`（--address：規則層不定案的句子會送語意層，每次呼叫間隔 ${DELAY_MS}ms 以避開免費層限流）`)
+    }
+    if (WITH_INTENT) {
+      console.log('（--intent：改用 decideTurn 的真實對話窗＋kbContentCard 評測意圖，不再打單句 classifyIntent）')
+    }
   }
   console.log('')
 
   const rows: Row[] = []
   for (const s of scenarios) {
-    const scenarioRows = await runScenario(s, classify, decide)
+    const scenarioRows = await runScenario(s, decide, routeForIntent)
     rows.push(...scenarioRows)
 
     const failed = scenarioRows.filter((r) => !r.pass && !r.skipped)

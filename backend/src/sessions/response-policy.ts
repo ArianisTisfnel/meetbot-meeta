@@ -11,7 +11,7 @@
  * 為什麼四件事合成一次呼叫，見 interjection-prompts.ts 的 TURN_DECISION_SYSTEM 說明。
  *
  * ⚠️ 改本檔或那份 prompt 前後都要跑：
- *   npx tsx --env-file .env scripts/eval-meeting.ts --address
+ *   npx tsx --env-file .env scripts/eval-meeting.ts --address --intent
  *   npx tsx --env-file .env scripts/eval-interjection.ts --variant live
  */
 import { completeText } from '../lib/llm.js'
@@ -73,6 +73,14 @@ export interface TurnDecision {
   intent: QuestionIntent
   /** 沒人叫蜜塔的前提下，現在主動補充恰不恰當（插話引擎用）。 */
   interject: boolean
+  /**
+   * false＝這次判斷是真的解析出來的；true＝呼叫例外或 JSON 解析失敗，其餘欄位都是保守預設值，
+   * 不是模型的真實分類。只給觀測/評測用，**不影響任何路由或退回邏輯**——那些邏輯繼續照 addressed
+   * 走（見上面 AddressVerdict 的說明）。不能單靠 `addressed === 'unknown'` 推斷這件事：schema
+   * 的 addressed enum 沒有 'unknown' 這個值，正常情況下不會走到字串比對退回那條路，
+   * 這裡直接在兩個失敗出口各自標記，不依賴那個巧合的耦合。
+   */
+  failed: boolean
 }
 
 /** 呼叫失敗時的中性結果：定址 unknown（呼叫端自行退回），其餘一律最保守。 */
@@ -81,6 +89,38 @@ const FAILED_DECISION: TurnDecision = {
   question: '',
   intent: 'factual',
   interject: false,
+  failed: true,
+}
+
+/**
+ * TurnDecision 的 JSON schema（小寫 JSON Schema；llm.ts 呼叫 Gemini 時會自動轉大寫）。
+ * 交給 completeText 的 responseSchema 在 API 層強制輸出形狀與列舉值，
+ * 取代原本寫在 TURN_DECISION_SYSTEM 裡「只回傳 JSON」的文字指示——
+ * 格式描述留在這裡，欄位語意（怎麼判斷）仍在 prompt 裡，兩者不重複。
+ */
+const TURN_DECISION_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    addressed: {
+      type: 'string',
+      enum: ['address', 'mention', 'none'],
+      description: '最後一則是不是在對蜜塔說話',
+    },
+    question: {
+      type: 'string',
+      description: '要回答的問題，忠實取自對話原文；沒有就是空字串',
+    },
+    intent: {
+      type: 'string',
+      enum: ['chitchat', 'factual', 'context', 'hybrid'],
+      description: '這個問題該去哪裡找答案',
+    },
+    interject: {
+      type: 'boolean',
+      description: '沒人叫蜜塔時，現在主動補充恰不恰當',
+    },
+  },
+  required: ['addressed', 'question', 'intent', 'interject'],
 }
 
 /**
@@ -104,6 +144,7 @@ export async function decideTurn(params: {
       maxTokens: 200,
       temperature: 0, // 判定要穩定：同一段對話必須永遠同一個結果
       purpose: 'interjection',
+      responseSchema: TURN_DECISION_SCHEMA,
     })
     return parseTurnDecision(raw)
   } catch (err) {
@@ -139,6 +180,7 @@ export function parseTurnDecision(raw: string): TurnDecision {
     question: meaningfulQuestion(typeof obj.question === 'string' ? obj.question.trim() : ''),
     intent: parseIntent(String(obj.intent ?? '')),
     interject: obj.interject === true,
+    failed: false,
   }
 }
 

@@ -35,12 +35,40 @@ export function buildGeminiGenerationConfig(params: {
   model: string
   maxTokens: number
   temperature?: number
+  responseSchema?: Record<string, unknown>
 }): Record<string, unknown> {
   const isThinkingBudgetSupported = /2\.5/.test(params.model)
   return {
     maxOutputTokens: params.maxTokens,
     ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
     ...(isThinkingBudgetSupported ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+    ...(params.responseSchema
+      ? { responseMimeType: 'application/json', responseSchema: toGeminiSchema(params.responseSchema) }
+      : {}),
+  }
+}
+
+/**
+ * Gemini 的 responseSchema 是 OpenAPI 3.0 schema 的子集，`type` 用大寫列舉
+ * （OBJECT/STRING/...），與一般（含 Anthropic input_schema）小寫 JSON Schema 不同。
+ * 呼叫端一律寫小寫 schema，這裡遞迴轉換，避免兩份 schema 各自維護。
+ */
+function toGeminiSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const { type, properties, items, ...rest } = schema
+  return {
+    ...rest,
+    ...(typeof type === 'string' ? { type: type.toUpperCase() } : {}),
+    ...(properties && typeof properties === 'object'
+      ? {
+          properties: Object.fromEntries(
+            Object.entries(properties as Record<string, Record<string, unknown>>).map(([key, value]) => [
+              key,
+              toGeminiSchema(value),
+            ]),
+          ),
+        }
+      : {}),
+    ...(items && typeof items === 'object' ? { items: toGeminiSchema(items as Record<string, unknown>) } : {}),
   }
 }
 
@@ -51,6 +79,12 @@ export async function completeText(params: {
   /** 未指定時用模型預設（Gemini 預設 1.0）。分類/決策類呼叫請給 0，避免同題不同命。 */
   temperature?: number
   purpose?: 'interjection'
+  /**
+   * 有給時強制 API 層輸出符合此 schema 的 JSON（小寫 JSON Schema，Gemini 端會自動轉換），
+   * 呼叫端不必再於 prompt 裡寫「只回傳 JSON、不要 markdown」之類的格式指示——
+   * Gemini 走 responseSchema/responseMimeType，Anthropic 走強制 tool_choice。
+   */
+  responseSchema?: Record<string, unknown>
 }): Promise<string> {
   const useInterjectionKey = params.purpose === 'interjection' && env.GEMINI_INTERJECTION_API_KEY
   const geminiKey = useInterjectionKey ? env.GEMINI_INTERJECTION_API_KEY : env.GEMINI_API_KEY
@@ -67,6 +101,7 @@ export async function completeText(params: {
           model: geminiModel,
           maxTokens: params.maxTokens,
           temperature: params.temperature,
+          responseSchema: params.responseSchema,
         }),
       }),
     })
@@ -86,8 +121,30 @@ export async function completeText(params: {
   }
 
   anthropic ??= new Anthropic({ apiKey: env.ANTHROPIC_API_KEY })
+  const model = params.maxTokens <= 256 ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6'
+
+  if (params.responseSchema) {
+    const message = await anthropic.messages.create({
+      model,
+      max_tokens: params.maxTokens,
+      ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+      system: params.system,
+      messages: [{ role: 'user', content: params.prompt }],
+      tools: [
+        {
+          name: 'submit_result',
+          description: '回傳這一輪的判斷結果',
+          input_schema: params.responseSchema as Anthropic.Tool['input_schema'],
+        },
+      ],
+      tool_choice: { type: 'tool', name: 'submit_result' },
+    })
+    const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+    return toolUse ? JSON.stringify(toolUse.input) : ''
+  }
+
   const message = await anthropic.messages.create({
-    model: params.maxTokens <= 256 ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-6',
+    model,
     max_tokens: params.maxTokens,
     ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
     system: params.system,

@@ -210,7 +210,13 @@ describe('parseTurnDecision — 語意層輸出解析', () => {
     const d = parseTurnDecision(
       '{"addressed":"address","question":"那名額有限制嗎","intent":"factual","interject":false}',
     )
-    expect(d).toEqual({ addressed: 'address', question: '那名額有限制嗎', intent: 'factual', interject: false })
+    expect(d).toEqual({
+      addressed: 'address',
+      question: '那名額有限制嗎',
+      intent: 'factual',
+      interject: false,
+      failed: false,
+    })
   })
 
   it('包在 markdown 圍欄裡也吃得下（模型常這樣回）', () => {
@@ -230,7 +236,12 @@ describe('parseTurnDecision — 語意層輸出解析', () => {
 
   it('欄位缺漏 → 一律給最保守的預設值', () => {
     const d = parseTurnDecision('{"addressed":"none"}')
-    expect(d).toEqual({ addressed: 'none', question: '', intent: 'factual', interject: false })
+    expect(d).toEqual({ addressed: 'none', question: '', intent: 'factual', interject: false, failed: false })
+  })
+
+  it('壞掉的 JSON → failed:true（呼叫端據此判斷這不是真分類，不列入評測計分）', () => {
+    expect(parseTurnDecision('我不確定').failed).toBe(true)
+    expect(parseTurnDecision('{"addressed":"none"}').failed).toBe(false)
   })
 
   it('interject 只認真正的 true（模型回字串 "true" 不算）', () => {
