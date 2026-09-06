@@ -89,3 +89,8 @@ backend/eval-log-*.txt
 
 # 對外簡報／組員說明的草稿（本機產物，刻意不進版控）
 簡報素材/
+
+# 本機草稿與個人文件（勿入版控）
+Claude outputs/
+InnoServe報名文件/
+vexa_log_filtered.txt
