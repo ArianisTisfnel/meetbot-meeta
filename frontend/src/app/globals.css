@@ -78,6 +78,123 @@
     animation: mb-line 0.5s ease-out both;
     animation-delay: var(--d, 0s);
   }
+  /* 吉祥物慢速漂浮 */
+  .mb-float {
+    animation: mb-float 5s ease-in-out infinite;
+  }
+  /* 環繞標籤：同一組動畫、各自不同的 --d 造成錯落 */
+  .mb-drift {
+    animation: mb-drift 7s ease-in-out infinite;
+    animation-delay: var(--d, 0s);
+  }
+  /* Hero 對話輪播：三段各佔 27s 的三分之一，靠 --d 的負延遲錯開（見 hero-scene.tsx） */
+  .mb-scene {
+    animation: mb-scene 27s linear infinite;
+    animation-delay: var(--d, 0s);
+  }
+  /* Hero 三段循環：提問 → 查資料 → 答案（同 9s 週期，靠百分比接力） */
+  .mb-q {
+    animation: mb-q 9s ease-in-out infinite;
+  }
+  .mb-think {
+    animation: mb-think 9s ease-in-out infinite;
+  }
+  .mb-a {
+    animation: mb-a 9s ease-in-out infinite;
+  }
+}
+
+/* 減少動態：只留第一段對話的最終狀態，中間的「查資料」直接不顯示 */
+@media (prefers-reduced-motion: reduce) {
+  .mb-think {
+    display: none;
+  }
+  .mb-scene ~ .mb-scene {
+    display: none;
+  }
+}
+
+/* 輪播用 visibility 而非 opacity：段內的 mb-q / mb-a 自己會在 9s 尾端淡出，
+   交棒時本來就已經全透明，不必再疊一層 opacity。 */
+@keyframes mb-scene {
+  0%,
+  33.33% {
+    visibility: visible;
+  }
+  33.34%,
+  100% {
+    visibility: hidden;
+  }
+}
+
+@keyframes mb-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes mb-drift {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes mb-q {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  6%,
+  88% {
+    opacity: 1;
+    transform: none;
+  }
+  96%,
+  100% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes mb-think {
+  0%,
+  18% {
+    opacity: 0;
+  }
+  24%,
+  40% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes mb-a {
+  0%,
+  42% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  52%,
+  88% {
+    opacity: 1;
+    transform: none;
+  }
+  96%,
+  100% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
 }
 
 @keyframes mb-rise {
