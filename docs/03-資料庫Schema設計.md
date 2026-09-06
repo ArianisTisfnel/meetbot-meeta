@@ -277,6 +277,46 @@ model ActivityLog {
   @@schema("app")
 }
 
+/// 每位使用者對每個專案「看到哪裡了」。專案卡右上角的未讀圓點靠它算：
+/// 未讀動態 = ActivityLog.createdAt > lastReadAt 且 actor 不是自己。
+///
+/// 為什麼獨立一張表、不掛在 ProjectMember 上：owner 不在 project_members 裡
+/// （成員數是 `_count.members + 1` 算出來的），掛上去 owner 就永遠沒有已讀狀態。
+/// userId 沿用專案的邏輯 FK 策略，不建 FK 約束。
+model ProjectReadState {
+  id         String          @id @default(uuid())
+  projectId  String          @map("project_id")
+  userId     Int             @map("vexa_user_id")
+  /// 已讀是「分頁」等級而不是「專案」等級：進資料頁只該清掉資料的紅點，
+  /// 不該把還沒看的成員異動一起蓋掉。
+  section    ProjectSection
+  /// 這位使用者最後一次打開此專案這個分頁的時間（UTC）
+  lastReadAt DateTime        @map("last_read_at")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([projectId, userId, section])
+  @@index([userId])
+  @@map("project_read_states")
+  @@schema("app")
+}
+
+/// 專案內的分頁。未讀紅點掛在分頁上：哪裡有變動就在哪裡亮。
+/// 值對應前端路由 /projects/:id/<section>。
+enum ProjectSection {
+  MATERIALS
+  MEETINGS
+  CALENDAR
+  MEMBERS
+  /// 沒有專屬分頁的專案層級變更（例如改名）唯一看得到的地方就是歷史
+  HISTORY
+
+  @@map("project_section")
+  @@schema("app")
+}
+
 /// 會議實例（不可刪除，保護歷史逐字稿）
 model MeetingInstance {
   id                   String        @id @default(uuid())
@@ -626,6 +666,8 @@ const activeSessions = new Map<string, MeetingSession>()
 | `project_invitations` | `(email, status)` | 收件者信箱：以登入 email 列出 PENDING 邀請 |
 | `project_invitations` | `(project_id, status)` | 擁有者檢視：列出某專案的 PENDING 邀請 |
 | `activity_logs` | `(project_id, created_at DESC)` | 專案活動紀錄分頁 |
+| `project_read_states` | `(project_id, vexa_user_id, section)` UNIQUE | 未讀紅點：批次撈各分頁的 lastReadAt + upsert 單一分頁已讀 |
+| `project_read_states` | `vexa_user_id` | 某使用者的所有已讀狀態 |
 | `materials` | `(project_id, sha256)` UNIQUE | 判重 |
 | `materials` | `(project_id, uploaded_at DESC)` | 專案資料清單分頁 |
 | `materials` | `indexing_status` | Background job 輪詢 PROCESSING 狀態 |

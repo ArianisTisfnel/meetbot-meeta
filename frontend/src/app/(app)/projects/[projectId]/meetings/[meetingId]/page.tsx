@@ -57,20 +57,28 @@ export default function MeetingDetailPage({ params }: Props) {
             <h2 className="text-xl font-semibold">{meeting.name}</h2>
             <BotStatusIndicator status={meeting.status} />
           </div>
-          <p className="text-sm text-muted-foreground">
-            {meeting.googleMeetUrl}
-            <button
-              type="button"
-              className="ml-2 inline-flex items-center gap-1 rounded text-honey-deep hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => {
-                navigator.clipboard.writeText(meeting.googleMeetUrl)
-                toast.success('已複製連結')
-              }}
-            >
-              <CopyIcon className="size-3.5" />
-              複製
-            </button>
-          </p>
+          {meeting.googleMeetUrl ? (
+            <p className="text-sm text-muted-foreground">
+              {meeting.googleMeetUrl}
+              <button
+                type="button"
+                className="ml-2 inline-flex items-center gap-1 rounded text-honey-deep hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => {
+                  navigator.clipboard.writeText(meeting.googleMeetUrl)
+                  toast.success('已複製連結')
+                }}
+              >
+                <CopyIcon className="size-3.5" />
+                複製
+              </button>
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {meeting.isParticipant === false
+                ? '你不在這場會議的與會者名單中，因此看不到加入連結。'
+                : '這場會議沒有 Google Meet 連結。'}
+            </p>
+          )}
           {meeting.startedAt && (
             <p className="text-sm text-muted-foreground mt-1">
               {formatDate(meeting.startedAt)}

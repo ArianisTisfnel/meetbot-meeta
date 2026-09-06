@@ -80,6 +80,19 @@ const envSchema = z.object({
   // 'off'：正式對外會議不想露出除錯資訊時關閉。語音永遠不唸標籤，不受此開關影響。
   REPLY_TAGS: z.enum(['on', 'off']).default('on'),
   // 內部信任端點（前端 NextAuth 登入取得 authToken）共享密鑰；未設定＝端點停用。
+  // ── Google Calendar 同步 ────────────────────────────────────────────────────
+  // 與前端 NextAuth 用的是同一組 OAuth 憑證。後端需要它才能用 refresh token 換
+  // access token（背景同步忙碌時段、會前提醒都在使用者離線時發生）。
+  // 未設定 → 行事曆同步整個停用，其餘功能不受影響。
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // 忙碌時段同步的視窗：往前 7 天、往後這麼多天（涵蓋使用者可能翻到的週次）
+  CALENDAR_SYNC_DAYS_AHEAD: z.coerce.number().default(35),
+  // 背景同步間隔（分鐘）。設 0 關閉排程，只留手動同步。
+  CALENDAR_SYNC_INTERVAL_MINUTES: z.coerce.number().default(15),
+  // 檢查「排定的會議是否該派蜜塔進去」的間隔（秒）。設 0 關閉自動加入。
+  // 要比行事曆同步頻繁得多——它決定蜜塔會不會準時到。
+  MEETING_DISPATCH_INTERVAL_SECONDS: z.coerce.number().default(60),
   INTERNAL_AUTH_SECRET: z.string().min(16).optional(),
   APP_PORT: z.coerce.number().default(4000),
   APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),

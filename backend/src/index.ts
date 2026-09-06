@@ -8,6 +8,8 @@ import { errorHandler } from './middleware/error-handler.js'
 import { requestLogger, logger } from './middleware/logger.js'
 import { registerRoutes } from './routes/index.js'
 import { startIndexingPoller } from './jobs/indexing-poller.js'
+import { startCalendarSyncPoller } from './jobs/calendar-sync-poller.js'
+import { startMeetingDispatchPoller } from './jobs/meeting-dispatch-poller.js'
 import { restoreActiveSessions } from './sessions/session-manager.js'
 import { isAgentModeEnabled } from './agent/agent-registry.js'
 import { attachAgentGateway } from './agent/agent-relay.js'
@@ -28,6 +30,8 @@ app.onError(errorHandler)
 
 // ── Background Jobs ───────────────────────────────
 startIndexingPoller()
+startCalendarSyncPoller()
+startMeetingDispatchPoller()
 
 // ── Restore Active Sessions ───────────────────────
 await restoreActiveSessions()

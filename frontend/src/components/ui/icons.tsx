@@ -220,3 +220,12 @@ export function LogoutIcon(p: IconProps) {
     </Svg>
   )
 }
+
+export function CalendarIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <rect x="2" y="3" width="12" height="11" rx="1" />
+      <path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3" />
+    </Svg>
+  )
+}

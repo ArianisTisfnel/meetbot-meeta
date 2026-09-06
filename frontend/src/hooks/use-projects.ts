@@ -17,6 +17,10 @@ export function useProjects(params?: {
   return useQuery({
     queryKey: ['projects', params],
     queryFn: () => apiClient.get<ProjectListResponse>(`/projects${qs ? `?${qs}` : ''}`),
+    // 未讀圓點跟著這份清單回來，所以要自己會更新：每分鐘一次、回到分頁時再抓一次。
+    // 別再短，別人上傳一份資料不值得每十秒打一次 DB。
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   })
 }
 

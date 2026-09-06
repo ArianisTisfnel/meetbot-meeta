@@ -6,6 +6,7 @@ import { deleteFile } from '../lib/storage.js'
 import { AppError } from '../middleware/error-handler.js'
 import { logger } from '../middleware/logger.js'
 import { recordActivity } from './activity.service.js'
+import { getProjectsUnread, getProjectUnread } from './notification.service.js'
 
 type ProjectPermissions = {
   canView: boolean
@@ -93,10 +94,20 @@ export async function listProjects(userId: number, params: ListProjectsParams = 
     prisma.project.count({ where }),
   ])
 
+  // 未讀起算點：owner 從建專案起算，成員從被加入起算（見 notification.service）
+  const unread = await getProjectsUnread(
+    userId,
+    projects.map((p) => ({
+      id: p.id,
+      joinedAt: p.ownerUserId === userId ? p.createdAt : (p.members[0]?.createdAt ?? p.createdAt),
+    })),
+  )
+
   return {
     items: projects.map((p) => {
       const isOwner = p.ownerUserId === userId
       const m = p.members[0]
+      const u = unread.get(p.id)
       return {
         id: p.id,
         name: p.name,
@@ -107,6 +118,7 @@ export async function listProjects(userId: number, params: ListProjectsParams = 
         memberCount: p._count.members + 1,
         materialCount: p._count.materials,
         activeMeetingCount: p._count.meetingInstances,
+        unread: u ?? { total: 0, activityCount: 0, rsvpCount: 0, sections: {} },
         createdAt: p.createdAt,
       }
     }),
@@ -167,11 +179,19 @@ export async function getProject(projectId: string, userId: number) {
     select: { id: true, email: true, name: true },
   })
 
+  // 專案頁的分頁紅點靠這個；起算點與列表頁一致（owner 從建專案、成員從被加入）
+  const unread = await getProjectUnread(
+    projectId,
+    userId,
+    isOwner ? project.createdAt : (m?.createdAt ?? project.createdAt),
+  )
+
   return {
     id: project.id,
     name: project.name,
     role: isOwner ? 'owner' : 'member',
     permissions: isOwner ? OWNER_PERMISSIONS : memberPermissions(m!),
+    unread,
     owner: {
       userId: owner?.id ?? project.ownerUserId,
       email: owner?.email ?? null,

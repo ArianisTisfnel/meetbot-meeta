@@ -233,6 +233,14 @@ interface PaginatedResponse<T> {
       "memberCount": 3,
       "materialCount": 7,
       "activeMeetingCount": 1,
+      "unread": {
+        "total": 4,
+        "activityCount": 3,
+        "rsvpCount": 1,
+        "sections": {
+          "materials": 2, "meetings": 0, "calendar": 2, "members": 0, "history": 0
+        }
+      },
       "createdAt": "2026-05-20T08:00:00Z"
     },
     {
@@ -246,12 +254,112 @@ interface PaginatedResponse<T> {
       "memberCount": 5,
       "materialCount": 12,
       "activeMeetingCount": 0,
+      "unread": {
+        "total": 0,
+        "activityCount": 0,
+        "rsvpCount": 0,
+        "sections": {
+          "materials": 0, "meetings": 0, "calendar": 0, "members": 0, "history": 0
+        }
+      },
       "createdAt": "2026-05-10T09:00:00Z"
     }
   ],
   "total": 2
 }
 ```
+
+**`unread` 欄位**（紅點）
+
+紅點掛在**分頁**上：哪裡有變動就在哪裡亮。`sections` 是各分頁的未讀數，
+專案卡右上角那顆顯示的是 `total`。
+
+| 欄位 | 來源 | 何時歸零 |
+|------|------|---------|
+| `activityCount` | `activity_logs` 中 `created_at > 該分頁的 lastReadAt` 且 `actor` 不是自己 | 打開**那個分頁**（`POST /projects/:id/read`） |
+| `rsvpCount` | 我是與會者但 `rsvp = PENDING`、且會議未結束／未取消（算在 `sections.calendar`） | 真的回覆出席之後 |
+| `total` | 上面兩者相加，恆等於 `sections` 各值之和 | — |
+
+**活動歸屬哪個分頁**——刻意是一對一的分割，`sections` 相加才會等於 `total`：
+
+| ActivityAction | section |
+|----------------|---------|
+| `MATERIAL_UPLOAD` / `MATERIAL_DELETE` | `materials` |
+| `MEMBER_INVITE` / `MEMBER_ADD` / `MEMBER_REMOVE` / `MEMBER_PERMISSION_UPDATE` | `members` |
+| `MEETING_CREATE`（立刻開一場）/ `MEETING_DELETE` | `meetings` |
+| `MEETING_SCHEDULE`（行事曆上排定未來的會議） | `calendar` |
+| `PROJECT_RENAME` | `history` |
+
+> `MEETING_CREATE` 與 `MEETING_SCHEDULE` 是兩種不同的事件，就是為了讓排會議亮在行事曆、
+> 立刻開會亮在會議。`PROJECT_RENAME` 沒有專屬分頁（專案名在頁首），唯一列得出它的地方是歷史。
+
+已讀是**分頁**等級：進資料頁只清掉資料的紅點，不會把還沒看的成員異動一起蓋掉。
+沒有已讀紀錄時的起算點：owner 從**專案建立時間**、成員從**被加入的時間**。
+用專案建立時間當所有人的起點，新成員一進來就會背著幾百則舊動態。
+
+---
+
+### `GET /projects/:projectId/notifications`
+
+未讀明細，前端點開圓點時才呼叫。待回覆的會議排在前面（那是要動手的事）。
+
+**Response 200**
+```json
+{
+  "rsvpItems": [
+    {
+      "meetingId": "uuid",
+      "name": "Q3 進度同步",
+      "scheduledStartAt": "2026-09-10T02:00:00Z",
+      "scheduledEndAt": "2026-09-10T03:00:00Z"
+    }
+  ],
+  "activityItems": [
+    {
+      "id": "uuid",
+      "action": "MATERIAL_UPLOAD",
+      "section": "materials",
+      "targetLabel": "spec.pdf",
+      "actor": { "userId": 2, "email": "bee@example.com", "name": "小蜂" },
+      "createdAt": "2026-09-02T00:00:00Z"
+    }
+  ],
+  "unread": {
+    "total": 2,
+    "activityCount": 1,
+    "rsvpCount": 1,
+    "sections": {
+      "materials": 1, "meetings": 0, "calendar": 1, "members": 0, "history": 0
+    }
+  }
+}
+```
+
+`activityItems` 最多回 20 筆（圓點不是活動紀錄頁，看全部請去 `/projects/:id/history`）。
+
+**錯誤**：`404 NOT_FOUND`（專案不存在）、`403 PERMISSION_DENIED`（無檢視權限）
+
+---
+
+### `POST /projects/:projectId/read`
+
+標記已讀。前端切到某個分頁時自動呼叫。
+
+**Request**（body 可省略）
+```json
+{ "section": "materials" }
+```
+
+給了 `section` 就只清那個分頁的紅點；**不給就五個分頁一起清**（「全部標為已讀」用）。
+`section` 可選值：`materials` / `meetings` / `calendar` / `members` / `history`。
+
+**Response 200**
+```json
+{ "projectId": "uuid", "sections": ["materials"], "lastReadAt": "2026-09-02T05:30:00Z" }
+```
+
+⚠️ 只清掉 `activityCount`。`rsvpCount` 是待辦不是消息，
+打開分頁不算「處理過」，要按了出席／不出席才會消失。
 
 ---
 
