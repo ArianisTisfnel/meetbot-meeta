@@ -314,7 +314,7 @@ export function MeetingSummary({
         {...cardProps}
         title="摘要"
         copyText={summary}
-        emptyText="AI 未產出本次會議摘要，點擊此處手動撰寫"
+        emptyText="未產出本次會議摘要，點擊此處手動撰寫"
         isEmpty={summary === ''}
         toText={() => summary}
         fromText={(text) => ({ summary: text.trim() })}
@@ -327,7 +327,7 @@ export function MeetingSummary({
         {...cardProps}
         title="交辦事項"
         copyText={actionItemsText}
-        emptyText="AI 未偵測到明確交辦事項，點擊此處手動新增"
+        emptyText="未擷取到明確交辦事項，點擊此處手動新增"
         isEmpty={actionItems.length === 0}
         toText={() => actionItemsToText(actionItems)}
         fromText={(text) => ({ actionItems: textToActionItems(text, actionItems) })}
@@ -341,7 +341,7 @@ export function MeetingSummary({
         {...cardProps}
         title="重點主題"
         copyText={topicsText}
-        emptyText="AI 未整理出重點主題，點擊此處手動新增"
+        emptyText="未整理出重點主題，點擊此處手動新增"
         isEmpty={topics.length === 0}
         toText={() => topics.join('\n')}
         fromText={(text) => ({ keyTopics: textToLines(text) })}
@@ -364,7 +364,7 @@ export function MeetingSummary({
         {...cardProps}
         title="會議決議"
         copyText={decisionsText}
-        emptyText="AI 未偵測到明確決議，點擊此處記錄本次定案的結論"
+        emptyText="未擷取到明確決議，點擊此處手動新增"
         isEmpty={decisionList.length === 0}
         toText={() => decisionList.join('\n')}
         fromText={(text) => ({ decisions: textToLines(text) })}
