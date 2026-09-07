@@ -176,6 +176,17 @@ Docker 那層兩邊已經隔離（project `meetbot-demo`、port 5434/19002/19003
 **錄影前建議準備一把還有額度的 key**，或設 `GEMINI_INTERJECTION_MODEL=gemini-flash-lite-latest`
 （那個型號免費層額度較寬，15 RPM／500 RPD）。
 
+### 5.5 破冰／插話「log 顯示成功，卻沒有聲音」
+
+**原因**：`speakProactive()` 只走語音，**只有文案超過 100 字才會另外補一份到聊天室**。
+`AGENT_MODE=off` 時，log 照樣印 `icebreaker: breaking silence via voice`，
+但沒有聲音、聊天室也沒東西 —— **看起來成功，其實什麼都沒發生。**
+
+`_煙霧測試-純文字單人版.md` 的前置設定會叫你把 `AGENT_MODE` 關掉（純文字測試用），
+**測完要記得改回 `on`**，否則錄影時她全程不會出聲。
+
+**修**：`AGENT_MODE=on`，重啟後端。
+
 ### 6. Dify 回 `429` 或 `Collection not found`
 
 - **429（Cloudflare Error 1015）**：chatflow 的 HTTP Request 節點是在 **Dify 雲端**回打自家 API，
