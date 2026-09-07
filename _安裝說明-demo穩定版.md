@@ -176,16 +176,25 @@ Docker 那層兩邊已經隔離（project `meetbot-demo`、port 5434/19002/19003
 **錄影前建議準備一把還有額度的 key**，或設 `GEMINI_INTERJECTION_MODEL=gemini-flash-lite-latest`
 （那個型號免費層額度較寬，15 RPM／500 RPD）。
 
-### 5.5 破冰／插話「log 顯示成功，卻沒有聲音」
+### 5.5 語音到底靠什麼才會通
 
-**原因**：`speakProactive()` 只走語音，**只有文案超過 100 字才會另外補一份到聊天室**。
-`AGENT_MODE=off` 時，log 照樣印 `icebreaker: breaking silence via voice`，
-但沒有聲音、聊天室也沒東西 —— **看起來成功，其實什麼都沒發生。**
+`botProvider.speak()` 有三層退路（`recall-adapter.ts:435`），**不是只有 agent 這一條**：
 
-`_煙霧測試-純文字單人版.md` 的前置設定會叫你把 `AGENT_MODE` 關掉（純文字測試用），
-**測完要記得改回 `on`**，否則錄影時她全程不會出聲。
+| 順序 | 路徑 | 條件 | 結果 |
+|---|---|---|---|
+| 1 | `agentSpeak()` 串流 PCM | `AGENT_MODE=on` 且 agent 網頁已連上 | 有聲音，首音約 0.5 秒 |
+| 2 | mp3 → Recall `output_audio` | 只要 `OPENAI_API_KEY` 有設 | **有聲音**，要等整段合成完 |
+| 3 | `speakProactive` 的 catch | 上面兩條都失敗 | 退到聊天室發文字 |
 
-**修**：`AGENT_MODE=on`，重啟後端。
+**所以「有沒有聲音」的關鍵是 `OPENAI_API_KEY`，不是 `AGENT_MODE`。**
+`AGENT_MODE=on` 決定的是走第 1 條還是第 2 條 —— 差別在延遲與音質。
+
+錄影組態：`AGENT_MODE=on` ＋ `OPENAI_API_KEY` 有值 ＋ cloudflared 已啟動
+（`start.ps1` 會把 `AGENT_PAGE_URL` 自動寫回 `.env`）。
+
+> 嘴巴與耳朵是分開的：`df3eba7` 那個 `isAgentLive` 閘門管的是轉錄健康度，
+> **speak 走的是 `isPageOpen`，兩者無關**（`agent-registry.ts:138`）。
+> 所以就算轉錄那側判定不健康，她的聲音路徑仍然是通的。
 
 ### 6. Dify 回 `429` 或 `Collection not found`
 
